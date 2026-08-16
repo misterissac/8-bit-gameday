@@ -1,0 +1,372 @@
+Sampling up to 100 pitches per game (seed=0)...
+
+============================================================================
+Game 777243  @ Coors Field  (Clear)  n=100
+----------------------------------------------------------------------------
+  live   : P =  634.40 mmHg  RH =  22.0%  T =  87.0 F   (Open-Meteo (observed surface pressure) / Open-Meteo (observed))
+  default: P =  760.00 mmHg  RH =  50.0%  T =  70.0 F   (Standard (default))
+============================================================================
+
+Total plate error vs Statcast (|Δx,Δz| inches):
+  live   (weather engine)  mean  1.104   median  1.062   p95  2.278   max  2.538
+  default (baseline)       mean  1.162   median  0.973   p95  2.680   max  3.119
+
+Signed x error (sim − pX, inches):
+  live   (weather engine)  mean +0.252   median +0.078
+  default (baseline)       mean +0.621   median +0.359
+Signed z error (sim − pZ, inches):
+  live   (weather engine)  mean -0.091   median -0.063
+  default (baseline)       mean -0.577   median -0.585
+
+Live weather closer to Statcast: 58/100 pitches (58.0%), default closer: 42/100 (42.0%)
+
+Mean total error: live 1.104 in vs default 1.162 in (Δ +0.058 in, live better)
+VERIFIED: the weather-parameter trajectory engine is more accurate than the default-weather baseline by 0.058 in on average.
+
+============================================================================
+Game 777248  @ Chase Field  (Roof Closed)  n=100
+----------------------------------------------------------------------------
+  live   : P =  729.66 mmHg  RH =  20.0%  T =  76.0 F   (Open-Meteo (observed surface pressure) / Open-Meteo (observed))
+  default: P =  760.00 mmHg  RH =  50.0%  T =  70.0 F   (Standard (default))
+============================================================================
+
+Total plate error vs Statcast (|Δx,Δz| inches):
+  live   (weather engine)  mean  1.795   median  1.727   p95  2.937   max  4.785
+  default (baseline)       mean  1.601   median  1.429   p95  3.119   max  6.013
+
+Signed x error (sim − pX, inches):
+  live   (weather engine)  mean +1.087   median +1.103
+  default (baseline)       mean +1.111   median +1.027
+Signed z error (sim − pZ, inches):
+  live   (weather engine)  mean +0.068   median +0.212
+  default (baseline)       mean -0.168   median -0.022
+
+Live weather closer to Statcast: 26/100 pitches (26.0%), default closer: 74/100 (74.0%)
+
+Mean total error: live 1.795 in vs default 1.601 in (Δ -0.194 in, live worse)
+NOTE: live-weather engine did NOT beat the default baseline on this sample.
+
+============================================================================
+Game 777252  @ Truist Park  (Partly Cloudy)  n=100
+----------------------------------------------------------------------------
+  live   : P =  735.29 mmHg  RH =  40.0%  T =  90.0 F   (Open-Meteo (observed surface pressure) / Open-Meteo (observed))
+  default: P =  760.00 mmHg  RH =  50.0%  T =  70.0 F   (Standard (default))
+============================================================================
+
+Total plate error vs Statcast (|Δx,Δz| inches):
+  live   (weather engine)  mean  1.839   median  1.504   p95  4.102   max  5.485
+  default (baseline)       mean  1.631   median  1.435   p95  3.990   max  5.617
+
+Signed x error (sim − pX, inches):
+  live   (weather engine)  mean +0.828   median +1.220
+  default (baseline)       mean +0.995   median +1.244
+Signed z error (sim − pZ, inches):
+  live   (weather engine)  mean -0.188   median -0.271
+  default (baseline)       mean -0.410   median -0.457
+
+Live weather closer to Statcast: 34/100 pitches (34.0%), default closer: 66/100 (66.0%)
+
+Mean total error: live 1.839 in vs default 1.631 in (Δ -0.208 in, live worse)
+NOTE: live-weather engine did NOT beat the default baseline on this sample.
+
+============================================================================
+Game 777247  @ Target Field  (Partly Cloudy)  n=100
+----------------------------------------------------------------------------
+  live   : P =  736.34 mmHg  RH =  41.0%  T =  92.0 F   (Open-Meteo (observed surface pressure) / Open-Meteo (observed))
+  default: P =  760.00 mmHg  RH =  50.0%  T =  70.0 F   (Standard (default))
+============================================================================
+
+Total plate error vs Statcast (|Δx,Δz| inches):
+  live   (weather engine)  mean  1.306   median  1.143   p95  2.994   max  3.873
+  default (baseline)       mean  1.194   median  1.106   p95  2.893   max  3.792
+
+Signed x error (sim − pX, inches):
+  live   (weather engine)  mean +0.364   median +0.165
+  default (baseline)       mean +0.588   median +0.379
+Signed z error (sim − pZ, inches):
+  live   (weather engine)  mean -0.343   median -0.263
+  default (baseline)       mean -0.600   median -0.518
+
+Live weather closer to Statcast: 40/100 pitches (40.0%), default closer: 60/100 (60.0%)
+
+Mean total error: live 1.306 in vs default 1.194 in (Δ -0.112 in, live worse)
+NOTE: live-weather engine did NOT beat the default baseline on this sample.
+
+============================================================================
+Game 777355  @ Oracle Park  (Partly Cloudy)  n=100
+----------------------------------------------------------------------------
+  live   : P =  760.56 mmHg  RH =  78.0%  T =  60.0 F   (Open-Meteo (observed surface pressure) / Open-Meteo (observed))
+  default: P =  760.00 mmHg  RH =  50.0%  T =  70.0 F   (Standard (default))
+============================================================================
+
+Total plate error vs Statcast (|Δx,Δz| inches):
+  live   (weather engine)  mean  1.850   median  1.859   p95  3.155   max  3.958
+  default (baseline)       mean  1.538   median  1.543   p95  2.677   max  3.467
+
+Signed x error (sim − pX, inches):
+  live   (weather engine)  mean +0.385   median +0.009
+  default (baseline)       mean +0.469   median +0.164
+Signed z error (sim − pZ, inches):
+  live   (weather engine)  mean -0.769   median -0.585
+  default (baseline)       mean -0.744   median -0.591
+
+Live weather closer to Statcast: 6/100 pitches (6.0%), default closer: 94/100 (94.0%)
+
+Mean total error: live 1.850 in vs default 1.538 in (Δ -0.313 in, live worse)
+NOTE: live-weather engine did NOT beat the default baseline on this sample.
+
+============================================================================
+Game 777236  @ T-Mobile Park  (Partly Cloudy)  n=100
+----------------------------------------------------------------------------
+  live   : P =  761.91 mmHg  RH =  42.0%  T =  71.0 F   (Open-Meteo (observed surface pressure) / Open-Meteo (observed))
+  default: P =  760.00 mmHg  RH =  50.0%  T =  70.0 F   (Standard (default))
+============================================================================
+
+Total plate error vs Statcast (|Δx,Δz| inches):
+  live   (weather engine)  mean  1.624   median  1.558   p95  3.234   max  3.817
+  default (baseline)       mean  1.275   median  1.210   p95  2.851   max  3.340
+
+Signed x error (sim − pX, inches):
+  live   (weather engine)  mean +0.388   median +0.711
+  default (baseline)       mean +0.459   median +0.654
+Signed z error (sim − pZ, inches):
+  live   (weather engine)  mean +0.287   median +0.248
+  default (baseline)       mean +0.046   median -0.101
+
+Live weather closer to Statcast: 10/100 pitches (10.0%), default closer: 90/100 (90.0%)
+
+Mean total error: live 1.624 in vs default 1.275 in (Δ -0.349 in, live worse)
+NOTE: live-weather engine did NOT beat the default baseline on this sample.
+
+============================================================================
+Game 777254  @ loanDepot park  (Roof Closed)  n=100
+----------------------------------------------------------------------------
+  live   : P =  760.94 mmHg  RH =  81.0%  T =  72.0 F   (Open-Meteo (observed surface pressure) / Open-Meteo (observed))
+  default: P =  760.00 mmHg  RH =  50.0%  T =  70.0 F   (Standard (default))
+============================================================================
+
+Total plate error vs Statcast (|Δx,Δz| inches):
+  live   (weather engine)  mean  1.898   median  1.887   p95  2.950   max  3.950
+  default (baseline)       mean  1.600   median  1.572   p95  2.703   max  3.376
+
+Signed x error (sim − pX, inches):
+  live   (weather engine)  mean +0.132   median +0.096
+  default (baseline)       mean +0.295   median +0.515
+Signed z error (sim − pZ, inches):
+  live   (weather engine)  mean -0.377   median -0.194
+  default (baseline)       mean -0.471   median -0.333
+
+Live weather closer to Statcast: 11/100 pitches (11.0%), default closer: 89/100 (89.0%)
+
+Mean total error: live 1.898 in vs default 1.600 in (Δ -0.298 in, live worse)
+NOTE: live-weather engine did NOT beat the default baseline on this sample.
+
+============================================================================
+Game 776800  @ Globe Life Field  (Roof Closed)  n=100
+----------------------------------------------------------------------------
+  live   : P =  746.24 mmHg  RH =  42.0%  T =  74.0 F   (Open-Meteo (observed surface pressure) / Open-Meteo (observed))
+  default: P =  760.00 mmHg  RH =  50.0%  T =  70.0 F   (Standard (default))
+============================================================================
+
+Total plate error vs Statcast (|Δx,Δz| inches):
+  live   (weather engine)  mean  2.319   median  2.025   p95  5.092   max  7.189
+  default (baseline)       mean  2.150   median  1.688   p95  5.141   max  7.236
+
+Signed x error (sim − pX, inches):
+  live   (weather engine)  mean +1.124   median +1.563
+  default (baseline)       mean +1.181   median +1.389
+Signed z error (sim − pZ, inches):
+  live   (weather engine)  mean -0.812   median -0.370
+  default (baseline)       mean -0.895   median -0.491
+
+Live weather closer to Statcast: 34/100 pitches (34.0%), default closer: 66/100 (66.0%)
+
+Mean total error: live 2.319 in vs default 2.150 in (Δ -0.169 in, live worse)
+NOTE: live-weather engine did NOT beat the default baseline on this sample.
+
+============================================================================
+Game 776797  @ Yankee Stadium  (Sunny)  n=100
+----------------------------------------------------------------------------
+  live   : P =  766.94 mmHg  RH =  24.0%  T =  87.0 F   (Open-Meteo (observed surface pressure) / Open-Meteo (observed))
+  default: P =  760.00 mmHg  RH =  50.0%  T =  70.0 F   (Standard (default))
+============================================================================
+
+Total plate error vs Statcast (|Δx,Δz| inches):
+  live   (weather engine)  mean  2.077   median  1.829   p95  3.467   max  7.708
+  default (baseline)       mean  1.826   median  1.503   p95  4.543   max  7.744
+
+Signed x error (sim − pX, inches):
+  live   (weather engine)  mean +0.572   median +0.709
+  default (baseline)       mean +0.690   median +0.731
+Signed z error (sim − pZ, inches):
+  live   (weather engine)  mean -0.594   median -0.456
+  default (baseline)       mean -0.777   median -0.525
+
+Live weather closer to Statcast: 9/100 pitches (9.0%), default closer: 91/100 (91.0%)
+
+Mean total error: live 2.077 in vs default 1.826 in (Δ -0.252 in, live worse)
+NOTE: live-weather engine did NOT beat the default baseline on this sample.
+
+============================================================================
+Game 777246  @ Wrigley Field  (Cloudy)  n=100
+----------------------------------------------------------------------------
+  live   : P =  748.26 mmHg  RH =  77.0%  T =  80.0 F   (Open-Meteo (observed surface pressure) / Open-Meteo (observed))
+  default: P =  760.00 mmHg  RH =  50.0%  T =  70.0 F   (Standard (default))
+============================================================================
+
+Total plate error vs Statcast (|Δx,Δz| inches):
+  live   (weather engine)  mean  1.461   median  1.244   p95  3.504   max  4.899
+  default (baseline)       mean  1.368   median  1.089   p95  3.529   max  4.684
+
+Signed x error (sim − pX, inches):
+  live   (weather engine)  mean +0.634   median +0.256
+  default (baseline)       mean +0.817   median +0.341
+Signed z error (sim − pZ, inches):
+  live   (weather engine)  mean -0.408   median -0.241
+  default (baseline)       mean -0.635   median -0.478
+
+Live weather closer to Statcast: 36/100 pitches (36.0%), default closer: 64/100 (64.0%)
+
+Mean total error: live 1.461 in vs default 1.368 in (Δ -0.094 in, live worse)
+NOTE: live-weather engine did NOT beat the default baseline on this sample.
+
+============================================================================
+Game 777362  @ Angel Stadium  (Sunny)  n=100
+----------------------------------------------------------------------------
+  live   : P =  756.66 mmHg  RH =  51.0%  T =  78.0 F   (Open-Meteo (observed surface pressure) / Open-Meteo (observed))
+  default: P =  760.00 mmHg  RH =  50.0%  T =  70.0 F   (Standard (default))
+============================================================================
+
+Total plate error vs Statcast (|Δx,Δz| inches):
+  live   (weather engine)  mean  1.707   median  1.773   p95  3.016   max  5.382
+  default (baseline)       mean  1.508   median  1.616   p95  2.805   max  5.404
+
+Signed x error (sim − pX, inches):
+  live   (weather engine)  mean +1.121   median +1.525
+  default (baseline)       mean +1.121   median +1.388
+Signed z error (sim − pZ, inches):
+  live   (weather engine)  mean -0.228   median -0.249
+  default (baseline)       mean -0.368   median -0.341
+
+Live weather closer to Statcast: 24/100 pitches (24.0%), default closer: 76/100 (76.0%)
+
+Mean total error: live 1.707 in vs default 1.508 in (Δ -0.200 in, live worse)
+NOTE: live-weather engine did NOT beat the default baseline on this sample.
+
+============================================================================
+Game 777371  @ Comerica Park  (Partly Cloudy)  n=100
+----------------------------------------------------------------------------
+  live   : P =  748.86 mmHg  RH =  73.0%  T =  76.0 F   (Open-Meteo (observed surface pressure) / Open-Meteo (observed))
+  default: P =  760.00 mmHg  RH =  50.0%  T =  70.0 F   (Standard (default))
+============================================================================
+
+Total plate error vs Statcast (|Δx,Δz| inches):
+  live   (weather engine)  mean  2.015   median  1.840   p95  4.146   max  8.235
+  default (baseline)       mean  1.845   median  1.722   p95  3.873   max  9.893
+
+Signed x error (sim − pX, inches):
+  live   (weather engine)  mean +1.136   median +1.534
+  default (baseline)       mean +1.173   median +1.536
+Signed z error (sim − pZ, inches):
+  live   (weather engine)  mean -0.399   median -0.181
+  default (baseline)       mean -0.585   median -0.292
+
+Live weather closer to Statcast: 25/100 pitches (25.0%), default closer: 75/100 (75.0%)
+
+Mean total error: live 2.015 in vs default 1.845 in (Δ -0.170 in, live worse)
+NOTE: live-weather engine did NOT beat the default baseline on this sample.
+
+============================================================================
+Game 777341  @ PNC Park  (Partly Cloudy)  n=100
+----------------------------------------------------------------------------
+  live   : P =  743.16 mmHg  RH =  84.0%  T =  73.0 F   (Open-Meteo (observed surface pressure) / Open-Meteo (observed))
+  default: P =  760.00 mmHg  RH =  50.0%  T =  70.0 F   (Standard (default))
+============================================================================
+
+Total plate error vs Statcast (|Δx,Δz| inches):
+  live   (weather engine)  mean  1.676   median  1.571   p95  3.206   max  3.578
+  default (baseline)       mean  1.428   median  1.277   p95  3.161   max  3.508
+
+Signed x error (sim − pX, inches):
+  live   (weather engine)  mean +0.799   median +1.196
+  default (baseline)       mean +0.854   median +1.116
+Signed z error (sim − pZ, inches):
+  live   (weather engine)  mean +0.109   median +0.247
+  default (baseline)       mean -0.082   median -0.027
+
+Live weather closer to Statcast: 18/100 pitches (18.0%), default closer: 82/100 (82.0%)
+
+Mean total error: live 1.676 in vs default 1.428 in (Δ -0.248 in, live worse)
+NOTE: live-weather engine did NOT beat the default baseline on this sample.
+
+============================================================================
+Game 777359  @ Kauffman Stadium  (Clear)  n=100
+----------------------------------------------------------------------------
+  live   : P =  738.36 mmHg  RH =  44.0%  T =  90.0 F   (Open-Meteo (observed surface pressure) / Open-Meteo (observed))
+  default: P =  760.00 mmHg  RH =  50.0%  T =  70.0 F   (Standard (default))
+============================================================================
+
+Total plate error vs Statcast (|Δx,Δz| inches):
+  live   (weather engine)  mean  1.346   median  1.296   p95  2.125   max  3.753
+  default (baseline)       mean  1.133   median  1.161   p95  2.030   max  3.904
+
+Signed x error (sim − pX, inches):
+  live   (weather engine)  mean +0.033   median -0.172
+  default (baseline)       mean +0.269   median -0.015
+Signed z error (sim − pZ, inches):
+  live   (weather engine)  mean -0.112   median -0.164
+  default (baseline)       mean -0.432   median -0.385
+
+Live weather closer to Statcast: 35/100 pitches (35.0%), default closer: 65/100 (65.0%)
+
+Mean total error: live 1.346 in vs default 1.133 in (Δ -0.213 in, live worse)
+NOTE: live-weather engine did NOT beat the default baseline on this sample.
+
+============================================================================
+Game 777357  @ Busch Stadium  (Partly Cloudy)  n=100
+----------------------------------------------------------------------------
+  live   : P =  749.99 mmHg  RH =  51.0%  T =  88.0 F   (Open-Meteo (observed surface pressure) / Open-Meteo (observed))
+  default: P =  760.00 mmHg  RH =  50.0%  T =  70.0 F   (Standard (default))
+============================================================================
+
+Total plate error vs Statcast (|Δx,Δz| inches):
+  live   (weather engine)  mean  1.741   median  1.879   p95  2.462   max  4.317
+  default (baseline)       mean  1.528   median  1.554   p95  2.390   max  4.874
+
+Signed x error (sim − pX, inches):
+  live   (weather engine)  mean +1.241   median +1.669
+  default (baseline)       mean +1.195   median +1.456
+Signed z error (sim − pZ, inches):
+  live   (weather engine)  mean -0.034   median +0.014
+  default (baseline)       mean -0.219   median -0.178
+
+Live weather closer to Statcast: 21/100 pitches (21.0%), default closer: 79/100 (79.0%)
+
+Mean total error: live 1.741 in vs default 1.528 in (Δ -0.213 in, live worse)
+NOTE: live-weather engine did NOT beat the default baseline on this sample.
+
+============================================================================
+AGGREGATE
+============================================================================
+  gamePk venue                     n live mean  def mean  Δ(mean) live med  def med live win%
+  777243 Coors Field             100     1.104     1.162   +0.058    1.062    0.973     58.0%
+  777248 Chase Field             100     1.795     1.601   -0.194    1.727    1.429     26.0%
+  777252 Truist Park             100     1.839     1.631   -0.208    1.504    1.435     34.0%
+  777247 Target Field            100     1.306     1.194   -0.112    1.143    1.106     40.0%
+  777355 Oracle Park             100     1.850     1.538   -0.313    1.859    1.543      6.0%
+  777236 T-Mobile Park           100     1.624     1.275   -0.349    1.558    1.210     10.0%
+  777254 loanDepot park          100     1.898     1.600   -0.298    1.887    1.572     11.0%
+  776800 Globe Life Field        100     2.319     2.150   -0.169    2.025    1.688     34.0%
+  776797 Yankee Stadium          100     2.077     1.826   -0.252    1.829    1.503      9.0%
+  777246 Wrigley Field           100     1.461     1.368   -0.094    1.244    1.089     36.0%
+  777362 Angel Stadium           100     1.707     1.508   -0.200    1.773    1.616     24.0%
+  777371 Comerica Park           100     2.015     1.845   -0.170    1.840    1.722     25.0%
+  777341 PNC Park                100     1.676     1.428   -0.248    1.571    1.277     18.0%
+  777359 Kauffman Stadium        100     1.346     1.133   -0.213    1.296    1.161     35.0%
+  777357 Busch Stadium           100     1.741     1.528   -0.213    1.879    1.554     21.0%
+----------------------------------------------------------------------------
+Games where live weather is more accurate: 1/15 (7%)  [worse: 14, tie: 0]
+Total pitches: 1500
+Overall mean plate error: live 1.717 in vs default 1.519 in (Δ -0.198 in)
+
+Live weather did NOT consistently beat the default baseline.

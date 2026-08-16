@@ -1,1 +1,0 @@
-"""Pitch sequence analysis package."""
