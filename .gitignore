@@ -12,3 +12,10 @@ build/
 
 # OS Files
 .DS_Store
+
+# Reference directories (not part of this project)
+skill-vis:MyTrajectorySimulator-main/
+solomon-gumball:baseball-sim-main/
+
+# Freebuff workspace state
+.freebuff/

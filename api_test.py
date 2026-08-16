@@ -70,8 +70,15 @@ def fetch_pitch_data():
                 
                 # Statcast expects dict with specific keys for conversion
                 # We need to map y0 which is at y=50ft to release_extension
-                y0_ft = coordinates.get('y0', 50.0)
-                release_ext = 60.5 - y0_ft
+                extension_ft = pitch_data.get('extension')
+                if extension_ft is not None:
+                    release_ext = float(extension_ft)
+                else:
+                    y0_ft = float(coordinates.get('y0', 54.5))
+                    release_ext = 60.5 - y0_ft
+                
+                pfx_x_in = coordinates.get('pfxX')
+                pfx_z_in = coordinates.get('pfxZ')
                 
                 statcast_data = {
                     "release_pos_x": coordinates.get('x0'),
@@ -83,6 +90,8 @@ def fetch_pitch_data():
                     "ax": coordinates.get('aX'),
                     "ay": coordinates.get('aY'),
                     "az": coordinates.get('aZ'),
+                    "pfx_x": float(pfx_x_in) / 12.0 if pfx_x_in is not None else None,
+                    "pfx_z": float(pfx_z_in) / 12.0 if pfx_z_in is not None else None,
                     "release_spin_rate": breaks.get('spinRate'),
                     "spin_axis": breaks.get('spinDirection'),
                     "pitch_type": "FF", # Fallback if unavailable
@@ -90,7 +99,7 @@ def fetch_pitch_data():
                 }
                 
                 try:
-                    sim_params = statcast_to_sim_params(statcast_data, spin_method="bsg", accel_method=False)
+                    sim_params = statcast_to_sim_params(statcast_data, spin_method="bsg", accel_method=True)
                     valid_keys = ['x0', 'y0', 'z0', 'v0_mps', 'theta_deg', 'phi_deg', 'backspin_rpm', 'sidespin_rpm', 'wg_rpm', 'batter_hand']
                     pitch_kwargs = {k: v for k, v in sim_params.items() if k in valid_keys}
                     
