@@ -252,7 +252,7 @@ const CameraController = ({ snapTrigger, controlsRef }) => {
     return null;
 };
 
-export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, crossingPlane, onCrossings, onArrival, onPlayResult, onComplete }) => {
+export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, crossingPlane, onCrossings, onArrival, onPlayResult, onComplete, comparisonActive = false, comparisonPlays = [] }) => {
     const controlsRef = useRef();
     // Restore the last saved view on mount (read once, localStorage).
     const initialCam = useMemo(() => loadCameraState(), []);
@@ -282,24 +282,47 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
             {/* Diamond / ballpark sprites */}
             <Ballpark />
             
-            {/* Pitch Visualization Component */}
-            <Pitch pitchData={pitchData} defaultPitchData={defaultPitchData} crossingPlane={crossingPlane} onCrossings={onCrossings} onArrival={onArrival} />
+            {/* Pitch Visualization Component. In comparison mode the single
+                live pitch/batter/pitcher are replaced by every selected pitch
+                overlaid together, plus each contact pitch's batted ball (flight
+                only, no fielding). */}
+            {comparisonActive ? (
+                <>
+                    {comparisonPlays.map((play, i) => (
+                        <Pitch key={`compare-pitch-${i}`} pitchData={play.pitch} overlay />
+                    ))}
+                    {comparisonPlays
+                        .filter((play) => play.pitch?.is_contact === true)
+                        .map((play, i) => (
+                            <BattedBall
+                                key={`compare-hit-${i}`}
+                                pitchData={play.pitch}
+                                hit={play.hit}
+                                comparison
+                            />
+                        ))}
+                </>
+            ) : (
+                <>
+                    <Pitch pitchData={pitchData} defaultPitchData={defaultPitchData} crossingPlane={crossingPlane} onCrossings={onCrossings} onArrival={onArrival} />
 
-            {/* Batter at the plate, swinging with the live at-bat data */}
-            <Batter pitchData={pitchData} />
+                    {/* Batter at the plate, swinging with the live at-bat data */}
+                    <Batter pitchData={pitchData} />
 
-            {/* Pitcher at the mound (ported player.glb): winds up and throws
-                on the shared playback cycle, releasing exactly when the pitch
-                ball starts flying */}
-            <Pitcher pitchData={pitchData} />
+                    {/* Pitcher at the mound (ported player.glb): winds up and throws
+                        on the shared playback cycle, releasing exactly when the pitch
+                        ball starts flying */}
+                    <Pitcher pitchData={pitchData} />
+
+                    {/* Batted-ball + fielder trajectory (driven by Statcast hit data),
+                        launched when the pitch reaches the spot it is hit */}
+                    <BattedBall pitchData={pitchData} hit={battedBall} onPlayResult={onPlayResult} onComplete={onComplete} />
+                </>
+            )}
 
             {/* Crouching catcher behind the plate; fades out when the camera
                 moves in close behind the strike zone so the zone stays visible */}
             <Catcher />
-            
-            {/* Batted-ball + fielder trajectory (driven by Statcast hit data),
-                launched when the pitch reaches the spot it is hit */}
-            <BattedBall pitchData={pitchData} hit={battedBall} onPlayResult={onPlayResult} onComplete={onComplete} />
             
             {/* Camera Controls */}
             <OrbitControls makeDefault ref={controlsRef} target={controlsTarget} />

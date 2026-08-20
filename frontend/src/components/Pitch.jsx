@@ -48,6 +48,11 @@ const TRAIL_PARTICLE_SCALE = 0.04; // thinner, finer tail than the old 0.06
 // Shorter fade time = the tail fades away faster behind the ball.
 const TRAIL_FADE_TIME = 0.18; // s
 const TRAIL_MAX_OPACITY = 0.5; // overall translucency
+// Tunneling comparison overlay: the ball, tail, and trace all dim so several
+// overlaid pitches and their trajectories stay readable at once.
+const OVERLAY_BALL_OPACITY = 0.5;
+const OVERLAY_TRAIL_FACTOR = 0.55;
+const OVERLAY_TRACE_FACTOR = 0.55;
 // Speed-graded tail color: the whole tail is a single constant color per
 // pitch (no gradient along the flight), picked from a ramp that shifts with
 // the pitch's release speed — yellowish-white at TRAIL_SPEED_MIN_MPH easing
@@ -307,9 +312,27 @@ useGLTF.preload(BALL_MODEL_URL);
 
 // The baseball model, cloned so the shared useGLTF cache isn't mutated by the
 // per-frame spins (geometry/material stay shared across clones).
-const Baseball = React.forwardRef((props, ref) => {
+const Baseball = React.forwardRef(({ opacity, ...props }, ref) => {
     const { scene } = useGLTF(BALL_MODEL_URL);
     const model = useMemo(() => scene.clone(true), [scene]);
+    // Dim the ball for tunneling overlays. The GLTF cache shares materials
+    // across clones, so clone each material before mutating transparency /
+    // opacity — otherwise the normal pitch ball and the spin-axis panel ball
+    // would dim too.
+    React.useLayoutEffect(() => {
+        model.traverse((obj) => {
+            if (!obj.isMesh) return;
+            const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+            const dimmed = materials.map((mat) => {
+                const copy = mat.clone();
+                copy.transparent = opacity != null && opacity < 1;
+                copy.opacity = opacity ?? 1;
+                copy.needsUpdate = true;
+                return copy;
+            });
+            obj.material = Array.isArray(obj.material) ? dimmed : dimmed[0];
+        });
+    }, [model, opacity]);
     return <primitive object={model} ref={ref} {...props} />;
 });
 
@@ -375,7 +398,7 @@ const RING_PULSE_OVERSHOOT = 0.8; // scale overshoot: 1.8x -> 1x
 const RING_MAX_OPACITY = 0.95; // impact flash peak
 const RING_SETTLED_OPACITY = 0.3; // held after the fade-down (clearly above the white trace's 0.05)
 
-export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCrossings, onArrival }) => {
+export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCrossings, onArrival, overlay = false }) => {
     const ballRef = useRef();
     const simClock = useRef(0);
     // Tracks whether the physics ball has reached the plate in the current
@@ -713,7 +736,7 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                 // Notify the app so it can reveal the ball/strike outcome (or,
                 // for contact, leave the hit/run/out reveal to the batted-ball
                 // choreography). Fires once per arrival (reset on the wrap).
-                if (onArrival) onArrival();
+                if (!overlay && onArrival) onArrival();
             }
 
             // Hide the pitch ball once the bat has actually made contact, or —
@@ -746,14 +769,16 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                     const sinceArrival = currentSimTime - arrivedAtRef.current;
                     whiteFade = 1 - Math.min(sinceArrival / WHITE_TRACE_FADE_TIME, 1);
                 }
-                const whiteAlphaNow = WHITE_TRACE_MIN_OPACITY
-                    + (WHITE_TRACE_OPACITY - WHITE_TRACE_MIN_OPACITY) * whiteFade;
+                const trailFactor = overlay ? OVERLAY_TRAIL_FACTOR : 1;
+                const traceFactor = overlay ? OVERLAY_TRACE_FACTOR : 1;
+                const whiteAlphaNow = (WHITE_TRACE_MIN_OPACITY
+                    + (WHITE_TRACE_OPACITY - WHITE_TRACE_MIN_OPACITY) * whiteFade) * traceFactor;
 
                 for (let i = 0; i < particlePoints.length; i++) {
                     const age = currentSimTime - particlePoints[i].t;
                     let tailAlpha = 0;
                     if (age >= 0) {
-                        tailAlpha = TRAIL_MAX_OPACITY * (1 - age * fadeRate);
+                        tailAlpha = TRAIL_MAX_OPACITY * trailFactor * (1 - age * fadeRate);
                         if (tailAlpha < 0) tailAlpha = 0;
                     }
                     tailAlphas[i] = tailAlpha;
@@ -994,24 +1019,30 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                         renderOrder={2}
                         frustumCulled={false}
                     />
-                    <instancedMesh
-                        ref={billowMeshRef}
-                        args={[billowGeometry, billowMaterial, BILLOW_COUNT]}
-                        renderOrder={3}
-                        frustumCulled={false}
-                    />
-                    <instancedMesh
-                        ref={whiteBillowMeshRef}
-                        args={[whiteBillowGeometry, whiteBillowMaterial, BILLOW_WHITE_COUNT_MAX]}
-                        renderOrder={4}
-                        frustumCulled={false}
-                    />
-                    <instancedMesh
-                        ref={blueSparkMeshRef}
-                        args={[blueSparkGeometry, blueSparkMaterial, BLUE_SPARK_COUNT]}
-                        renderOrder={5}
-                        frustumCulled={false}
-                    />
+                    {/* Billow particles are skipped for tunneling overlays so
+                        the overlaid trajectories read clearly. */}
+                    {!overlay && (
+                        <>
+                            <instancedMesh
+                                ref={billowMeshRef}
+                                args={[billowGeometry, billowMaterial, BILLOW_COUNT]}
+                                renderOrder={3}
+                                frustumCulled={false}
+                            />
+                            <instancedMesh
+                                ref={whiteBillowMeshRef}
+                                args={[whiteBillowGeometry, whiteBillowMaterial, BILLOW_WHITE_COUNT_MAX]}
+                                renderOrder={4}
+                                frustumCulled={false}
+                            />
+                            <instancedMesh
+                                ref={blueSparkMeshRef}
+                                args={[blueSparkGeometry, blueSparkMaterial, BLUE_SPARK_COUNT]}
+                                renderOrder={5}
+                                frustumCulled={false}
+                            />
+                        </>
+                    )}
                 </>
             )}
 
@@ -1033,7 +1064,7 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                 Statcast spin axis (see spinAxis). Suspense keeps the first
                 load from blocking the rest of the scene. */}
             <React.Suspense fallback={null}>
-                <Baseball ref={ballRef} />
+                <Baseball ref={ballRef} opacity={overlay ? OVERLAY_BALL_OPACITY : undefined} />
             </React.Suspense>
             
             {/* 9-Quadrant Strike Zone */}

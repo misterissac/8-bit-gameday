@@ -19,3 +19,7 @@ solomon-gumball:baseball-sim-main/
 
 # Freebuff workspace state
 .freebuff/
+
+# IDE / local libs
+.local_libs/
+.idea/
