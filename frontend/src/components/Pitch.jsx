@@ -1,26 +1,521 @@
-import React, { useRef, useState, useMemo } from 'react';
+import React, { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Line, useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
+import { getCycleDuration, getTimeScale } from '../constants/playback';
+import { BALL_RELEASE_TIME } from './Pitcher';
 
-// MagicaVoxel usually exports as .obj or .glb. We'll set up a GLTF loader just in case,
-// but fallback to a simple procedural voxel-like sphere (a box or low-poly sphere).
-const VoxelBall = (props) => {
-    // If you drop a MagicaVoxel export as ball.glb in public/models/, you could use:
-    // const { nodes, materials } = useGLTF('/models/ball.glb')
-    // return <primitive object={nodes.Scene} {...props} />
-    
-    // For now, we'll use a placeholder voxel-like shape (a simple Box)
-    return (
-        <mesh {...props}>
-            <boxGeometry args={[0.2, 0.2, 0.2]} />
-            <meshStandardMaterial color="white" />
-        </mesh>
+// Front edge of home plate (17 in from the back tip) and mid-plate (8.5 in),
+// in meters along this app's -Z axis. The strike zone is drawn at the front
+// edge, and the pitch "arrives at the plate" when it crosses that plane.
+const FRONT_OF_PLATE_Z = -0.4318;
+const BACK_OF_PLATE_Z = 0; // back tip of home plate (world z)
+const MID_PLATE_Z = -(8.5 / 12) * 0.3048; // = -0.2159 m from the back tip
+
+// Particle trail sampling + size. Denser and smaller than solomon-gumball's
+// PitchArc (0.02s / 0.15 / 0.05) so the path reads as a fine, continuous
+// trajectory rather than a row of chunky boxes. The colored tail and the white
+// trajectory trace are each a single InstancedMesh (one draw call each) with
+// per-instance color + alpha.
+const TRAIL_SAMPLE_STEP = 0.00035; // s between successive trail particles at full density
+const TRAIL_MAX_PARTICLES = 2048; // fixed instanced capacity (~1s of flight)
+// The number of wake particles scales with pitch speed: a 70 mph pitch
+// emits 30% of the full count and the density ramps linearly up to 100% at
+// 90 mph — so fast pitches leave the densest wake while slow ones leave a
+// lighter one. The trail implements this by widening its sample step
+// (TRAIL_SAMPLE_STEP / densityFrac) and the yellow→red billow layer by
+// emitting fewer particles.
+const DENSITY_MIN_MPH = 70; // 30% density at/under this speed
+const DENSITY_MAX_MPH = 90; // 100% density at/above this speed
+const DENSITY_MIN_FRAC = 0.3; // fraction of the full particle count at DENSITY_MIN_MPH
+const DENSITY_MAX_FRAC = 1; // fraction at DENSITY_MAX_MPH and beyond
+
+// Shared speed → density ramp for the wake layers (clamps to 30% below
+// 70 mph and 100% above 90 mph).
+function getSpeedDensityFrac(speed) {
+    return THREE.MathUtils.clamp(
+        (speed - DENSITY_MIN_MPH) / (DENSITY_MAX_MPH - DENSITY_MIN_MPH),
+        DENSITY_MIN_FRAC,
+        DENSITY_MAX_FRAC,
     );
-};
+}
 
-export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCrossings }) => {
+const TRAIL_LEAD_SCALE = 0.08;
+const TRAIL_PARTICLE_SCALE = 0.04; // thinner, finer tail than the old 0.06
+// A particle's alpha ramps from TRAIL_MAX_OPACITY down to 0 over
+// TRAIL_FADE_TIME seconds as it ages behind the ball, so the tail fades out
+// like solomon-gumball's trailing ribbon instead of ending in a hard edge.
+// Shorter fade time = the tail fades away faster behind the ball.
+const TRAIL_FADE_TIME = 0.18; // s
+const TRAIL_MAX_OPACITY = 0.5; // overall translucency
+// Speed-graded tail color: the whole tail is a single constant color per
+// pitch (no gradient along the flight), picked from a ramp that shifts with
+// the pitch's release speed — yellowish-white at TRAIL_SPEED_MIN_MPH easing
+// to orange-red at TRAIL_SPEED_MAX_MPH, clamped beyond.
+const TRAIL_SPEED_SLOW = [1, 0.95, 0.65]; // yellowish-white
+const TRAIL_SPEED_FAST = [1, 0.4, 0.08]; // orange-red
+const TRAIL_SPEED_MIN_MPH = 70;
+const TRAIL_SPEED_MAX_MPH = 90;
+
+// A second, thinner white trace the pitch leaves behind it: a round, soft
+// ribbon under the colored tail. It fades gradually once the pitch reaches the
+// plate, easing down to WHITE_TRACE_MIN_OPACITY so the traced path dims but
+// never fully disappears.
+const WHITE_TRACE_SCALE = 0.018;
+const WHITE_TRACE_OPACITY = 0.16;
+const WHITE_TRACE_MIN_OPACITY = 0.05;
+const WHITE_TRACE_FADE_TIME = 0.5; // s to ease down after the pitch arrives
+const WHITE_TRACE_COLOR = [1, 1, 1];
+
+// Pixelated billow particles kicked up behind the ball as it flies: small
+// axis-aligned boxes (a retro "pixel" look) that spawn along the trajectory,
+// then billow outward/upward, recede slightly, grow, and fade as they age.
+const BILLOW_COUNT = 12; // yellow→red particles (kept low — the trail carries the visual weight)
+const BILLOW_SPAWN_SPAN = 0.5; // s — emit across the whole flight (pitches take ~0.4s)
+// Spawn each billow particle slightly BEFORE its activation time along the
+// trajectory, so it first pops in behind the ball (further back on its path)
+// instead of right at the ball's position.
+const BILLOW_SPAWN_BEHIND = 0.025; // s — ~1 m behind at typical pitch speeds
+const BILLOW_LIFE = 0.45; // s — per-particle lifetime (shorter = faster decay)
+const BILLOW_FADE_IN = 0.05; // s — quick pop-in as each particle spawns
+const BILLOW_SPREAD = 1.1; // m/s — outward billow rate (violent burst)
+const BILLOW_BACK_DRIFT = 0.6; // m/s — recede behind the ball
+const BILLOW_BASE_SCALE = 0.06; // m — starting particle size (slightly smaller)
+const BILLOW_SCALE_GROWTH = 3.5; // per-second size growth while billowing
+const BILLOW_OPACITY = 0.85;
+
+// All pitches emit a layer of white billow particles; the amount scales with
+// pitch speed (nearly nothing at slow speeds ramping up to the full layer on
+// fast pitches), so velocity reads as a hotter, brighter wake.
+const BILLOW_WHITE_COUNT = 4; // white particles at/under the threshold
+const BILLOW_WHITE_COUNT_MAX = 16; // layer capacity; count ramps up above 85 mph
+// The white wake is its own layer: fine, additive-blended spark particles
+// that glow as they billow. It stays nearly absent below 85 mph
+// (BILLOW_WHITE_MIN_MULT) and once the pitch exceeds
+// BILLOW_WHITE_THRESHOLD_MPH (85 mph) both the particle count and the alpha
+// ramp up to full by 105 mph — so only genuinely fast pitches leave a heavy
+// white wake.
+const BILLOW_WHITE_BASE_SCALE = 0.02; // finer than the yellow/red billows
+const BILLOW_WHITE_OPACITY = 1.0;     // full-strength (additive = glows)
+const BILLOW_WHITE_THRESHOLD_MPH = 85; // count/alpha ramp begins here
+const BILLOW_WHITE_MIN_MULT = 0.1;     // white-layer alpha below 85 mph
+const BILLOW_WHITE_MAX_MULT = 1;       // white-layer alpha at 105 mph
+const BILLOW_WHITE_JITTER_MIN = 0.95;  // white particles render near full alpha (vs 0.7 base)
+
+// Electric-blue spark layer: emitted only by triple-digit pitches (over
+// BLUE_SPARK_THRESHOLD_MPH), layered on top of the usual white/yellow-red
+// billows, so a very fast pitch reads as a distinct blue wake. Below the
+// threshold the layer is written with alpha 0, so no stale sparks linger.
+const BLUE_SPARK_THRESHOLD_MPH = 100;
+const BLUE_SPARK_COUNT = 10; // replaces this many yellow→red billows at 100+ mph
+const BLUE_SPARK_COLOR = [0.3, 0.85, 1]; // electric cyan — brighter than the old muted blue
+const BLUE_SPARK_BASE_SCALE = 0.03; // slightly larger than the old sparks so the glow reads
+const BLUE_SPARK_SCALE_GROWTH = 3.0; // stays small as it ages
+const BLUE_SPARK_OPACITY = 1.0; // full-strength sparks
+// Twinkle: each spark flickers on its own per-particle phase, like an electric
+// discharge, instead of the steady billow fade.
+const BLUE_SPARK_TWINKLE_SPEED = 26; // rad/s — fast sparkle
+const BLUE_SPARK_TWINKLE_DEPTH = 0.45; // alpha swing around the base
+const BLUE_SPARK_TWINKLE_PHASE = 2.4; // per-particle phase spread
+
+// Billow color is graded by the pitch's release speed: yellow at SPEED_MIN_MPH
+// lerping to red at SPEED_MAX_MPH.
+const SPEED_COLOR_SLOW = [1, 0.85, 0.2];
+const SPEED_COLOR_FAST = [1, 0.12, 0.04];
+const SPEED_MIN_MPH = 70;
+const SPEED_MAX_MPH = 105;
+
+// Custom shader for the instanced trail: each instance supplies its own color
+// and alpha. ``instanceMatrix`` is declared automatically because three.js
+// defines USE_INSTANCING for ShaderMaterial on an InstancedMesh.
+const TRAIL_VERTEX_SHADER = `
+attribute vec3 aColor;
+attribute float aAlpha;
+varying vec3 vColor;
+varying float vAlpha;
+
+void main() {
+    vColor = aColor;
+    vAlpha = aAlpha;
+    gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+}
+`;
+
+const TRAIL_FRAGMENT_SHADER = `
+varying vec3 vColor;
+varying float vAlpha;
+
+void main() {
+    gl_FragColor = vec4(vColor, vAlpha);
+}
+`;
+
+// Shared builder for the instanced trail geometry: a base shape plus
+// per-instance color/alpha buffers. The colored tail uses a box and the white
+// trace uses a sphere (rounder, so it reads as a soft ribbon rather than a
+// square tube); each layer gets its own buffers so they can fade independently.
+function createTrailGeometry(makeBaseGeometry) {
+    const geometry = makeBaseGeometry();
+    const colorAttr = new THREE.InstancedBufferAttribute(
+        new Float32Array(TRAIL_MAX_PARTICLES * 3), 3,
+    );
+    colorAttr.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute('aColor', colorAttr);
+    const alphaAttr = new THREE.InstancedBufferAttribute(
+        new Float32Array(TRAIL_MAX_PARTICLES), 1,
+    );
+    alphaAttr.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute('aAlpha', alphaAttr);
+    return geometry;
+}
+
+// Shared material builder for the instanced trail layers.
+function createTrailMaterial() {
+    return new THREE.ShaderMaterial({
+        vertexShader: TRAIL_VERTEX_SHADER,
+        fragmentShader: TRAIL_FRAGMENT_SHADER,
+        transparent: true,
+        depthWrite: false,
+    });
+}
+
+// Billow particles only start appearing once the ball is most of the way to
+// home plate (the last third of the flight), so the look out of the hand
+// stays clean and unobscured.
+const BILLOW_START_FRACTION = 2 / 3; // fraction of the flight elapsed before emission starts
+
+// Shared builders for the billow particle layers: per-pitch random seeds
+// (delay spread across the last third of the flight, random billow
+// direction, size/alpha jitter) plus their spawn points sampled along the
+// trajectory.
+function makeBillowSeeds(count, flightDuration) {
+    const seeds = [];
+    const span = Math.min(BILLOW_SPAWN_SPAN, Math.max(flightDuration, 0.01));
+    for (let i = 0; i < count; i++) {
+        const frac = count > 1 ? i / (count - 1) : 0;
+        // Map the 0..1 spread onto the last third of the flight so nothing
+        // emits until the ball is 2/3 of the way to home plate.
+        const delayFrac = BILLOW_START_FRACTION + (1 - BILLOW_START_FRACTION) * frac;
+        const ang = Math.random() * Math.PI * 2;
+        const spread = 0.35 + Math.random() * 0.65;
+        seeds.push({
+            delay: delayFrac * span,
+            dx: Math.cos(ang) * spread,
+            dy: Math.sin(ang) * spread * 0.7 + 0.3,
+            jitter: 0.8 + Math.random() * 0.4,
+            alphaJitter: 0.7 + Math.random() * 0.3,
+        });
+    }
+    return seeds;
+}
+
+function makeBillowSpawns(trajectoryData, seeds) {
+    if (!trajectoryData || trajectoryData.length === 0) return [];
+    // Sample slightly before each seed's activation time so the particle first
+    // appears behind the ball rather than right at its current position.
+    return seeds.map((seed) => sampleTrajectoryAtTime(trajectoryData, seed.delay - BILLOW_SPAWN_BEHIND));
+}
+
+// Write one billow layer's per-instance transforms, alphas, and colors for the
+// current sim time. `alphaMultiplier` hides the layer (0) without leaving
+// stale particles on screen (used for the white layer on slow pitches). `opts`
+// overrides the shared billow look (size/growth/opacity/spread) for layers
+// like the blue 100+ mph sparks that want a finer, quicker sparkle.
+function writeBillowLayer(mesh, geometry, seeds, spawns, simTime, color, dummy, alphaMultiplier = 1, opts = {}) {
+    const {
+        baseScale = BILLOW_BASE_SCALE,
+        scaleGrowth = BILLOW_SCALE_GROWTH,
+        opacity = BILLOW_OPACITY,
+        spread = BILLOW_SPREAD,
+        limit = spawns.length,
+        alphaJitterMin = 0.7,
+        // Per-particle flicker for layers like the blue sparks: each instance
+        // pulses on its own sine phase so the layer sparkles instead of
+        // holding steady. depth 0..1 scales the swing; 0 disables it.
+        twinkle = null,
+    } = opts;
+    const colorAttr = geometry.getAttribute('aColor');
+    const alphaAttr = geometry.getAttribute('aAlpha');
+    const colors = colorAttr.array;
+    const alphas = alphaAttr.array;
+
+    // `limit` lets a layer emit fewer particles than its capacity (the rest
+    // stay hidden at alpha 0) — used so 100+ mph pitches swap some of the
+    // yellow→red billows for the blue spark layer instead of stacking them,
+    // and to scale the emitted count with pitch speed (see
+    // getSpeedDensityFrac).
+    const active = Math.min(limit, spawns.length);
+
+    for (let i = 0; i < spawns.length; i++) {
+        const seed = seeds[i];
+        const age = simTime - seed.delay;
+        alphas[i] = 0;
+        if (i >= active) continue;
+        if (age < 0) continue;
+        const ageP = age / BILLOW_LIFE;
+        if (ageP >= 1) continue;
+
+        const fadeIn = Math.min(age / BILLOW_FADE_IN, 1);
+        const fadeOut = 1 - ageP * ageP * (3 - 2 * ageP); // smoothstep out
+        // alphaJitterMin lifts a layer's dimmest particles (the shared seeds
+        // jitter alpha down to 0.7) so layers like the white wake stay strong.
+        const jitter = Math.max(seed.alphaJitter, alphaJitterMin);
+        // Twinkle: flicker the spark's alpha and size on its own sine phase.
+        // Defaults to 1 (no-op) so the shared billow layers are unaffected.
+        let twinkleFactor = 1;
+        if (twinkle) {
+            twinkleFactor = 1 - twinkle.depth + twinkle.depth * (
+                0.5 + 0.5 * Math.sin(simTime * twinkle.speed + i * twinkle.phase)
+            );
+        }
+        alphas[i] = opacity * fadeIn * fadeOut * jitter * alphaMultiplier * twinkleFactor;
+
+        const spawn = spawns[i];
+        dummy.position.set(
+            spawn.x + seed.dx * spread * age,
+            spawn.y + seed.dy * spread * age,
+            spawn.z - BILLOW_BACK_DRIFT * age,
+        );
+        // Size rides the twinkle too (at a dampened depth) so sparks visibly
+        // pulse rather than only dimming.
+        dummy.scale.setScalar(
+            baseScale * seed.jitter * (1 + scaleGrowth * age)
+            * (1 - 0.25 + 0.25 * twinkleFactor),
+        );
+        dummy.rotation.set(0, 0, 0);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+        colors[i * 3] = color[0];
+        colors[i * 3 + 1] = color[1];
+        colors[i * 3 + 2] = color[2];
+    }
+    colorAttr.needsUpdate = true;
+    alphaAttr.needsUpdate = true;
+    mesh.instanceMatrix.needsUpdate = true;
+}
+
+// Real baseball model (ported from solomon-gumball's public/assets/ball.glb)
+// with the seams spinning around the true spin axis. SPIN_SPEED_SCALE slows
+// the true RPM so the seam rotation — and its axis — reads on screen; at full
+// speed a 2200 RPM pitch is a featureless blur.
+const BALL_MODEL_URL = '/models/ball.glb';
+export const SPIN_SPEED_SCALE = 0.1;
+const DEFAULT_SPIN_RATE_RPM = 2000;
+
+// Warm the GLTF cache so the first pitch doesn't suspend for long.
+useGLTF.preload(BALL_MODEL_URL);
+
+// The baseball model, cloned so the shared useGLTF cache isn't mutated by the
+// per-frame spins (geometry/material stay shared across clones).
+const Baseball = React.forwardRef((props, ref) => {
+    const { scene } = useGLTF(BALL_MODEL_URL);
+    const model = useMemo(() => scene.clone(true), [scene]);
+    return <primitive object={model} ref={ref} {...props} />;
+});
+
+// Sample the physics trajectory at the given simulation time by linearly
+// interpolating between the surrounding data points. The trajectory points
+// carry their own `t` timestamps, so advancing `simTime` through them follows
+// the ball's real (non-uniform) speed profile — it decelerates into the plate
+// — instead of striding along the path at a constant spatial speed.
+function sampleTrajectoryAtTime(trajectoryData, simTime) {
+    if (!trajectoryData || trajectoryData.length === 0) return null;
+
+    const first = trajectoryData[0];
+    const last = trajectoryData[trajectoryData.length - 1];
+
+    // Clamp to the trajectory's own time domain.
+    if (simTime <= first.t) {
+        return new THREE.Vector3(first.x, first.z, -first.y);
+    }
+    if (simTime >= last.t) {
+        return new THREE.Vector3(last.x, last.z, -last.y);
+    }
+
+    // Binary search for the bracketing samples (the data is time-ordered).
+    let lo = 0;
+    let hi = trajectoryData.length - 1;
+    while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (trajectoryData[mid].t <= simTime) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+
+    const p1 = trajectoryData[lo];
+    const p2 = trajectoryData[hi];
+    const span = p2.t - p1.t;
+    const frac = span > 0 ? (simTime - p1.t) / span : 0;
+
+    return new THREE.Vector3(
+        THREE.MathUtils.lerp(p1.x, p2.x, frac),
+        THREE.MathUtils.lerp(p1.z, p2.z, frac),
+        THREE.MathUtils.lerp(-p1.y, -p2.y, frac),
+    );
+}
+
+// Hawk-eye crossing marker: a flat, semi-transparent white ring (a 2D donut)
+// in the strike-zone plane at the Statcast-measured crossing spot — the same
+// indicator format as solomon-gumball's StrikeZone (RingGeometry with a 2.0 in
+// inner and 2.8 in outer radius, DoubleSide). One mesh with one uniform
+// material reads as a single object and fades as a whole.
+const RING_INNER_RADIUS = (2.0 / 12) * 0.3048; // 2.0 in → m — ring inner radius
+const RING_OUTER_RADIUS = (2.8 / 12) * 0.3048; // 2.8 in → m — ring outer radius
+// Ring appearance animation: the marker flashes in with a brief scale overshoot
+// at the moment the pitch is batted (the impact pulse), then eases gradually
+// down to RING_SETTLED_OPACITY — a bit more opaque than the white trace's
+// settled level, so the marker stays legible after the fade-out. It holds
+// there through the batted-ball flight and eases out when the play replays.
+const RING_PULSE_TIME = 0.35; // s — fade in + overshoot settle
+const RING_SETTLE_TIME = 0.8; // s — ease from impact flash down to the settled opacity
+const RING_FADE_TIME = 0.3; // s — fade out on replay reset
+const RING_PULSE_OVERSHOOT = 0.8; // scale overshoot: 1.8x -> 1x
+const RING_MAX_OPACITY = 0.95; // impact flash peak
+const RING_SETTLED_OPACITY = 0.3; // held after the fade-down (clearly above the white trace's 0.05)
+
+export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCrossings, onArrival }) => {
     const ballRef = useRef();
+    const simClock = useRef(0);
+    // Tracks whether the physics ball has reached the plate in the current
+    // playback cycle. The crossing ring appears only once the pitch has
+    // arrived (been batted), persists through the batted-ball flight, and is
+    // removed when the cycle wraps so the next play starts clean.
+    const arrivedRef = useRef(false);
+    // Sim time at which the current pitch reached the plate; -1 until then.
+    // Drives the white trace's gradual post-arrival fade.
+    const arrivedAtRef = useRef(-1);
+    // Ring appearance animation: 'idle' (hidden) -> 'pulse' (impact flash on
+    // arrival) -> 'steady' -> 'fadeout' (replay reset) -> 'idle'.
+    const ringAnim = useRef({ phase: 'idle', t: 0 });
+    const ringGroupRef = useRef();
+    const ringMeshRef = useRef();
+    // Two instanced layers: the colored fading tail, and a persistent white
+    // trace underneath it. Both are revealed progressively as the ball flies to
+    // the plate and cleared when the play replays (cycle wraps).
+    const trailMeshRef = useRef();
+    const whiteTraceMeshRef = useRef();
+    // True once the pitcher has restarted his windup this cycle, so the
+    // persistent white trace clears then instead of lingering to the wrap.
+    const whiteTraceClearedRef = useRef(false);
+    const billowMeshRef = useRef();
+    const whiteBillowMeshRef = useRef();
+    const blueSparkMeshRef = useRef();
+
+    // Each geometry carries its own per-instance color/alpha attributes; the
+    // custom ShaderMaterial renders each instance with its own color and
+    // opacity so the two layers can fade independently.
+    const trailGeometry = useMemo(() => createTrailGeometry(() => new THREE.BoxGeometry(1, 1, 1)), []);
+    const whiteTraceGeometry = useMemo(() => createTrailGeometry(() => new THREE.SphereGeometry(0.5, 12, 8)), []);
+    const trailMaterial = useMemo(() => createTrailMaterial(), []);
+    const whiteTraceMaterial = useMemo(() => createTrailMaterial(), []);
+    const billowGeometry = useMemo(() => createTrailGeometry(() => new THREE.BoxGeometry(1, 1, 1)), []);
+    const billowMaterial = useMemo(() => createTrailMaterial(), []);
+    const billowDummy = useMemo(() => new THREE.Object3D(), []);
+    const whiteBillowGeometry = useMemo(() => createTrailGeometry(() => new THREE.BoxGeometry(1, 1, 1)), []);
+    // The white wake renders additively so overlapping particles brighten
+    // each other into glowing glints instead of flat white boxes.
+    const whiteBillowMaterial = useMemo(() => {
+        const material = createTrailMaterial();
+        material.blending = THREE.AdditiveBlending;
+        return material;
+    }, []);
+    const whiteBillowDummy = useMemo(() => new THREE.Object3D(), []);
+    // The blue sparks are octahedra (sharp diamond shards) instead of the
+    // square billow boxes, and render additively so overlapping sparks bloom
+    // into a vibrant electric glow.
+    const blueSparkGeometry = useMemo(() => createTrailGeometry(() => new THREE.OctahedronGeometry(0.5, 0)), []);
+    const blueSparkMaterial = useMemo(() => {
+        const material = createTrailMaterial();
+        material.blending = THREE.AdditiveBlending;
+        return material;
+    }, []);
+    const blueSparkDummy = useMemo(() => new THREE.Object3D(), []);
+    // The hawk-eye ring: a flat RingGeometry donut (2.0–2.8 in, matching the
+    // solomon-gumball StrikeZone indicator) with one unlit DoubleSide material,
+    // so it reads as a continuous object, fades uniformly, and stays visible
+    // from either side. Drawn on top (depthTest off) and always pure white.
+    // RingGeometry lies in the x–y plane by default, which is the ring's plane.
+    const ringGeometry = useMemo(
+        () => new THREE.RingGeometry(RING_INNER_RADIUS, RING_OUTER_RADIUS, 48),
+        [],
+    );
+    const ringMaterial = useMemo(() => new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        side: THREE.DoubleSide,
+        depthTest: false,
+        depthWrite: false,
+        opacity: 0,
+    }), []);
+
+    // Per-pitch random billow seeds (stable per pitch): each particle emits at
+    // its own delay spread across the whole flight, so the cloud trails the
+    // entire pitch path instead of bunching at the release point.
+    const flightDuration = useMemo(() => {
+        const trajectoryData = pitchData?.trajectory;
+        if (!trajectoryData || trajectoryData.length === 0) return 0.4;
+        return trajectoryData[trajectoryData.length - 1]?.t || 0.4;
+    }, [pitchData]);
+
+    const billowSeeds = useMemo(() => makeBillowSeeds(BILLOW_COUNT, flightDuration), [pitchData, flightDuration]);
+    const billowSpawns = useMemo(() => makeBillowSpawns(pitchData?.trajectory, billowSeeds), [pitchData, billowSeeds]);
+
+    // White billow layer, emitted by every pitch (amount scales with speed).
+    // Seeds are generated for the full capacity; the emitted count is gated by
+    // `limit` in the frame loop (fewer particles under 90 mph).
+    const whiteBillowSeeds = useMemo(() => makeBillowSeeds(BILLOW_WHITE_COUNT_MAX, flightDuration), [pitchData, flightDuration]);
+    const whiteBillowSpawns = useMemo(() => makeBillowSpawns(pitchData?.trajectory, whiteBillowSeeds), [pitchData, whiteBillowSeeds]);
+
+    // Blue spark layer, emitted only by 100+ mph pitches (see
+    // BLUE_SPARK_THRESHOLD_MPH). Same billow mechanics, finer look.
+    const blueSparkSeeds = useMemo(() => makeBillowSeeds(BLUE_SPARK_COUNT, flightDuration), [pitchData, flightDuration]);
+    const blueSparkSpawns = useMemo(() => makeBillowSpawns(pitchData?.trajectory, blueSparkSeeds), [pitchData, blueSparkSeeds]);
+
+    // Start each new pitch back at the release point, with both trail layers
+    // cleared so they can grow behind the ball as it flies.
+    React.useLayoutEffect(() => {
+        simClock.current = 0;
+        arrivedRef.current = false;
+        arrivedAtRef.current = -1;
+        whiteTraceClearedRef.current = false;
+        ringAnim.current.phase = 'idle';
+        ringAnim.current.t = 0;
+        // A new pitch starts fresh at the release point: undo the previous
+        // pitch's arrival (which hid the ball when it reached the plate), so
+        // the new flight is visible immediately instead of waiting for the
+        // next cycle wrap.
+        if (ballRef.current) ballRef.current.visible = true;
+        if (trailMeshRef.current) {
+            const alphaAttr = trailGeometry.getAttribute('aAlpha');
+            alphaAttr.array.fill(0);
+            alphaAttr.needsUpdate = true;
+        }
+        if (whiteTraceMeshRef.current) {
+            const alphaAttr = whiteTraceGeometry.getAttribute('aAlpha');
+            alphaAttr.array.fill(0);
+            alphaAttr.needsUpdate = true;
+        }
+        if (billowMeshRef.current) {
+            const alphaAttr = billowGeometry.getAttribute('aAlpha');
+            alphaAttr.array.fill(0);
+            alphaAttr.needsUpdate = true;
+        }
+        if (whiteBillowMeshRef.current) {
+            const alphaAttr = whiteBillowGeometry.getAttribute('aAlpha');
+            alphaAttr.array.fill(0);
+            alphaAttr.needsUpdate = true;
+        }
+        if (blueSparkMeshRef.current) {
+            const alphaAttr = blueSparkGeometry.getAttribute('aAlpha');
+            alphaAttr.array.fill(0);
+            alphaAttr.needsUpdate = true;
+        }
+        // Hide the hawk-eye ring until the arrival pulse eases it in.
+        ringMaterial.opacity = 0;
+        if (ringMeshRef.current) ringMeshRef.current.visible = false;
+    }, [pitchData, trailGeometry, whiteTraceGeometry, billowGeometry, whiteBillowGeometry, blueSparkGeometry, ringMaterial]);
     
     // Memoize the line points so we don't recreate them every render
     const linePoints = useMemo(() => {
@@ -30,11 +525,100 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
         return trajectoryData.map(p => new THREE.Vector3(p.x, p.z, -p.y));
     }, [pitchData]);
 
-    const quadraticPoints = useMemo(() => {
-        const quadraticData = pitchData?.quadratic_trajectory;
-        if (!quadraticData || quadraticData.length === 0) return [];
-        return quadraticData.map(p => new THREE.Vector3(p.x, p.z, -p.y));
+    // Particle samples for the pitch path, ported from solomon-gumball's
+    // PitchArc but sampled much more densely (every TRAIL_SAMPLE_STEP s) and
+    // rendered smaller so it reads as a continuous trajectory. Each sample
+    // keeps its sim time so the frame loop can fade it in as the ball flies
+    // past and fade it out again as it ages behind the ball.
+    //
+    // The particle count scales with pitch speed: the sample step widens for
+    // slower pitches (30% of the full count at 70 mph) up to the full dense
+    // sampling at 90+ mph, so velocity reads as a hotter, denser trail.
+    const particlePoints = useMemo(() => {
+        const trajectoryData = pitchData?.trajectory;
+        if (!trajectoryData || trajectoryData.length === 0) return [];
+        const speed = pitchData?.speed_mph ?? 90;
+        const densityFrac = getSpeedDensityFrac(speed);
+        const sampleStep = TRAIL_SAMPLE_STEP / densityFrac;
+        const pts = [];
+        for (let i = 0; i < TRAIL_MAX_PARTICLES; i++) {
+            const t = i * sampleStep;
+            const pos = sampleTrajectoryAtTime(trajectoryData, t);
+            if (!pos) break;
+            if (pos.z >= FRONT_OF_PLATE_Z) break;
+            pts.push({ pos, t });
+        }
+        return pts;
     }, [pitchData]);
+
+    // Write each particle's transform + color into the instanced buffers once
+    // per pitch. Alphas stay at 0 until the frame loop fades each particle in
+    // as the ball passes its sample time.
+    React.useLayoutEffect(() => {
+        const dummy = new THREE.Object3D();
+
+        // Tail color is constant along the whole flight, picked from a speed
+        // ramp: yellowish-white at 70 mph → orange-red at 90 mph.
+        const speed = pitchData?.speed_mph ?? 90;
+        const speedFrac = THREE.MathUtils.clamp(
+            (speed - TRAIL_SPEED_MIN_MPH) / (TRAIL_SPEED_MAX_MPH - TRAIL_SPEED_MIN_MPH), 0, 1,
+        );
+        const trailColor = [
+            THREE.MathUtils.lerp(TRAIL_SPEED_SLOW[0], TRAIL_SPEED_FAST[0], speedFrac),
+            THREE.MathUtils.lerp(TRAIL_SPEED_SLOW[1], TRAIL_SPEED_FAST[1], speedFrac),
+            THREE.MathUtils.lerp(TRAIL_SPEED_SLOW[2], TRAIL_SPEED_FAST[2], speedFrac),
+        ];
+
+        const writeLayer = (mesh, colorAttr, alphaAttr, isWhite) => {
+            if (!mesh) return;
+            const colors = colorAttr.array;
+            const alphas = alphaAttr.array;
+
+            for (let i = 0; i < TRAIL_MAX_PARTICLES; i++) {
+                if (i < particlePoints.length) {
+                    const p = particlePoints[i];
+                    const isLead = i === 0;
+                    dummy.position.copy(p.pos);
+                    dummy.scale.setScalar(
+                        isWhite ? WHITE_TRACE_SCALE : (isLead ? TRAIL_LEAD_SCALE : TRAIL_PARTICLE_SCALE),
+                    );
+                    dummy.rotation.set(0, 0, 0);
+                    dummy.updateMatrix();
+                    mesh.setMatrixAt(i, dummy.matrix);
+                    if (isWhite) {
+                        colors[i * 3] = WHITE_TRACE_COLOR[0];
+                        colors[i * 3 + 1] = WHITE_TRACE_COLOR[1];
+                        colors[i * 3 + 2] = WHITE_TRACE_COLOR[2];
+                    } else {
+                        // Constant color along the whole tail (set by speed).
+                        colors[i * 3] = trailColor[0];
+                        colors[i * 3 + 1] = trailColor[1];
+                        colors[i * 3 + 2] = trailColor[2];
+                    }
+                }
+                alphas[i] = 0;
+            }
+
+            mesh.instanceMatrix.needsUpdate = true;
+            colorAttr.needsUpdate = true;
+            alphaAttr.needsUpdate = true;
+            // Only the active samples are drawn; the rest stay hidden in the buffer.
+            mesh.count = particlePoints.length;
+        };
+
+        writeLayer(
+            trailMeshRef.current,
+            trailGeometry.getAttribute('aColor'),
+            trailGeometry.getAttribute('aAlpha'),
+            false,
+        );
+        writeLayer(
+            whiteTraceMeshRef.current,
+            whiteTraceGeometry.getAttribute('aColor'),
+            whiteTraceGeometry.getAttribute('aAlpha'),
+            true,
+        );
+    }, [particlePoints, pitchData, trailGeometry, whiteTraceGeometry]);
 
     // Ghost trajectory: default (neutral) environment, shown in purple when in compare mode
     const ghostLinePoints = useMemo(() => {
@@ -42,50 +626,272 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
         if (!traj || traj.length === 0) return [];
         return traj.map(p => new THREE.Vector3(p.x, p.z, -p.y));
     }, [defaultPitchData]);
+
+    // Spin axis in world space, reconstructed by the backend from the 50-ft
+    // kinematics (rad/s, sim frame remapped to our world: x = first-base side,
+    // y = up, z = toward the plate). The reference app's spinClockHand formula
+    // was never validated (its spin call is commented out) and real data shows
+    // it spins fastballs backwards, so we use the backend's physically-correct
+    // vector instead.
+    const spinAxis = useMemo(() => {
+        const a = pitchData?.spin_axis;
+        if (!Array.isArray(a) || a.length !== 3) return null;
+        const v = new THREE.Vector3(a[0], a[1], a[2]);
+        return v.lengthSq() > 1e-8 ? v.normalize() : null;
+    }, [pitchData]);
     
-    useFrame(({ clock }) => {
+    useFrame((_, delta) => {
         const trajectoryData = pitchData?.trajectory;
         if (!trajectoryData || trajectoryData.length === 0 || !ballRef.current) return;
-        
-        // Simple animation loop based on time
-        const elapsedTime = clock.getElapsedTime();
-        const loopDuration = 2.0; 
+
         const simDuration = trajectoryData[trajectoryData.length - 1]?.t || 0.4;
-        
-        // Calculate progress normalized between 0 and 1
-        const t = (elapsedTime % loopDuration) / loopDuration;
-        // Map to actual simulation time
-        const currentSimTime = t * simDuration;
-        
-        // Find the points we are interpolating between
-        let p1 = trajectoryData[0];
-        let p2 = trajectoryData[1] || p1;
-        
-        for (let i = 0; i < trajectoryData.length - 1; i++) {
-            if (trajectoryData[i].t <= currentSimTime && trajectoryData[i+1].t >= currentSimTime) {
-                p1 = trajectoryData[i];
-                p2 = trajectoryData[i+1];
-                break;
-            }
+        if (!(simDuration > 0)) return;
+
+        // Playback on the shared pitch + batted-ball cycle, scaled by the same
+        // time scale as the batter and batted ball so they stay in sync: the
+        // ball follows the trajectory's own timestamps, then holds at the plate
+        // (sampleTrajectoryAtTime clamps past the end) while the batted ball
+        // completes its arc before the cycle wraps.
+        const loopDuration = getCycleDuration();
+        const nextClock = simClock.current + delta * getTimeScale();
+        const wrapped = nextClock >= loopDuration;
+        simClock.current = nextClock % loopDuration;
+
+        // The clock is already in the trajectory's real-time domain, so sample
+        // the bracketing data points by their timestamps directly.
+        const currentSimTime = simClock.current;
+        // The pitcher restarts his windup just before the cycle wraps (the
+        // release lands exactly on the wrap). Clear the persistent white trace
+        // there so it's gone while he winds up instead of lingering until the
+        // ball leaves his hand again at the wrap.
+        const windupStart = Math.max(simDuration, loopDuration - BALL_RELEASE_TIME);
+        if (!wrapped && !whiteTraceClearedRef.current && currentSimTime >= windupStart) {
+            whiteTraceClearedRef.current = true;
         }
-        
-        if (p1 && p2) {
-            // Linear interpolation
-            const segmentTime = p2.t - p1.t;
-            const segmentProgress = segmentTime > 0 ? (currentSimTime - p1.t) / segmentTime : 0;
-            
-            const x = THREE.MathUtils.lerp(p1.x, p2.x, segmentProgress);
-            const y = THREE.MathUtils.lerp(p1.z, p2.z, segmentProgress); // Z is height in statcast
-            const z = THREE.MathUtils.lerp(-p1.y, -p2.y, segmentProgress); // -Y is depth in three
-            
-            ballRef.current.position.set(x, y, z);
+        const position = sampleTrajectoryAtTime(trajectoryData, currentSimTime);
+        if (position) {
+            ballRef.current.position.copy(position);
+
+            // Spin the seams around the Statcast spin axis, held fixed in
+            // world space for the flight (rotateOnWorldAxis) and slowed from
+            // true RPM so the rotation axis reads on screen.
+            if (spinAxis) {
+                const rpm = pitchData?.spin_rate ?? DEFAULT_SPIN_RATE_RPM;
+                const angle = rpm * ((2 * Math.PI) / 60) * SPIN_SPEED_SCALE * delta * getTimeScale();
+                ballRef.current.rotateOnWorldAxis(spinAxis, angle);
+            }
+
+            // Arrival is marked the moment the pitch crosses the front edge of
+            // home plate (the same instant the batter connects on contact), and
+            // it comes back to the release point when the cycle wraps. A pitch
+            // the bat actually meets hands off to the batted ball there, while
+            // a take or swing-and-miss keeps flying through the strike zone and
+            // is only hidden once it passes the back tip of the plate (into the
+            // catcher).
+            if (wrapped) {
+                // The play replays: clear the arrival state so the next pitch
+                // starts clean and ease the ring out. The particle trail is
+                // rebuilt from the release point on the following frames by the
+                // progressive reveal below (the clock has wrapped to ~0).
+                arrivedRef.current = false;
+                arrivedAtRef.current = -1;
+                whiteTraceClearedRef.current = false;
+                ballRef.current.visible = true;
+                if (ringAnim.current.phase !== 'idle') {
+                    ringAnim.current.phase = 'fadeout';
+                    ringAnim.current.t = 0;
+                }
+            } else if (!arrivedRef.current && position.z >= FRONT_OF_PLATE_Z) {
+                // The pitch has reached the plate: flash in the crossing ring
+                // with an impact pulse. The full particle trail is already
+                // visible here because it grew behind the ball during the
+                // flight.
+                arrivedRef.current = true;
+                arrivedAtRef.current = currentSimTime;
+                ringAnim.current.phase = 'pulse';
+                ringAnim.current.t = 0;
+                // Notify the app so it can reveal the ball/strike outcome (or,
+                // for contact, leave the hit/run/out reveal to the batted-ball
+                // choreography). Fires once per arrival (reset on the wrap).
+                if (onArrival) onArrival();
+            }
+
+            // Hide the pitch ball once the bat has actually made contact, or —
+            // for a take / swing-and-miss — once it has traveled through the
+            // strike zone and reached the back of home plate.
+            const madeContact = pitchData?.is_contact != null
+                ? !!pitchData.is_contact
+                : !!pitchData?.swing;
+            if (arrivedRef.current && (madeContact || position.z >= BACK_OF_PLATE_Z)) {
+                ballRef.current.visible = false;
+            }
+
+            // Progressive reveal for both trail layers, driven by the same
+            // time-ordered particle samples:
+            //   * colored tail — fades from TRAIL_MAX_OPACITY to 0 as it ages
+            //     behind the ball (solomon-gumball's trailing ribbon);
+            //   * white trace — visible once traced, then eases from
+            //     WHITE_TRACE_OPACITY down to WHITE_TRACE_MIN_OPACITY after the
+            //     pitch reaches the plate (dimming the traced path without
+            //     removing it).
+            if (trailMeshRef.current || whiteTraceMeshRef.current) {
+                const tailAlphaAttr = trailGeometry.getAttribute('aAlpha');
+                const whiteAlphaAttr = whiteTraceGeometry.getAttribute('aAlpha');
+                const tailAlphas = tailAlphaAttr.array;
+                const whiteAlphas = whiteAlphaAttr.array;
+                const fadeRate = 1 / TRAIL_FADE_TIME;
+
+                let whiteFade = 1;
+                if (arrivedAtRef.current >= 0) {
+                    const sinceArrival = currentSimTime - arrivedAtRef.current;
+                    whiteFade = 1 - Math.min(sinceArrival / WHITE_TRACE_FADE_TIME, 1);
+                }
+                const whiteAlphaNow = WHITE_TRACE_MIN_OPACITY
+                    + (WHITE_TRACE_OPACITY - WHITE_TRACE_MIN_OPACITY) * whiteFade;
+
+                for (let i = 0; i < particlePoints.length; i++) {
+                    const age = currentSimTime - particlePoints[i].t;
+                    let tailAlpha = 0;
+                    if (age >= 0) {
+                        tailAlpha = TRAIL_MAX_OPACITY * (1 - age * fadeRate);
+                        if (tailAlpha < 0) tailAlpha = 0;
+                    }
+                    tailAlphas[i] = tailAlpha;
+                    whiteAlphas[i] = (age >= 0 && !whiteTraceClearedRef.current) ? whiteAlphaNow : 0;
+                }
+                tailAlphaAttr.needsUpdate = true;
+                whiteAlphaAttr.needsUpdate = true;
+            }
+
+            // Pixelated billow particles: each emits at its own delay spread
+            // across the whole flight (at its spawn point on the trajectory),
+            // then billows outward/upward, recedes slightly, grows, and fades.
+            // Color is lerped from yellow (slow) to red (fast) by the pitch's
+            // release speed, like a speed-graded exhaust. Every pitch also
+            // emits a white billow layer whose amount scales with speed.
+            if (billowMeshRef.current && billowSpawns.length > 0) {
+                const speed = pitchData?.speed_mph ?? 90;
+                const speedFrac = THREE.MathUtils.clamp(
+                    (speed - SPEED_MIN_MPH) / (SPEED_MAX_MPH - SPEED_MIN_MPH), 0, 1,
+                );
+                const color = [
+                    THREE.MathUtils.lerp(SPEED_COLOR_SLOW[0], SPEED_COLOR_FAST[0], speedFrac),
+                    THREE.MathUtils.lerp(SPEED_COLOR_SLOW[1], SPEED_COLOR_FAST[1], speedFrac),
+                    THREE.MathUtils.lerp(SPEED_COLOR_SLOW[2], SPEED_COLOR_FAST[2], speedFrac),
+                ];
+                // The yellow→red billow count scales with pitch speed on the
+                // same ramp as the trail (30% at 70 mph → 100% at 90+ mph).
+                // At 100+ mph the blue spark layer also replaces this many of
+                // the yellow→red billows (total wake stays the same density).
+                const billowDensityFrac = getSpeedDensityFrac(speed);
+                const billowLimit = speed > BLUE_SPARK_THRESHOLD_MPH
+                    ? Math.max(0, Math.round(BILLOW_COUNT * billowDensityFrac) - BLUE_SPARK_COUNT)
+                    : Math.round(BILLOW_COUNT * billowDensityFrac);
+                writeBillowLayer(
+                    billowMeshRef.current, billowGeometry, billowSeeds, billowSpawns,
+                    currentSimTime, color, billowDummy,
+                    1, { limit: billowLimit },
+                );
+                if (whiteBillowMeshRef.current && whiteBillowSpawns.length > 0) {
+                    // White-layer amount stays nearly absent until 85 mph, then
+                    // ramps to full by 105 mph — so only genuinely fast pitches
+                    // leave a heavy white wake. The white particles are fine
+                    // additive glints, smaller than the yellow/red billows.
+                    const whiteSpeedFrac = THREE.MathUtils.clamp(
+                        (speed - BILLOW_WHITE_THRESHOLD_MPH) / (SPEED_MAX_MPH - BILLOW_WHITE_THRESHOLD_MPH), 0, 1,
+                    );
+                    const whiteMult = THREE.MathUtils.lerp(
+                        BILLOW_WHITE_MIN_MULT, BILLOW_WHITE_MAX_MULT, whiteSpeedFrac,
+                    );
+                    // Above 85 mph the emitted count ramps up too (4 → 16 by
+                    // 105 mph), so fast pitches throw more white particles.
+                    const whiteLimit = Math.round(THREE.MathUtils.lerp(
+                        BILLOW_WHITE_COUNT, BILLOW_WHITE_COUNT_MAX, whiteSpeedFrac,
+                    ));
+                    writeBillowLayer(
+                        whiteBillowMeshRef.current, whiteBillowGeometry, whiteBillowSeeds, whiteBillowSpawns,
+                        currentSimTime, [1, 1, 1], whiteBillowDummy,
+                        whiteMult,
+                        {
+                            baseScale: BILLOW_WHITE_BASE_SCALE,
+                            opacity: BILLOW_WHITE_OPACITY,
+                            limit: whiteLimit,
+                            alphaJitterMin: BILLOW_WHITE_JITTER_MIN,
+                        },
+                    );
+                }
+                // Blue sparks: only pitches over 100 mph emit them; below the
+                // threshold the alpha multiplier keeps the layer invisible.
+                if (blueSparkMeshRef.current && blueSparkSpawns.length > 0) {
+                    const blueMult = speed > BLUE_SPARK_THRESHOLD_MPH ? 1 : 0;
+                    writeBillowLayer(
+                        blueSparkMeshRef.current, blueSparkGeometry, blueSparkSeeds, blueSparkSpawns,
+                        currentSimTime, BLUE_SPARK_COLOR, blueSparkDummy,
+                        blueMult,
+                        {
+                            baseScale: BLUE_SPARK_BASE_SCALE,
+                            scaleGrowth: BLUE_SPARK_SCALE_GROWTH,
+                            opacity: BLUE_SPARK_OPACITY,
+                            twinkle: {
+                                speed: BLUE_SPARK_TWINKLE_SPEED,
+                                depth: BLUE_SPARK_TWINKLE_DEPTH,
+                                phase: BLUE_SPARK_TWINKLE_PHASE,
+                            },
+                        },
+                    );
+                }
+            }
+
+            // Advance the ring's appearance animation (impact pulse on arrival,
+            // gradual settle to the white trace's opacity, fade-out on replay
+            // reset) using the shared time scale so it stays in sync with the
+            // playback speed.
+            const anim = ringAnim.current;
+            if (anim.phase !== 'idle') {
+                anim.t += delta * getTimeScale();
+                let finalOpacity = 0;
+                let scale = 1;
+                if (anim.phase === 'pulse') {
+                    const p = Math.min(anim.t / RING_PULSE_TIME, 1);
+                    const ease = 1 - Math.pow(1 - p, 3); // ease-out cubic
+                    finalOpacity = RING_MAX_OPACITY * ease;
+                    scale = 1 + RING_PULSE_OVERSHOOT * (1 - ease);
+                    if (p >= 1) {
+                        anim.phase = 'settle';
+                        anim.t = 0;
+                    }
+                } else if (anim.phase === 'settle') {
+                    // Ease gradually from the impact flash down to
+                    // RING_SETTLED_OPACITY — a bit more opaque than the white
+                    // trace's settled level, so the marker stays legible after
+                    // the fade-out of the impact flash.
+                    const p = Math.min(anim.t / RING_SETTLE_TIME, 1);
+                    const ease = p * p * (3 - 2 * p); // smoothstep out
+                    finalOpacity = THREE.MathUtils.lerp(
+                        RING_MAX_OPACITY, RING_SETTLED_OPACITY, ease,
+                    );
+                    scale = 1;
+                    if (p >= 1) anim.phase = 'steady';
+                } else if (anim.phase === 'steady') {
+                    finalOpacity = RING_SETTLED_OPACITY;
+                    scale = 1;
+                } else if (anim.phase === 'fadeout') {
+                    const p = Math.min(anim.t / RING_FADE_TIME, 1);
+                    finalOpacity = RING_SETTLED_OPACITY * (1 - p * p * (3 - 2 * p));
+                    scale = 1;
+                    if (p >= 1) anim.phase = 'idle';
+                }
+                if (ringMeshRef.current) {
+                    ringMeshRef.current.material.opacity = finalOpacity;
+                    ringMeshRef.current.visible = finalOpacity > 0.001;
+                }
+                if (ringGroupRef.current) ringGroupRef.current.scale.setScalar(scale);
+            }
         }
     });
 
     // Calculations for geometry and crossing markers
-    const frontOfPlateZ = -0.4318;
-    const midPlateZ = -(8.5 / 12) * 0.3048; // = -0.2159m from back tip
-    const targetZ = crossingPlane === 'front' ? frontOfPlateZ : midPlateZ;
+    const targetZ = crossingPlane === 'front' ? FRONT_OF_PLATE_Z : MID_PLATE_Z;
 
     const szTopM = ((pitchData?.strike_zone_top) || 3.5) * 0.3048;
     const szBottomM = ((pitchData?.strike_zone_bottom) || 1.5) * 0.3048;
@@ -103,6 +909,16 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
     const statcastCrossingM = (hasStatcastCrossing && statcastPx != null && statcastPz != null)
         ? [statcastPx * 0.3048, statcastPz * 0.3048, targetZ]
         : null;
+
+    // Hawk-Eye (Statcast) measured crossing, projected onto the front of the
+    // strike zone. The hollow ring marks this reference spot when the physics
+    // pitch arrives at the plate.
+    const hawkeyeCrossingM = useMemo(() => {
+        const px = pitchData?.statcast_px;
+        const pz = pitchData?.statcast_pz;
+        if (px == null || pz == null) return null;
+        return [px * 0.3048, pz * 0.3048, FRONT_OF_PLATE_Z];
+    }, [pitchData]);
 
     // Physics simulation crossing marker — evaluated at targetZ to match the selected plane
     let simCrossingM = null;
@@ -154,26 +970,49 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
 
     return (
         <group>
-            {/* The Trajectory Line (Physics Simulation) */}
-            <Line
-                points={linePoints}
-                color="red"
-                lineWidth={1.5}
-                transparent={true}
-                opacity={0.4}
-                dashed={false}
-            />
-
-            {/* The Quadratic Trajectory Overlay (Statcast Raw Constants) */}
-            {quadraticPoints.length > 0 && (
-                <Line
-                    points={quadraticPoints}
-                    color="orange"
-                    lineWidth={2}
-                    dashed={true}
-                    dashSize={0.5}
-                    gapSize={0.2}
-                />
+            {/* Particle trail of the pitch path (ported from solomon-gumball's
+                PitchArc, made denser and thicker): a persistent translucent
+                white trace underneath, and a speed-graded tail that runs
+                white→yellow→red along the flight (white far behind the ball,
+                red-hot at the ball; slow pitches skew white/yellow, fast ones
+                yellow/red). All layers are revealed progressively as the ball
+                flies to the plate, stay visible through the batted-ball flight,
+                and clear when the play replays. Pixelated billow particles are
+                kicked up behind the ball, colored yellow→red by pitch speed,
+                plus a fine electric-blue spark layer on 100+ mph pitches. */}
+            {particlePoints.length > 0 && (
+                <>
+                    <instancedMesh
+                        ref={whiteTraceMeshRef}
+                        args={[whiteTraceGeometry, whiteTraceMaterial, TRAIL_MAX_PARTICLES]}
+                        renderOrder={1}
+                        frustumCulled={false}
+                    />
+                    <instancedMesh
+                        ref={trailMeshRef}
+                        args={[trailGeometry, trailMaterial, TRAIL_MAX_PARTICLES]}
+                        renderOrder={2}
+                        frustumCulled={false}
+                    />
+                    <instancedMesh
+                        ref={billowMeshRef}
+                        args={[billowGeometry, billowMaterial, BILLOW_COUNT]}
+                        renderOrder={3}
+                        frustumCulled={false}
+                    />
+                    <instancedMesh
+                        ref={whiteBillowMeshRef}
+                        args={[whiteBillowGeometry, whiteBillowMaterial, BILLOW_WHITE_COUNT_MAX]}
+                        renderOrder={4}
+                        frustumCulled={false}
+                    />
+                    <instancedMesh
+                        ref={blueSparkMeshRef}
+                        args={[blueSparkGeometry, blueSparkMaterial, BLUE_SPARK_COUNT]}
+                        renderOrder={5}
+                        frustumCulled={false}
+                    />
+                </>
             )}
 
             {/* Ghost Trajectory: default (neutral) environment in purple */}
@@ -190,11 +1029,15 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                 />
             )}
             
-            {/* The Voxel Ball moving along the trajectory */}
-            <VoxelBall ref={ballRef} />
+            {/* The baseball moving along the trajectory, spinning on the
+                Statcast spin axis (see spinAxis). Suspense keeps the first
+                load from blocking the rest of the scene. */}
+            <React.Suspense fallback={null}>
+                <Baseball ref={ballRef} />
+            </React.Suspense>
             
             {/* 9-Quadrant Strike Zone */}
-            <group position={[0, 0, frontOfPlateZ]}>
+            <group position={[0, 0, FRONT_OF_PLATE_Z]}>
                 {/* Outer Border */}
                 <Line points={[[-szHalfW, szBottomM, 0], [szHalfW, szBottomM, 0]]} color="white" lineWidth={2} />
                 <Line points={[[-szHalfW, szTopM, 0], [szHalfW, szTopM, 0]]} color="white" lineWidth={2} />
@@ -210,44 +1053,27 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                 <Line points={[[-szHalfW, szBottomM + 2 * thirdH, 0], [szHalfW, szBottomM + 2 * thirdH, 0]]} color="white" lineWidth={1} />
             </group>
 
-            {/* Statcast Actual Crossing (Blue) */}
-            {statcastCrossingM && (
-                <mesh position={statcastCrossingM}>
-                    <sphereGeometry args={[0.04, 16, 16]} />
-                    <meshStandardMaterial color="#00aaff" />
-                </mesh>
+            {/* Hawk-Eye Crossing (flat reference ring): appears only once the
+                physics-simulated pitch has arrived at the front of the plate,
+                at the Statcast-measured position on the strike zone. It eases
+                in with an impact pulse at the moment it is batted, then fades
+                gradually down to the white trace's settled opacity before
+                easing out when the play replays (the cycle wraps). Opacity and
+                scale are driven per-frame by the ring animation in useFrame. */}
+            {hawkeyeCrossingM && (
+                <group
+                    ref={ringGroupRef}
+                    position={[hawkeyeCrossingM[0], hawkeyeCrossingM[1], FRONT_OF_PLATE_Z]}
+                >
+                    <mesh
+                        ref={ringMeshRef}
+                        geometry={ringGeometry}
+                        material={ringMaterial}
+                        renderOrder={6}
+                        visible={false}
+                    />
+                </group>
             )}
-            
-            {/* Physics Simulation Crossing (Red) */}
-            {simCrossingM && (
-                <mesh position={simCrossingM}>
-                    <sphereGeometry args={[0.04, 16, 16]} />
-                    <meshStandardMaterial color="#ff4444" />
-                </mesh>
-            )}
-
-            {/* Ghost Crossing: default env (Purple) */}
-            {ghostCrossingM && (
-                <mesh position={ghostCrossingM}>
-                    <sphereGeometry args={[0.04, 16, 16]} />
-                    <meshStandardMaterial color="#cc44ff" emissive="#8800cc" emissiveIntensity={0.4} />
-                </mesh>
-            )}
-
-            {/* Home Plate Placeholder (Centered at back tip z=0, stretches to z=-0.4318) */}
-            <mesh position={[0, 0, -0.2159]} rotation={[-Math.PI / 2, 0, 0]}>
-                <planeGeometry args={[0.4318, 0.4318]} />
-                <meshStandardMaterial color="white" />
-            </mesh>
-            
-            {/* Pitcher's Mound Placeholder */}
-            <mesh position={[0, 0, -18.44]} rotation={[-Math.PI / 2, 0, 0]}>
-                <planeGeometry args={[1, 1]} />
-                <meshStandardMaterial color="brown" />
-            </mesh>
         </group>
     );
 };
-
-// If using GLTF models, preload them
-// useGLTF.preload('/models/ball.glb');
