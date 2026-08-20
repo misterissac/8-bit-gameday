@@ -4,6 +4,8 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { Line, useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { Scene } from './components/Scene';
+import { isHitFieldingReady } from './util/battedBall';
+import { isGameTerminal } from './util/scorebug';
 import { Scorebug } from './components/Scorebug';
 import { AtBatZone } from './components/AtBatZone';
 import { setTimeScale, SLOWEST_SPEED } from './constants/playback';
@@ -162,7 +164,7 @@ const OUTCOME_COLLAPSE_DELAY_MS = OUTCOME_TEXT_OUT_MS;
 // a short text fade on a smaller pill.
 const SMALL_TEXT_IN_MS = 220;
 const SMALL_TEXT_OUT_MS = 220;
-const OutcomeBanner = ({ label }) => {
+const OutcomeBanner = ({ label, replay }) => {
   const [display, setDisplay] = useState(null); // label currently rendered
   const [hiding, setHiding] = useState(false);  // true while the fold-out plays
   // Mirrors ``display`` without triggering the effect: the effect keys only on
@@ -268,7 +270,41 @@ const OutcomeBanner = ({ label }) => {
             }),
           }}
         />
+        <ReplayIndicator replay={replay} />
       </div>
+    </div>
+  );
+};
+
+// Replay marker attached to the outcome banner so historical pitch replays
+// remain visually distinct without competing with the outcome text.
+const ReplayIndicator = ({ replay }) => {
+  if (!replay?.active) return null;
+  return (
+    <div style={{
+      position: 'absolute',
+      right: 0,
+      bottom: -27,
+      zIndex: 2,
+      pointerEvents: 'none',
+    }}>
+      <span style={{
+        display: 'inline-block',
+        padding: '5px 12px 6px',
+        background: 'rgba(42,46,54,0.96)',
+        color: '#ffd166',
+        border: 'none',
+        borderRadius: '0 0 7px 7px',
+        fontSize: 13,
+        fontFamily: 'monospace',
+        fontWeight: 'bold',
+        letterSpacing: '0.02em',
+        lineHeight: '16px',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+        whiteSpace: 'nowrap',
+      }}>
+        ↺ REPLAY
+      </span>
     </div>
   );
 };
@@ -427,6 +463,10 @@ function AppContent() {
   // started yet instead of treating the intentional fallback as an error.
   const [waitingForPitchData, setWaitingForPitchData] = useState(false);
   const [pendingPitchNumber, setPendingPitchNumber] = useState(null);
+  // A live play can arrive while a historical pitch is being replayed. Keep
+  // the selected replay on screen and show this notice instead of switching
+  // back to live automatically.
+  const [newLivePlayAvailable, setNewLivePlayAvailable] = useState(false);
   const [snapTrigger, setSnapTrigger] = useState(0);
   const [crossings, setCrossings] = useState(null);
   const [pitchOutcome, setPitchOutcome] = useState(null); // specific outcome (BALL, STRIKE, STRIKEOUT, FLYOUT, POPOUT, ...)
@@ -470,7 +510,15 @@ function AppContent() {
   // exactly once per pitch (even while frozen) — the count/outs/score update
   // the moment the BALL/STRIKE/HIT/RUN/OUT indicator appears.
   const [scorebugOutcomeRefresh, setScorebugOutcomeRefresh] = useState(0);
+  // Bumped exactly once when a play fully finishes; the effect below commits
+  // the scoreboard snapshot and advances the queue AFTER the reveal render, so
+  // the outcome banner gets a frame to display before the next play starts.
+  const [playCompletion, setPlayCompletion] = useState(0);
   const [activeGamePk, setActiveGamePk] = useState(null); // null = backend's default game
+  // Once the feed reports the game as finished (Final / Game Over / Completed
+  // Early) there is nothing new to poll, so the app-level trajectory and
+  // batted-ball pollers stop until a different game is selected.
+  const [gameTerminal, setGameTerminal] = useState(false);
   const [liveGames, setLiveGames] = useState(null);
   const [liveGamesLoading, setLiveGamesLoading] = useState(false);
   // The live-games drawer is capped so it stretches from below the control
@@ -503,18 +551,25 @@ function AppContent() {
   const queuedTrajectoryPlayIdsRef = useRef(new Set());
   const knownTrajectoryPlayIdsRef = useRef(new Set());
   const pitchDataRef = useRef(null);
-  const pitchOutcomeRef = useRef(null);
   // A play can be enriched (run/out/result) after its trajectory starts. Keep
   // the newest scoreboard snapshot without replacing pitchData and restarting
   // the animation.
   const currentPitchScoreSnapshotRef = useRef(null);
+  // The scoreboard snapshot captured the moment a play finished, held so the
+  // deferred completion effect can commit exactly that play's state even if a
+  // newer poll has already applied the next play.
+  const completedPlaySnapshotRef = useRef(null);
   const replayRef = useRef(replay);
   pitchDataRef.current = pitchData;
-  pitchOutcomeRef.current = pitchOutcome;
   replayRef.current = replay;
   // play_id whose outcome has already been shown, so the looping playback
   // doesn't re-trigger the indicator for the same pitch.
   const outcomeShownPlayId = useRef(null);
+  // Whether the currently-active play has fully finished animating (every out
+  // and the final result emitted). Separate from the revealed outcome label so
+  // an intermediate OUT on a double/triple play can't be mistaken for the play
+  // being complete and advance the queue (or skip) early.
+  const playFinishedRef = useRef(false);
   // Monotonic request counters: polling runs on a 1s cadence but each fetch
   // can take longer than that, so responses can arrive out of order. These let
   // us discard a stale response instead of reverting the animation to an older
@@ -665,6 +720,12 @@ function AppContent() {
       if (seq < lastTrajectoryAppliedSeq.current) return;
       lastTrajectoryAppliedSeq.current = seq;
 
+      // A finished game has nothing left to poll. The trajectory payload
+      // carries the feed's current game status, so detect a terminal result
+      // here and stop the app-level pollers. This also fires while replaying
+      // a historical pitch, where the payload still reflects the live status.
+      if (isGameTerminal(d?.game_state?.gameState)) setGameTerminal(true);
+
       // The backend may return the previous valid pitch while the newest feed
       // event is still missing coordinates or spin. Update this status before
       // the play-id gate below: the fallback pitch is intentionally unchanged,
@@ -675,25 +736,32 @@ function AppContent() {
       setPendingPitchNumber(waiting ? (d?.pending_pitch_number ?? null) : null);
 
       // While replaying, keep the selected historical pitch on screen. The
-      // poller still runs so a later live pitch can end replay automatically;
-      // the live pitch that was already current when replay began is ignored.
+      // poller still runs so a later live play can be detected, but it must not
+      // silently end the replay. The baseline was already live when replay
+      // began; anything newer becomes a visible "new play available" notice.
       if (replayRef.current.active) {
         const isSelectedReplay = d?.play_id === replayRef.current.playId;
         const isReplayBaseline = d?.play_id === replayRef.current.livePlayId;
-        if (isSelectedReplay || isReplayBaseline) return;
-        const nextReplay = { active: false, playId: null, pitchNumber: null, atBatIndex: null, livePlayId: null };
-        replayRef.current = nextReplay;
-        setReplay(nextReplay);
-        setScorebugStateOverride(null);
+        const hasNewLivePlay = (
+          d?.play_id != null && !isSelectedReplay && !isReplayBaseline
+        );
+        const hasNewPendingPitch = (
+          waiting &&
+          d?.pending_pitch_id != null &&
+          d.pending_pitch_id !== replayRef.current.playId &&
+          d.pending_pitch_id !== replayRef.current.livePlayId
+        );
+        if (hasNewLivePlay || hasNewPendingPitch) setNewLivePlayAvailable(true);
+        return;
       }
       // The backend answered, so clear any transient error from an earlier
       // failed poll (e.g. the game was between at-bats / had null coordinates).
       setError(null);
 
       // When the backend observes that the feed jumped from A to C, it returns
-      // B as catch-up payload data. Start B immediately when idle; otherwise
-      // place B (and then C) behind the active animation. If C is already the
-      // active play, the repeated cached catch-up list is intentionally ignored.
+      // B as catch-up payload data. Enqueue B (and then C) in arrival order and
+      // start the first one immediately if nothing is still animating. If C is
+      // already the active play, the repeated cached catch-up list is ignored.
       const catchUpPayloads = Array.isArray(d?.queued_trajectories)
         ? d.queued_trajectories
         : [];
@@ -710,19 +778,9 @@ function AppContent() {
           }
         }
         if (unseenCatchUp.length > 0) {
-          const hasActivePitch = !!pitchDataRef.current || lastTrajectoryPlayId.current != null;
-          const canStartCatchUp = (
-            !replayRef.current.active &&
-            !hasActivePitch &&
-            !pitchOutcomeRef.current &&
-            trajectoryQueueRef.current.length === 0
-          );
-          if (canStartCatchUp) {
-            const first = unseenCatchUp.shift();
-            applyTrajectoryPayload(first);
-          }
           for (const queued of unseenCatchUp) enqueueTrajectoryPayload(queued);
           if (d?.play_id !== lastTrajectoryPlayId.current) enqueueTrajectoryPayload(d);
+          startNextQueuedPlay();
           return;
         }
       }
@@ -765,10 +823,12 @@ function AppContent() {
       const hasActivePitch = !!pitchDataRef.current || lastTrajectoryPlayId.current != null;
       if (!replayRef.current.active && trajectoryQueueRef.current.length > 0) {
         enqueueTrajectoryPayload(d);
+        startNextQueuedPlay();
         return;
       }
-      if (!replayRef.current.active && hasActivePitch && !pitchOutcomeRef.current) {
+      if (!replayRef.current.active && hasActivePitch && !playFinishedRef.current) {
         enqueueTrajectoryPayload(d);
+        startNextQueuedPlay();
         return;
       }
 
@@ -914,8 +974,8 @@ function AppContent() {
     if (d?.play_id != null) knownTrajectoryPlayIdsRef.current.add(d.play_id);
     lastTrajectoryResolutionKey.current = trajectoryResolutionKey(d);
     pitchDataRef.current = d;
-    pitchOutcomeRef.current = null;
     outcomeShownPlayId.current = null;
+    playFinishedRef.current = false;
     currentPitchScoreSnapshotRef.current = d?.game_state ?? null;
     if (nextBattedPayload) {
       pendingBattedBallsRef.current.delete(nextBattedPayload.play_id);
@@ -932,6 +992,21 @@ function AppContent() {
     setPitchOutcome(null);
     setPitchPanelOpen(false);
     setPitchData(d);
+  };
+
+  // Drain the queue by starting the next play when the current one is finished
+  // (or when nothing is active). This is the single point that advances from
+  // one play to the next, so queued plays always animate in arrival order and
+  // never skip ahead to a play that hasn't animated yet.
+  const startNextQueuedPlay = () => {
+    if (replayRef.current.active) return;
+    const hasActivePitch = !!pitchDataRef.current || lastTrajectoryPlayId.current != null;
+    if (hasActivePitch && !playFinishedRef.current) return;
+    const next = trajectoryQueueRef.current.shift();
+    if (next) {
+      queuedTrajectoryPlayIdsRef.current.delete(next.play_id ?? null);
+      applyTrajectoryPayload(next);
+    }
   };
 
   const fetchBattedBall = async (gamePk = activeGamePk, { silent = false } = {}) => {
@@ -980,13 +1055,25 @@ function AppContent() {
   // Force a full re-fetch + re-animate, used by the Refresh button and when a
   // game is picked from the live-games drawer.
   const refreshAll = (gamePk = activeGamePk) => {
+    // Invalidate any poll still in flight from a previous game or replay
+    // period. A replay-period request is built from the replayed pitch's
+    // cursor, so if it resolves after Back to Live it would re-enqueue its
+    // stale catch-up list and regress the app to older pitches instead of
+    // resuming the live feed. Advancing the applied seq past every in-flight
+    // seq drops those responses.
+    trajectoryReqSeq.current += 1;
+    lastTrajectoryAppliedSeq.current = trajectoryReqSeq.current;
+    battedReqSeq.current += 1;
+    lastBattedAppliedSeq.current = battedReqSeq.current;
+
     trajectoryQueueRef.current = [];
     queuedTrajectoryPlayIdsRef.current.clear();
     knownTrajectoryPlayIdsRef.current.clear();
     pendingBattedBallsRef.current.clear();
+    setNewLivePlayAvailable(false);
     appliedBattedPlayIdsRef.current.clear();
     pitchDataRef.current = null;
-    pitchOutcomeRef.current = null;
+    playFinishedRef.current = false;
     currentPitchScoreSnapshotRef.current = null;
     lastTrajectoryPlayId.current = null;
     lastBattedPlayId.current = null;
@@ -1006,7 +1093,6 @@ function AppContent() {
     // at-bat panel doesn't try to load the old game's pitches against the
     // newly-selected game_pk.
     pitchDataRef.current = null;
-    pitchOutcomeRef.current = null;
     currentPitchScoreSnapshotRef.current = null;
     setPitchData(null);
     setBattedBallData(null);
@@ -1018,6 +1104,9 @@ function AppContent() {
     setAtBatData(null);
     setAtBatError(null);
     setPitchPanelOpen(false);
+    // Selecting a different game resumes the app-level pollers; the new
+    // game's first payload flips this back if it is already final.
+    setGameTerminal(false);
     refreshAll(gamePk);
   };
 
@@ -1047,13 +1136,16 @@ function AppContent() {
     }
   };
 
-  const toggleAtBat = () => {
-    if (atBatOpen) {
-      setAtBatOpen(false);
-    } else {
-      setAtBatOpen(true);
-      setPitchPanelOpen(true);
-    }
+  const selectPitchView = () => {
+    if (!pitchData) return;
+    setAtBatOpen(false);
+    setPitchPanelOpen(true);
+  };
+
+  const selectAtBatView = () => {
+    if (!pitchData) return;
+    setAtBatOpen(true);
+    setPitchPanelOpen(true);
   };
 
   // Replay one pitch from the at-bat: swap it in exactly like a freshly-arrived
@@ -1065,6 +1157,7 @@ function AppContent() {
     trajectoryReqSeq.current += 1;
     battedReqSeq.current += 1;
     setAtBatOpen(false);
+    if (!replayRef.current.active) setNewLivePlayAvailable(false);
     const nextReplay = {
       active: true,
       playId: p.play_id,
@@ -1083,7 +1176,7 @@ function AppContent() {
     replayRef.current = nextReplay;
     setReplay(nextReplay);
     outcomeShownPlayId.current = null;
-    pitchOutcomeRef.current = null;
+    playFinishedRef.current = false;
     setPitchOutcome(null);
     setPitchPanelOpen(false);
     lastTrajectoryPlayId.current = p.play_id ?? null;
@@ -1104,6 +1197,16 @@ function AppContent() {
     setScorebugStateOverride(null);
     setReplay(nextReplay);
     setAtBatOpen(false);
+    // Clear the replayed pitch immediately so the scene doesn't keep looping
+    // it while the fresh live fetch is in flight, and reset the outcome/panel
+    // state so the next live play reveals cleanly.
+    setPitchData(null);
+    setBattedBallData(null);
+    setPitchOutcome(null);
+    setPitchPanelOpen(false);
+    setWaitingForPitchData(false);
+    setPendingPitchNumber(null);
+    outcomeShownPlayId.current = null;
     refreshAll(activeGamePk);
   };
 
@@ -1112,8 +1215,20 @@ function AppContent() {
   // DOUBLE/TRIPLE PLAY) when the batter is retired.
   const showOutcome = (label) => {
     outcomeShownPlayId.current = pitchData?.play_id ?? null;
-    pitchOutcomeRef.current = label;
     setPitchOutcome(label);
+  };
+
+  // Mark a fully-animated play as finished exactly once. showOutcome (the
+  // banner) can fire several times for one play (OUT, then DOUBLE PLAY); this
+  // is the single completion signal, and its side effects run in the
+  // playCompletion effect after the reveal has rendered.
+  const finishCurrentPlay = () => {
+    if (playFinishedRef.current) return;
+    playFinishedRef.current = true;
+    // Capture the completed play's scoreboard state now, before any deferred
+    // work or an in-flight poll can replace the active play.
+    completedPlaySnapshotRef.current = currentPitchScoreSnapshotRef.current ?? pitchDataRef.current?.game_state;
+    setPlayCompletion(prev => prev + 1);
   };
 
   // The pitch reached the plate: for a take the ball/strike call is already
@@ -1122,6 +1237,9 @@ function AppContent() {
   const handlePitchArrival = () => {
     const playId = pitchData?.play_id ?? null;
     if (playId != null && playId === outcomeShownPlayId.current) return;
+    // A pitch the bat met hands off to BattedBall, which finishes the play via
+    // handlePlayComplete. A take / whiff is fully resolved at the plate.
+    const isContactPitch = pitchData?.is_contact === true;
     const event = pitchData?.result_event;
     // A strikeout / walk / hit-by-pitch / stolen base / caught stealing /
     // pickoff is final the moment the ball reaches the plate, so reveal its
@@ -1134,6 +1252,7 @@ function AppContent() {
       // final pitch of their at-bat, so the shortcut still applies there.)
       if (!AT_BAT_ENDING_EVENTS.has(event) || pitchData?.is_at_bat_final !== false) {
         showOutcome(specificOutcomeLabel(event));
+        if (!isContactPitch) finishCurrentPlay();
         return;
       }
     }
@@ -1143,6 +1262,7 @@ function AppContent() {
     const action = pitchData?.action_event;
     if (action === 'Wild Pitch' || action === 'Passed Ball') {
       showOutcome(specificOutcomeLabel(action));
+      if (!isContactPitch) finishCurrentPlay();
       return;
     }
     const call = pitchData?.call_code;
@@ -1155,6 +1275,7 @@ function AppContent() {
     } else if (call === 'C' || call === 'S' || call === 'W' || call === 'M') {
       showOutcome('STRIKE');
     }
+    if (!isContactPitch) finishCurrentPlay();
   };
 
   // The batted-ball choreography resolved: map its granular text to a specific
@@ -1179,6 +1300,14 @@ function AppContent() {
     }
     const scored = battedBallData?.runners?.some((r) => r.end === 'score');
     showOutcome(scored ? 'RUN' : 'HIT');
+  };
+
+  // The batted-ball choreography fully resolved (last out recorded / hit
+  // settled). Unlike handlePlayResult, which fires per result (including the
+  // intermediate OUT of a double play), this fires exactly once per play and
+  // is the signal that advances to the next queued play.
+  const handlePlayComplete = () => {
+    finishCurrentPlay();
   };
 
   useEffect(() => {
@@ -1210,13 +1339,14 @@ function AppContent() {
   // protected by the replay guard in fetchTrajectory, and a genuinely newer
   // live play resumes the feed automatically.
   useEffect(() => {
+    if (gameTerminal) return;
     const id = setInterval(() => {
       if (trajectoryRequestsInFlight.current > 0 || battedBallRequestsInFlight.current > 0) return;
       fetchTrajectory(activeGamePk, { silent: true });
       fetchBattedBall(activeGamePk, { silent: true });
     }, LIVE_POLL_MS);
     return () => clearInterval(id);
-  }, [activeGamePk, replay.active]);
+  }, [activeGamePk, replay.active, gameTerminal]);
 
   // Load (and refresh) the at-bat pitch list while the 2D strike zone is open:
   //   * on open, and again whenever the batter changes, so the zone resets to
@@ -1229,30 +1359,27 @@ function AppContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [atBatOpen, pitchData?.at_bat_index, atBatOutcomeRefresh]);
 
-  // Once the pitch/play resolves (the ball/strike/hit/run indicator appears),
-  // expand the panel, unlock the show/hide toggle, and bump the scorebug's
-  // outcome refresh so it re-fetches exactly when the result is revealed.
+  // Once a play fully finishes, commit its scoreboard snapshot, open the panel,
+  // and start the next queued play. Deferred to an effect (keyed on
+  // playCompletion rather than pitchOutcome) so it runs exactly once per play —
+  // not once per intermediate result — and only after the reveal has rendered.
   useEffect(() => {
-    if (!pitchOutcome) return;
+    if (playCompletion === 0) return;
 
     setPitchPanelOpen(true);
     setToggleUnlocked(true);
-    // Commit the state captured for THIS completed pitch before starting the
+    // Commit the state captured for THIS completed play before starting the
     // next queued animation. Scorebug's frozen override prevents its own
     // /api/game-state poll from jumping over any queued play.
-    if (!replay.active) {
-      const completedSnapshot = currentPitchScoreSnapshotRef.current ?? pitchData?.game_state;
-      if (completedSnapshot) setScorebugStateOverride(completedSnapshot);
+    if (!replayRef.current.active && completedPlaySnapshotRef.current) {
+      setScorebugStateOverride(completedPlaySnapshotRef.current);
     }
     setScorebugOutcomeRefresh(prev => prev + 1);
     setAtBatOutcomeRefresh(prev => prev + 1);
 
-    const next = trajectoryQueueRef.current.shift();
-    if (next) {
-      queuedTrajectoryPlayIdsRef.current.delete(next.play_id ?? null);
-      applyTrajectoryPayload(next);
-    }
-  }, [pitchOutcome, pitchData, replay.active]);
+    startNextQueuedPlay();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playCompletion]);
 
   // Scoreboard spoiler guard: freeze the scorebug for the entire time a pitch
   // is loaded (including its looping replay) so it can't poll ahead and spoil
@@ -1260,6 +1387,17 @@ function AppContent() {
   // During a user-initiated historical replay the scorebug is deliberately
   // un-frozen so it keeps showing the newest live score/count.
   const scoreboardFrozen = !!pitchData && !replay.active;
+
+  // A contact pitch has no batted ball to show until its Statcast fielding
+  // point (hc_x/hc_y) arrives. While that data is pending, hold the batted
+  // ball and show a notice instead of animating a reconstructed/wrong flight.
+  const waitingForPlayResolve = (
+    !replay.active &&
+    pitchData?.is_contact === true &&
+    pitchData?.call_code !== 'F' &&
+    pitchData?.call_code !== 'L' &&
+    !isHitFieldingReady(battedBallData)
+  );
 
   // Horizontal/vertical break display: Statcast pfx (in) plus how far above or
   // below the pitch-type average this pitch's movement is. Magnitude-based for
@@ -1329,7 +1467,7 @@ function AppContent() {
     compute();
     window.addEventListener('resize', compute);
     return () => window.removeEventListener('resize', compute);
-  }, [pitchData, pitchPanelOpen, loading, error, waitingForPitchData, pendingPitchNumber]);
+  }, [pitchData, pitchPanelOpen, loading, error, waitingForPitchData, pendingPitchNumber, newLivePlayAvailable]);
 
   return (
     <div style={{ width: '100vw', height: '100vh', position: 'relative' }}>
@@ -1514,7 +1652,36 @@ function AppContent() {
           top of the screen once each pitch/play resolves). The pill expands
           out sideways when it appears and folds back in when the next pitch
           clears the outcome. ── */}
-      <OutcomeBanner label={pitchOutcome} />
+      <OutcomeBanner label={pitchOutcome} replay={replay} />
+
+      {/* ── WAITING FOR PLAY TO RESOLVE BANNER (contact pitch whose Statcast
+          fielding point hasn't arrived yet) ── */}
+      {waitingForPlayResolve && (
+        <div style={{
+          position: 'absolute',
+          top: 20,
+          left: 0,
+          right: 0,
+          zIndex: 20,
+          textAlign: 'center',
+          pointerEvents: 'none',
+        }}>
+          <span style={{
+            display: 'inline-block',
+            padding: '10px 22px',
+            background: 'rgba(0,0,0,0.72)',
+            color: '#ffd166',
+            border: '1px solid rgba(255,209,102,0.35)',
+            borderRadius: 8,
+            fontFamily: 'monospace',
+            fontWeight: 'bold',
+            fontSize: 16,
+            letterSpacing: '0.06em',
+          }}>
+            ⏳ Waiting for play to resolve…
+          </span>
+        </div>
+      )}
 
       {/* ── TOP-RIGHT DRAWERS (debug overlays) ── */}
       <div style={{
@@ -1614,7 +1781,7 @@ function AppContent() {
       </div>
 
 
-      <Scene pitchData={pitchData} battedBall={battedBallData} snapTrigger={snapTrigger} onCrossings={setCrossings} onArrival={handlePitchArrival} onPlayResult={handlePlayResult} />
+      <Scene pitchData={pitchData} battedBall={battedBallData} snapTrigger={snapTrigger} onCrossings={setCrossings} onArrival={handlePitchArrival} onPlayResult={handlePlayResult} onComplete={handlePlayComplete} />
       <Scorebug
         refreshKey={hudRefresh}
         outcomeRefresh={scorebugOutcomeRefresh}
@@ -1636,6 +1803,7 @@ function AppContent() {
       }}>
         {pitchData && (
           <div style={{
+            position: 'relative',
             background: 'linear-gradient(180deg, rgba(10,14,20,0.92), rgba(6,9,14,0.92))',
             color: 'white',
             padding: '10px 14px',
@@ -1647,6 +1815,30 @@ function AppContent() {
             border: '1px solid rgba(255,255,255,0.18)',
             boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
           }}>
+            {/* A live poll can discover a newer play without interrupting the
+                selected replay. The existing Back-to-Live control remains the
+                deliberate way to switch to it. */}
+            {replay.active && newLivePlayAvailable && (
+              <div
+                role="status"
+                aria-live="polite"
+                style={{
+                  width: '100%', marginBottom: 8, padding: '5px 8px',
+                  boxSizing: 'border-box',
+                  background: 'rgba(255,209,102,0.14)',
+                  color: '#ffd166',
+                  border: '1px solid rgba(255,209,102,0.55)',
+                  borderRadius: 4,
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                  fontWeight: 'bold',
+                  textAlign: 'center',
+                }}
+              >
+                ● New live play available
+              </div>
+            )}
+
             {/* Back-to-live control, shown while a historical pitch is being
                 replayed so the user can resume the live feed. */}
             {replay.active && (
@@ -1664,46 +1856,75 @@ function AppContent() {
               </button>
             )}
 
-            {/* Title + collapse toggle. The toggle stays disabled until the
-                first play has fully animated (so the panel can't be opened to
-                spoil the pitch); after that it's free to use. */}
+            {/* Browser-style view tabs sit above the panel: the selected tab
+                is flush with the panel and the other tab sits slightly behind
+                it instead of cycling through views from one button. */}
             <div style={{
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              marginBottom: 8, userSelect: 'none', gap: 6,
+              minHeight: 24,
+              display: 'flex', justifyContent: 'flex-end', alignItems: 'center',
+              marginBottom: 8, userSelect: 'none',
             }}>
-              <span style={{ fontWeight: 'bold', fontSize: '13px', letterSpacing: '0.02em' }}>
-                {atBatOpen ? 'At-Bat' : replay.active ? `Replay · Pitch ${replay.pitchNumber ?? '—'}` : 'Pitch'}
+              <span
+                role="tablist"
+                aria-label="Play view"
+                style={{
+                  position: 'absolute',
+                  top: -28,
+                  left: -1,
+                  zIndex: 2,
+                  display: 'flex', alignItems: 'flex-end',
+                }}
+              >
+                {[
+                  { label: 'Pitch', active: !atBatOpen, onClick: selectPitchView, title: 'Show pitch details' },
+                  { label: 'At-Bat', active: atBatOpen, onClick: selectAtBatView, title: 'Show every pitch in this at-bat' },
+                ].map((tab, index) => (
+                  <button
+                    key={tab.label}
+                    role="tab"
+                    aria-selected={tab.active}
+                    onClick={tab.onClick}
+                    disabled={!pitchData}
+                    title={tab.title}
+                    style={{
+                      position: 'relative',
+                      zIndex: tab.active ? 2 : 1,
+                      marginLeft: index === 0 ? 0 : -4,
+                      padding: '5px 12px 6px',
+                      background: tab.active ? '#000' : 'rgba(42,46,54,0.96)',
+                      color: tab.active ? '#fff' : '#aab4c0',
+                      border: 'none',
+                      borderBottom: 'none',
+                      borderRadius: '7px 7px 0 0',
+                      fontSize: 13,
+                      fontFamily: 'monospace',
+                      fontWeight: 'bold',
+                      letterSpacing: '0.02em',
+                      cursor: pitchData ? 'pointer' : 'not-allowed',
+                      opacity: pitchData ? 1 : 0.4,
+                      boxShadow: tab.active ? '0 -2px 8px rgba(0,0,0,0.35)' : 'none',
+                      lineHeight: '16px',
+                    }}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
               </span>
-              <span style={{ display: 'flex', gap: 6 }}>
-                <button
-                  onClick={toggleAtBat}
-                  disabled={!pitchData}
-                  title={atBatOpen ? 'Show pitch statistics' : 'Show every pitch in this at-bat'}
-                  style={{
-                    padding: '2px 8px', background: atBatOpen ? '#1a4a7a' : '#333',
-                    color: 'white', border: 'none', borderRadius: 4, fontSize: 11,
-                    fontFamily: 'monospace', cursor: pitchData ? 'pointer' : 'not-allowed',
-                    opacity: pitchData ? 1 : 0.4,
-                  }}
-                >
-                  {atBatOpen ? 'Stats' : 'At-Bat'}
-                </button>
-                <button
-                  onClick={() => setPitchPanelOpen((open) => !open)}
-                  disabled={!toggleUnlocked}
-                  title={toggleUnlocked
-                    ? (pitchPanelOpen ? 'Hide pitch details' : 'Show pitch details')
-                    : 'Available once the play has finished'}
-                  style={{
-                    padding: '2px 8px', background: '#333', color: 'white',
-                    border: 'none', borderRadius: 4, fontSize: 11, fontFamily: 'monospace',
-                    opacity: toggleUnlocked ? 1 : 0.4,
-                    cursor: toggleUnlocked ? 'pointer' : 'not-allowed',
-                  }}
-                >
-                  {pitchPanelOpen ? '▾ Hide' : '▸ Show'}
-                </button>
-              </span>
+              <button
+                onClick={() => setPitchPanelOpen((open) => !open)}
+                disabled={!toggleUnlocked}
+                title={toggleUnlocked
+                  ? (pitchPanelOpen ? 'Hide pitch details' : 'Show pitch details')
+                  : 'Available once the play has finished'}
+                style={{
+                  padding: '2px 8px', background: '#333', color: 'white',
+                  border: 'none', borderRadius: 4, fontSize: 11, fontFamily: 'monospace',
+                  opacity: toggleUnlocked ? 1 : 0.4,
+                  cursor: toggleUnlocked ? 'pointer' : 'not-allowed',
+                }}
+              >
+                {pitchPanelOpen ? '▾ Hide' : '▸ Show'}
+              </button>
             </div>
 
             {/* Animated collapsible body: stays mounted so the height (CSS grid

@@ -14,6 +14,7 @@ import {
   plateCrossing,
   statcastHitToWorld,
 } from '../util/MathUtil'
+import { isHitFieldingReady, hitMatchesAtBat, isBattedBallLaunchable } from '../util/battedBall'
 import { FIELD, MAX_RUN_SPEED } from '../constants/field'
 import { setCycleDuration, getCycleDuration, getTimeScale, CYCLE_PAUSE, setBattedBallPosition } from '../constants/playback'
 import { BALL_RELEASE_TIME } from './Pitcher'
@@ -484,7 +485,7 @@ const Fielder = React.forwardRef(({ position, leanRef }, ref) => (
 ))
 Fielder.displayName = 'Fielder'
 
-export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayResult }) => {
+export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayResult, onComplete }) => {
   const [hitIndex, setHitIndex] = useState(0)
   // One-shot confetti burst for home runs (set when the ball clears the wall).
   const [confetti, setConfetti] = useState(null)
@@ -500,6 +501,7 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
   const launched = useRef(false)
   const recordedOuts = useRef(0)
   const resultEmitted = useRef(false)
+  const completeEmitted = useRef(false)
   // Home-run confetti: fires once per cycle at the wall-crossing spot.
   const confettiFiredRef = useRef(false)
   // Pitch object that owned the current cycle duration. A live hit can arrive
@@ -519,11 +521,7 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
   // poll or two before /api/batted-ball returns it. Hold the launch until the
   // matching hit is present instead of firing the previous hit (or a demo
   // sample) for a brand-new live contact.
-  const liveHitReady = hit != null && (
-    pitchData?.at_bat_index == null ||
-    hit.atBatIndex == null ||
-    hit.atBatIndex === pitchData.at_bat_index
-  )
+  const liveHitReady = hitMatchesAtBat(hit, pitchData?.at_bat_index)
 
   // A live Statcast hit (from /api/batted-ball) takes precedence; otherwise
   // cycle through the bundled demo samples. A foul with no matching live hit
@@ -532,9 +530,15 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     () => (isFoul ? makeFoulHit(pitchData) : null),
     [isFoul, pitchData],
   )
+  // Only a hit with its Statcast fielding point is safe to animate. A live
+  // hit that has landed but lacks hc_x/hc_y falls back to the demo sample so
+  // the shared playback clock keeps advancing while we wait for the real
+  // fielding point (never the half-populated hit, whose arc would be garbage).
+  const launchableHit = liveHitReady && isHitFieldingReady(hit)
+  const launchable = isBattedBallLaunchable({ hit, atBatIndex: pitchData?.at_bat_index, isFoul })
   const activeHit = (isFoul && !liveHitReady && foulHit)
     ? foulHit
-    : (hit ?? hits[hitIndex])
+    : (launchableHit ? hit : hits[hitIndex])
 
   // Contact geometry from the pitch trajectory: the moment the ball reaches the
   // front of home plate and where it is then — the spot the bat meets it.
@@ -669,6 +673,7 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     flightClock.current = 0
     recordedOuts.current = 0
     resultEmitted.current = false
+    completeEmitted.current = false
     confettiFiredRef.current = false
     setConfetti(null)
     setBattedBallPosition(null)
@@ -729,17 +734,19 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     if (playback.current < contactWallTime) {
       firedThisCycle.current = false
     }
-    // Launch only once the matching live hit is ready: a real contact must
-    // never hand off to the previous play's hit or a demo sample. The hit data
-    // can arrive after contact time (its own feed event), so the gate waits for
-    // it and then fires from the contact point as soon as it lands. Fouls skip
+    // Launch only once the matching live hit's fielding point is ready: a real
+    // contact must never hand off to the previous play's hit, a demo sample, or
+    // a half-populated hit whose arc would be wrong. The fielding point can
+    // arrive after contact time (its own feed event), so the gate waits for it
+    // and then fires from the contact point as soon as it lands. Fouls skip
     // that wait and launch their synthesized flight immediately.
-    if (contact.swing && (isFoul || liveHitReady) && !firedThisCycle.current && playback.current >= contactWallTime) {
+    if (contact.swing && launchable && !firedThisCycle.current && playback.current >= contactWallTime) {
       firedThisCycle.current = true
       launched.current = true
       flightClock.current = 0
       recordedOuts.current = 0
       resultEmitted.current = false
+      completeEmitted.current = false
       // The hit data can land after the pitch reached the plate, so this launch
       // may start later than contact. Lengthen the shared cycle so the ball's
       // full flight plus the pause plus the pitcher's windup still fit before
@@ -882,6 +889,10 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     if (plan.resultText && !resultEmitted.current && t >= plan.endTime) {
       resultEmitted.current = true
       if (onPlayResult) onPlayResult(plan.resultText)
+    }
+    if (!completeEmitted.current && t >= plan.endTime) {
+      completeEmitted.current = true
+      if (onComplete) onComplete()
     }
   })
 

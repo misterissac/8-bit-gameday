@@ -252,7 +252,7 @@ const CameraController = ({ snapTrigger, controlsRef }) => {
     return null;
 };
 
-export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, crossingPlane, onCrossings, onArrival, onPlayResult }) => {
+export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, crossingPlane, onCrossings, onArrival, onPlayResult, onComplete }) => {
     const controlsRef = useRef();
     // Restore the last saved view on mount (read once, localStorage).
     const initialCam = useMemo(() => loadCameraState(), []);
@@ -299,7 +299,7 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
             
             {/* Batted-ball + fielder trajectory (driven by Statcast hit data),
                 launched when the pitch reaches the spot it is hit */}
-            <BattedBall pitchData={pitchData} hit={battedBall} onPlayResult={onPlayResult} />
+            <BattedBall pitchData={pitchData} hit={battedBall} onPlayResult={onPlayResult} onComplete={onComplete} />
             
             {/* Camera Controls */}
             <OrbitControls makeDefault ref={controlsRef} target={controlsTarget} />
