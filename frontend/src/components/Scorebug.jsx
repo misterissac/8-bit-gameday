@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
+import { scorebugStatusLabel, isGameTerminal } from '../util/scorebug';
 
 const GAME_STATE_URL = 'http://localhost:8000/api/game-state';
 const GAME_STATUS_URL = 'http://localhost:8000/api/game-status';
@@ -225,25 +226,30 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
     }
   }, [gamePk]);
 
+  // A finished game has nothing left to update, so stop the recurring polls.
+  // liveStatus is reset on game switch, which flips this back to false and
+  // resumes polling for the newly-selected game.
+  const gameTerminal = isGameTerminal(liveStatus?.gameState);
+
   useEffect(() => {
-    if (!frozen) return;
+    if (!frozen || gameTerminal) return;
     fetchStatus();
     const id = setInterval(fetchStatus, POLL_MS);
     return () => clearInterval(id);
-  }, [fetchStatus, frozen]);
+  }, [fetchStatus, frozen, gameTerminal]);
 
   useEffect(() => {
     setLiveStatus(null);
   }, [gamePk]);
 
   useEffect(() => {
-    if (!frozen) {
+    if (!frozen && !gameTerminal) {
       fetchState();
       const id = setInterval(fetchState, POLL_MS);
       return () => clearInterval(id);
     }
     return undefined;
-  }, [fetchState, frozen]);
+  }, [fetchState, frozen, gameTerminal]);
 
   // Manual Refresh button (deliberate user action, so allowed even while
   // frozen) and game switches, which also bump refreshKey.
@@ -309,28 +315,15 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   const homeScore = score?.home?.runs ?? '—';
   const baseSet = new Set(bases || []);
   const outsVal = outs ?? 0;
-  // Bottom-left game status: show it whenever it's meaningful (delays, umpire
-  // review, pitcher change, final, ...), but hide the generic "In Progress"
-  // during normal live play — the LIVE dot already says that.
-  const liveGameState = liveStatus?.gameState ?? gameState;
-  const liveIsLive = liveStatus?.isLive ?? isLive;
-  const pitcherChanged = Boolean(
-    frozen &&
-    liveStatus?.pitcher &&
-    pitcher &&
-    (
-      liveStatus.pitcherId != null && pitcherId != null
-        ? liveStatus.pitcherId !== pitcherId
-        : liveStatus.pitcher !== pitcher
-    )
-  );
-  const statusLabel = pitcherChanged
-    ? 'Pitching Change'
-    : liveGameState && liveGameState !== 'In Progress'
-      ? liveGameState
-      : null;
+  // Bottom-left game status: show it whenever it's meaningful (delay, review,
+  // pitching change, final, ...) and hide it during normal in-progress play,
+  // so the row collapses back to just the ballpark when the game resumes.
+  const statusLabel = scorebugStatusLabel({ gameState, liveStatus, pitcher, pitcherId, frozen });
   const isStatusNotice =
     /Delay|Review|Change/i.test(statusLabel || '');
+  // The red LIVE marker shows while the feed reports the game as live and
+  // clears on its own once the game ends (abstractGameState flips to Final).
+  const liveIsLive = liveStatus?.isLive ?? isLive;
   const countLabel = count?.balls != null && count?.strikes != null
     ? `${count.balls}–${count.strikes}`
     : '—';
