@@ -26,7 +26,7 @@ const OUTCOME_LABELS = {
  * at-bat drawn as a numbered, color-coded circle. Clicking a replayable pitch
  * hands it back via ``onSelect`` so the parent can replay that pitch/play.
  */
-export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchNumber = null, onSelect }) {
+export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchNumber = null, onSelect, selectionMode = false, selectedPlayIds = null, onToggleSelect }) {
   const W = 200;
   const H = 250;
   const plateWidthFt = 17 / 12; // 1.4167 ft
@@ -96,10 +96,19 @@ export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchN
         const color = OUTCOME_COLORS[p.outcome] || OUTCOME_COLORS.other;
         const clickable = !!p.replayable;
         const isActive = activePitchNumber != null && p.pitch_number === activePitchNumber;
+        const isSelected = selectionMode && selectedPlayIds?.has(p.play_id);
+        const handleClick = () => {
+          if (!clickable) return;
+          if (selectionMode) {
+            if (onToggleSelect) onToggleSelect(p);
+          } else if (onSelect) {
+            onSelect(p);
+          }
+        };
         return (
           <g
             key={p.pitch_number}
-            onClick={() => clickable && onSelect && onSelect(p)}
+            onClick={handleClick}
             style={{ cursor: clickable ? 'pointer' : 'default', opacity: clickable ? 1 : 0.5 }}
           >
             <title>
@@ -107,9 +116,13 @@ export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchN
               {p.description ? ` · ${p.description}` : ''}
               {p.outs > 0 ? ` · ${p.outs} out${p.outs === 1 ? '' : 's'}` : ''}
               {!clickable ? ' · (no replay data)' : ''}
+              {selectionMode ? (isSelected ? ' · selected for compare' : ' · click to select for compare') : ''}
             </title>
             {isActive && (
               <circle cx={p.x} cy={p.y} r={14} fill="none" stroke="#ffd166" strokeWidth={2} />
+            )}
+            {isSelected && (
+              <circle cx={p.x} cy={p.y} r={16} fill="none" stroke="#22cccc" strokeWidth={2.5} strokeDasharray="3 3" />
             )}
             <circle cx={p.x} cy={p.y} r={11} fill={color} stroke="#fff" strokeWidth={1.5} />
             <text

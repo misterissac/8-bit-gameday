@@ -8,7 +8,8 @@ import { isHitFieldingReady } from './util/battedBall';
 import { isGameTerminal } from './util/scorebug';
 import { Scorebug } from './components/Scorebug';
 import { AtBatZone } from './components/AtBatZone';
-import { setTimeScale, SLOWEST_SPEED } from './constants/playback';
+import { setTimeScale, setCycleDuration, CYCLE_PAUSE, SLOWEST_SPEED } from './constants/playback';
+import { BALL_RELEASE_TIME } from './components/Pitcher';
 import './App.css';
 
 // How often the app polls the backend for the newest play (ms). Silent polls
@@ -16,6 +17,9 @@ import './App.css';
 // pitch/play animation has finished.
 const LIVE_POLL_MS = 1000;
 const NO_SIMULATABLE_PITCH_DETAIL = 'No simulated pitch data yet.';
+// Playback speed used while the tunneling comparison plays several pitches /
+// batted balls overlaid together (0.3x slow motion). Restored on exit.
+const COMPARE_PLAYBACK_SPEED = 0.3;
 
 // Fallback league-average induced break (inches, Statcast pfx convention:
 // pfxX > 0 = breaks toward the pitcher's glove side / away from an RHB,
@@ -482,6 +486,16 @@ function AppContent() {
   const [atBatData, setAtBatData] = useState(null);
   const [atBatLoading, setAtBatLoading] = useState(false);
   const [atBatError, setAtBatError] = useState(null);
+  // Tunneling comparison visualizer: 'idle' (single-pitch view) →
+  // 'selecting' (click pitches in the at-bat zone to build a set) →
+  // 'active' (selected pitches + batted balls animate overlaid together).
+  const [compareMode, setCompareMode] = useState('idle');
+  // play_ids the user has picked while in 'selecting' mode (ordered).
+  const [compareSelectedIds, setCompareSelectedIds] = useState([]);
+  // [{ pitch, hit }] actually animating in 'active' mode.
+  const [comparisonPlays, setComparisonPlays] = useState([]);
+  // Playback speed to restore when leaving comparison (0.3x is forced on enter).
+  const [preComparisonSpeed, setPreComparisonSpeed] = useState(null);
   // Bumped each time a pitch/play resolves so the at-bat zone adds that pitch
   // only after its animation finishes (instead of spoiling it on arrival).
   const [atBatOutcomeRefresh, setAtBatOutcomeRefresh] = useState(0);
@@ -526,6 +540,12 @@ function AppContent() {
   // when no pitch is loaded) instead of running off the bottom of the window.
   const drawerRef = useRef(null);
   const bottomLeftRef = useRef(null);
+  // The top-left column (control panel + drawer); its height drives the
+  // drawer's top, which moves the drawer's bottom even when the cap is fixed.
+  const topLeftRef = useRef(null);
+  // The view tabs stick out above the pitch panel's box, so the drawer cap is
+  // anchored to them — the panel's topmost visible element.
+  const tabsRef = useRef(null);
   const summaryRef = useRef(null);
   const gamesListRef = useRef(null);
   const [drawerMaxHeight, setDrawerMaxHeight] = useState(null);
@@ -1137,6 +1157,9 @@ function AppContent() {
   };
 
   const selectPitchView = () => {
+    // Leaving the at-bat view ends an active comparison (its controls live in
+    // the at-bat body, so there'd otherwise be no way out).
+    if (compareMode === 'active') exitComparison();
     if (!pitchData) return;
     setAtBatOpen(false);
     setPitchPanelOpen(true);
@@ -1146,6 +1169,63 @@ function AppContent() {
     if (!pitchData) return;
     setAtBatOpen(true);
     setPitchPanelOpen(true);
+  };
+
+  // ── Tunneling comparison visualizer ─────────────────────────────────────
+  // Enter selection mode: the Compare button becomes Simulate and the at-bat
+  // zone switches from replaying a clicked pitch to toggling it for compare.
+  const startCompareSelecting = () => {
+    setCompareSelectedIds([]);
+    setCompareMode('selecting');
+  };
+
+  const toggleCompareSelection = (p) => {
+    if (!p?.replayable || !p?.play_id) return;
+    setCompareSelectedIds((prev) => (
+      prev.includes(p.play_id)
+        ? prev.filter((id) => id !== p.play_id)
+        : [...prev, p.play_id]
+    ));
+  };
+
+  // Turn the selected pitches into overlaid animations. Forced down to 0.3x,
+  // with the pre-comparison speed saved so exit can restore it.
+  const startComparison = () => {
+    if (compareSelectedIds.length < 2) return;
+    const plays = (atBatData?.pitches ?? [])
+      .filter((p) => compareSelectedIds.includes(p.play_id))
+      .map((p) => ({ pitch: p.pitch, hit: toBattedBallData(p.hit) }))
+      .filter((o) => o.pitch);
+    if (plays.length < 2) return;
+
+    // Baseline shared cycle: enough for the longest pitch flight plus the
+    // windup, so comparisons without any batted ball still loop. Contact
+    // plays' batted balls only lengthen this (see BattedBall comparison mode),
+    // so the longest flight wins regardless of mount order.
+    let maxPitchFlight = 0;
+    for (const { pitch } of plays) {
+      const traj = pitch?.trajectory;
+      const t = traj?.[traj.length - 1]?.t ?? 0;
+      if (t > maxPitchFlight) maxPitchFlight = t;
+    }
+    setCycleDuration(Math.max(0.5, maxPitchFlight) + CYCLE_PAUSE + BALL_RELEASE_TIME);
+
+    setPreComparisonSpeed(playbackSpeed);
+    setPlaybackSpeed(COMPARE_PLAYBACK_SPEED);
+    setTimeScale(COMPARE_PLAYBACK_SPEED);
+    setComparisonPlays(plays);
+    setCompareMode('active');
+  };
+
+  const exitComparison = () => {
+    setCompareMode('idle');
+    setComparisonPlays([]);
+    setCompareSelectedIds([]);
+    if (preComparisonSpeed != null) {
+      setPlaybackSpeed(preComparisonSpeed);
+      setTimeScale(preComparisonSpeed);
+    }
+    setPreComparisonSpeed(null);
   };
 
   // Replay one pitch from the at-bat: swap it in exactly like a freshly-arrived
@@ -1434,22 +1514,28 @@ function AppContent() {
     spinPopupHideTimer.current = setTimeout(() => setSpinPopupAnchor(null), 120);
   };
 
-  // Cap the live-games drawer so it stretches down to just above the
-  // bottom-left pitch panel (closed state included) instead of extending out
-  // of the window. Re-measured on resize and whenever the panels around it
-  // change size. Measured before paint so there's no flash of an over-tall
-  // drawer.
+  // Cap the live-games drawer so its expanded bottom sits just above the
+  // bottom-left pitch panel (or the WASD hint when no pitch is loaded) instead
+  // of extending out of the window. A ResizeObserver re-measures whenever the
+  // panels around the drawer change size — including every frame of the pitch
+  // panel's expand/collapse transition, so the cap settles on the panel's
+  // final (collapsed) position instead of freezing at the pre-transition
+  // measurement.
   useLayoutEffect(() => {
     const compute = () => {
       const drawer = drawerRef.current;
       if (!drawer) return;
       // Never let the drawer touch the bottom edge of the window.
       let limitY = window.innerHeight - 20;
-      // Stop just above the bottom-left column (pitch panel + WASD hint); its
-      // top moves up when the pitch panel expands, so this also keeps the
-      // open panel clear of the drawer.
+      // Stop just above the pitch panel's topmost visible element (the view
+      // tabs stick out above the panel's box); its top moves up when the pitch
+      // panel expands, so this also keeps the open panel clear of the drawer.
+      // Without pitch data, the WASD hint is the bottom-left column's top.
+      const tabs = tabsRef.current;
       const bottomLeft = bottomLeftRef.current;
-      if (bottomLeft) {
+      if (tabs) {
+        limitY = Math.min(limitY, tabs.getBoundingClientRect().top - 10);
+      } else if (bottomLeft) {
         limitY = Math.min(limitY, bottomLeft.getBoundingClientRect().top - 10);
       }
       const drawerCap = Math.max(120, limitY - drawer.getBoundingClientRect().top);
@@ -1465,14 +1551,22 @@ function AppContent() {
       }
     };
     compute();
+    // Re-measure on window resize (the panel's top moves even though its size
+    // doesn't) and whenever either column's size changes.
+    const ro = new ResizeObserver(compute);
+    if (topLeftRef.current) ro.observe(topLeftRef.current);
+    if (bottomLeftRef.current) ro.observe(bottomLeftRef.current);
     window.addEventListener('resize', compute);
-    return () => window.removeEventListener('resize', compute);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', compute);
+    };
   }, [pitchData, pitchPanelOpen, loading, error, waitingForPitchData, pendingPitchNumber, newLivePlayAvailable]);
 
   return (
     <div style={{ width: '100vw', height: '100vh', position: 'relative' }}>
       {/* ── TOP-LEFT: control panel + live games drawer ── */}
-      <div style={{
+      <div ref={topLeftRef} style={{
         position: 'absolute',
         top: 20,
         left: 20,
@@ -1781,7 +1875,7 @@ function AppContent() {
       </div>
 
 
-      <Scene pitchData={pitchData} battedBall={battedBallData} snapTrigger={snapTrigger} onCrossings={setCrossings} onArrival={handlePitchArrival} onPlayResult={handlePlayResult} onComplete={handlePlayComplete} />
+      <Scene pitchData={pitchData} battedBall={battedBallData} snapTrigger={snapTrigger} onCrossings={setCrossings} onArrival={handlePitchArrival} onPlayResult={handlePlayResult} onComplete={handlePlayComplete} comparisonActive={compareMode === 'active'} comparisonPlays={comparisonPlays} />
       <Scorebug
         refreshKey={hudRefresh}
         outcomeRefresh={scorebugOutcomeRefresh}
@@ -1865,6 +1959,7 @@ function AppContent() {
               marginBottom: 8, userSelect: 'none',
             }}>
               <span
+                ref={tabsRef}
                 role="tablist"
                 aria-label="Play view"
                 style={{
@@ -1953,7 +2048,10 @@ function AppContent() {
                           szTop={atBatData.strike_zone_top ?? pitchData?.strike_zone_top ?? 3.5}
                           szBot={atBatData.strike_zone_bottom ?? pitchData?.strike_zone_bottom ?? 1.5}
                           activePitchNumber={replay.active ? replay.pitchNumber : null}
-                          onSelect={selectReplayPitch}
+                          onSelect={compareMode === 'active' ? undefined : selectReplayPitch}
+                          selectionMode={compareMode === 'selecting'}
+                          selectedPlayIds={compareMode === 'selecting' ? new Set(compareSelectedIds) : null}
+                          onToggleSelect={toggleCompareSelection}
                         />
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 10px', marginTop: 6, fontSize: 10, opacity: 0.85 }}>
                           <span><span style={{ color: '#ff5f5f' }}>●</span> Strike</span>
@@ -1962,8 +2060,50 @@ function AppContent() {
                           <span><span style={{ color: '#4da6ff' }}>●</span> In play</span>
                           <span><span style={{ color: '#c15cff' }}>●</span> In play · out</span>
                         </div>
+                        {/* ── Tunneling comparison controls ── */}
+                        {compareMode === 'active' ? (
+                          <button
+                            onClick={exitComparison}
+                            style={{
+                              width: '100%', marginTop: 8, padding: '5px 8px',
+                              background: '#7a3a00', color: '#ffd166',
+                              border: '1px solid #ff9933', borderRadius: 4,
+                              fontSize: 11, fontFamily: 'monospace', fontWeight: 'bold',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            ✕ Exit comparison
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              onClick={compareMode === 'selecting' ? startComparison : startCompareSelecting}
+                              disabled={compareMode === 'selecting' && compareSelectedIds.length < 2}
+                              title={compareMode === 'selecting' ? 'Simulate the selected pitches together' : 'Compare the pitches in this at-bat'}
+                              style={{
+                                width: '100%', marginTop: 8, padding: '5px 8px',
+                                background: '#1a4a7a', color: '#9be7a0',
+                                border: '1px solid #4a9eff', borderRadius: 4,
+                                fontSize: 11, fontFamily: 'monospace', fontWeight: 'bold',
+                                cursor: compareMode === 'selecting' && compareSelectedIds.length < 2 ? 'not-allowed' : 'pointer',
+                                opacity: compareMode === 'selecting' && compareSelectedIds.length < 2 ? 0.55 : 1,
+                              }}
+                            >
+                              {compareMode === 'selecting'
+                                ? `▶ Simulate${compareSelectedIds.length > 0 ? ` (${compareSelectedIds.length})` : ''}`
+                                : '⇉ Compare'}
+                            </button>
+                            {compareMode === 'selecting' && (
+                              <div style={{ marginTop: 6, fontSize: 10, color: '#9be7a0', opacity: 0.9 }}>
+                                Select pitches to compare{compareSelectedIds.length > 0 ? ` — ${compareSelectedIds.length} selected` : ''}.
+                              </div>
+                            )}
+                          </>
+                        )}
                         <div style={{ marginTop: 6, fontSize: 10, opacity: 0.6 }}>
-                          Click a pitch to replay it.
+                          {compareMode === 'selecting'
+                            ? 'Click pitches to select them for comparison.'
+                            : 'Click a pitch to replay it.'}
                         </div>
                       </>
                     )}

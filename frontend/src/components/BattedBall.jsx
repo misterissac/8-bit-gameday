@@ -112,6 +112,11 @@ const YELLOW_TRACE_COLOR = [1, 0.85, 0.2]
 // speed-graded.
 const TRAIL_COLOR_YELLOWISH_WHITE = [1, 0.95, 0.65]
 
+// Tunneling comparison: batted balls dim more than the overlaid pitches so the
+// trajectories stay distinguishable, and their tail/trace fade back too.
+const COMPARISON_BALL_OPACITY = 0.35
+const COMPARISON_TRAIL_FACTOR = 0.55
+
 const TRAIL_VERTEX_SHADER = `
 attribute vec3 aColor;
 attribute float aAlpha;
@@ -485,7 +490,7 @@ const Fielder = React.forwardRef(({ position, leanRef }, ref) => (
 ))
 Fielder.displayName = 'Fielder'
 
-export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayResult, onComplete }) => {
+export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayResult, onComplete, comparison = false }) => {
   const [hitIndex, setHitIndex] = useState(0)
   // One-shot confetti burst for home runs (set when the ball clears the wall).
   const [confetti, setConfetti] = useState(null)
@@ -640,14 +645,21 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
   // already back at ~0 — never mid-flight.
   useEffect(() => {
     if (!contact || !plan) return
-    const duration = contact.simDuration + plan.endTime + CYCLE_PAUSE + BALL_RELEASE_TIME
+    if (comparison && !launchable) return
+    // Comparison flies only until the ball hits the ground; no fielding.
+    const playEnd = comparison ? plan.ballAirTime : plan.endTime
+    const duration = contact.simDuration + playEnd + CYCLE_PAUSE + BALL_RELEASE_TIME
     const isNewPitch = durationOwnerPitch.current !== pitchData
     const justWrapped = playback.current < 0.05
-    if (isNewPitch || justWrapped || duration > getCycleDuration()) {
-      setCycleDuration(duration)
-    }
+    // In comparison many hits share one cycle: only ever lengthen it (skip the
+    // isNewPitch / justWrapped resets), so the longest flight wins regardless
+    // of mount order.
+    const shouldSet = comparison
+      ? duration > getCycleDuration()
+      : (isNewPitch || justWrapped || duration > getCycleDuration())
+    if (shouldSet) setCycleDuration(duration)
     durationOwnerPitch.current = pitchData
-  }, [contact, plan, pitchData])
+  }, [contact, plan, pitchData, comparison, launchable])
 
   // Register a fielder's group/lean refs by position code. Both callbacks
   // create the entry independently so their invocation order doesn't matter.
@@ -767,7 +779,7 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     const t = flightClock.current
 
     // Home-run confetti: burst once, at the spot the ball clears the wall.
-    if (plan.wallExit && !confettiFiredRef.current && t >= plan.wallExit.time) {
+    if (!comparison && plan.wallExit && !confettiFiredRef.current && t >= plan.wallExit.time) {
       confettiFiredRef.current = true
       setConfetti({ key: performance.now(), position: plan.wallExit.position.clone() })
     }
@@ -779,17 +791,18 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
       const tailAlphas = tailAlphaAttr.array
       const yellowAlphas = yellowAlphaAttr.array
       const fadeRate = 1 / TRAIL_FADE_TIME
+      const trailFactor = comparison ? COMPARISON_TRAIL_FACTOR : 1
       let yellowFade = 1
       if (t >= plan.ballAirTime) {
         yellowFade = 1 - Math.min((t - plan.ballAirTime) / YELLOW_TRACE_FADE_TIME, 1)
       }
-      const yellowAlphaNow = YELLOW_TRACE_MIN_OPACITY
-        + (YELLOW_TRACE_OPACITY - YELLOW_TRACE_MIN_OPACITY) * yellowFade
+      const yellowAlphaNow = (YELLOW_TRACE_MIN_OPACITY
+        + (YELLOW_TRACE_OPACITY - YELLOW_TRACE_MIN_OPACITY) * yellowFade) * trailFactor
       for (let i = 0; i < trailPoints.length; i++) {
         const age = t - trailPoints[i].t
         let tailAlpha = 0
         if (age >= 0) {
-          tailAlpha = TRAIL_MAX_OPACITY * (1 - age * fadeRate)
+          tailAlpha = TRAIL_MAX_OPACITY * trailFactor * (1 - age * fadeRate)
           if (tailAlpha < 0) tailAlpha = 0
         }
         tailAlphas[i] = tailAlpha
@@ -800,7 +813,18 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     }
 
     // ── Ball ─────────────────────────────────────────────────────────────
-    if (t <= plan.ballCatch.t) {
+    if (comparison) {
+      // Comparison: fly the arc only until the ball hits the ground, then hide
+      // it — no fielder/throw choreography.
+      if (t < plan.ballAirTime) {
+        const ballPosition = plan.arc.positionAtTime(t)
+        if (ballPosition.y < 0) ballPosition.y = 0
+        ballRef.current.position.copy(ballPosition)
+        ballRef.current.visible = true
+      } else {
+        ballRef.current.visible = false
+      }
+    } else if (t <= plan.ballCatch.t) {
       // In flight along the batted-ball arc, then resting at the landing spot
       // until the fielder arrives. The time is clamped to the arc's TRUE flight
       // time (ballAirTime): makeSymmetricalArc is a quadratic, and evaluating it
@@ -881,18 +905,22 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     }
 
     // ── Emit OUT / DOUBLE PLAY / TRIPLE PLAY as each out is recorded ─────
-    const outsNow = plan.outs.filter((o) => o.time <= t).length
-    if (outsNow > recordedOuts.current) {
-      recordedOuts.current = outsNow
-      if (onPlayResult) onPlayResult(plan.outs[outsNow - 1].text)
-    }
-    if (plan.resultText && !resultEmitted.current && t >= plan.endTime) {
-      resultEmitted.current = true
-      if (onPlayResult) onPlayResult(plan.resultText)
-    }
-    if (!completeEmitted.current && t >= plan.endTime) {
-      completeEmitted.current = true
-      if (onComplete) onComplete()
+    // Suppressed in comparison: there is no fielding, so there are no outs to
+    // emit, and the app's live scoreboard/queue must not advance.
+    if (!comparison) {
+      const outsNow = plan.outs.filter((o) => o.time <= t).length
+      if (outsNow > recordedOuts.current) {
+        recordedOuts.current = outsNow
+        if (onPlayResult) onPlayResult(plan.outs[outsNow - 1].text)
+      }
+      if (plan.resultText && !resultEmitted.current && t >= plan.endTime) {
+        resultEmitted.current = true
+        if (onPlayResult) onPlayResult(plan.resultText)
+      }
+      if (!completeEmitted.current && t >= plan.endTime) {
+        completeEmitted.current = true
+        if (onComplete) onComplete()
+      }
     }
   })
 
@@ -908,12 +936,16 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
 
   return (
     <group>
-      {/* All defensive fielders at their positions */}
-      {staticFielders.map(([pos, home]) => (
-        <Fielder key={pos} position={home.toArray()} ref={registerFielder(pos)} leanRef={registerLean(pos)} />
-      ))}
-      {renderChaser && (
-        <Fielder key={`chaser-${chaserPos}`} position={plan.chaserHome.toArray()} ref={registerFielder(chaserPos)} leanRef={registerLean(chaserPos)} />
+      {/* All defensive fielders at their positions (hidden in comparison) */}
+      {!comparison && (
+        <>
+          {staticFielders.map(([pos, home]) => (
+            <Fielder key={pos} position={home.toArray()} ref={registerFielder(pos)} leanRef={registerLean(pos)} />
+          ))}
+          {renderChaser && (
+            <Fielder key={`chaser-${chaserPos}`} position={plan.chaserHome.toArray()} ref={registerFielder(chaserPos)} leanRef={registerLean(chaserPos)} />
+          )}
+        </>
       )}
 
       {/* Batted ball + trajectory (hidden until the pitch is hit) */}
@@ -945,7 +977,12 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
         {/* Baseball, starting at the contact spot where the pitch was hit */}
         <mesh ref={ballRef} position={contact.launch.toArray()} castShadow>
           <sphereGeometry args={[0.075, 16, 16]} />
-          <meshStandardMaterial color="#ffffff" roughness={0.4} />
+          <meshStandardMaterial
+            color="#ffffff"
+            roughness={0.4}
+            transparent={comparison}
+            opacity={comparison ? COMPARISON_BALL_OPACITY : 1}
+          />
         </mesh>
       </group>
 
