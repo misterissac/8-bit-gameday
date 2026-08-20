@@ -54,6 +54,21 @@ body {
   margin: 0;
 }
 
+/* Pulsing red dot on the scorebug's LIVE indicator (Scorebug.jsx). */
+@keyframes live-dot-pulse {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 6px rgba(255, 82, 82, 0.9);
+  }
+  50% {
+    opacity: 0.4;
+    box-shadow: 0 0 2px rgba(255, 82, 82, 0.35);
+  }
+}
+.live-dot {
+  animation: live-dot-pulse 1.5s ease-in-out infinite;
+}
+
 #root {
   width: 1126px;
   max-width: 100%;

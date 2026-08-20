@@ -4,6 +4,10 @@ Picks games at diverse venues (elevation, temperature, roof type) and aggregates
 whether the live-weather trajectory engine lands closer to Statcast pX/pZ at
 home plate than the default-weather baseline.
 
+The "live" arm exercises the backend's live trajectory path as shipped: venue
+elevation-derived pressure + sky-condition humidity + MLB-feed temperature
+(fetch_environment_params(observed=False) — no Open-Meteo call).
+
 Usage:
     python test_weather_accuracy_multi.py [--limit 100] [--seed 0] [--games ...]
 """

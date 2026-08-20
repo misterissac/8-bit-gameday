@@ -182,3 +182,61 @@
     border-right-color: var(--border);
   }
 }
+
+/* ── Play-outcome banner (OutcomeBanner in App.jsx) ───────────────────────
+   The black box unrolls sideways from its center when the outcome appears
+   (with a slight overshoot) and folds back in when it clears, while the text
+   fades in/out on its own — the box and letters animate independently so the
+   outcome never unrolls with the banner. */
+@keyframes outcome-box-unroll {
+  0% {
+    transform: scaleX(0);
+  }
+  60% {
+    transform: scaleX(1.05);
+  }
+  100% {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes outcome-box-collapse {
+  0% {
+    transform: scaleX(1);
+  }
+  100% {
+    transform: scaleX(0);
+  }
+}
+
+@keyframes outcome-text-in {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes outcome-text-out {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Home runs pulse with a fiery glow (applied on top of the black text
+   outline) so the outcome reads as a big moment. */
+@keyframes outcome-hr-glow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 4px rgba(255, 159, 28, 0.55))
+      drop-shadow(0 0 14px rgba(255, 159, 28, 0.3));
+  }
+  50% {
+    filter: drop-shadow(0 0 10px rgba(255, 159, 28, 0.95))
+      drop-shadow(0 0 32px rgba(255, 159, 28, 0.55));
+  }
+}

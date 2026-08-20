@@ -1,0 +1,73 @@
+{
+  "gameData": {
+    "datetime": {
+      "officialDate": "2025-06-15"
+    }
+  },
+  "liveData": {
+    "plays": {
+      "allPlays": [
+        {
+          "about": {
+            "atBatIndex": 77,
+            "isComplete": false
+          },
+          "matchup": {
+            "pitcher": {
+              "id": 200,
+              "fullName": "Fixture Pitcher"
+            },
+            "batter": {
+              "id": 101,
+              "fullName": "Fixture Batter"
+            }
+          },
+          "playEvents": [
+            {
+              "isPitch": true,
+              "pitchNumber": 4,
+              "pitchData": {
+                "coordinates": {
+                  "x0": -0.12,
+                  "y0": 50.0,
+                  "z0": 5.82,
+                  "vX0": 2.1,
+                  "vY0": -135.4,
+                  "vZ0": -4.1,
+                  "aX": -5.1,
+                  "aY": 28.1,
+                  "aZ": -20.4
+                },
+                "breaks": {
+                  "spinRate": 2250,
+                  "spinDirection": 184
+                }
+              }
+            },
+            {
+              "isPitch": true,
+              "pitchNumber": 5,
+              "pitchData": {
+                "coordinates": {
+                  "x0": -0.08,
+                  "y0": 50.0,
+                  "z0": 5.79,
+                  "vX0": 2.8,
+                  "vY0": -134.9,
+                  "vZ0": -4.7,
+                  "aX": -4.8,
+                  "aY": 27.9,
+                  "aZ": -20.8
+                },
+                "breaks": {
+                  "spinRate": null,
+                  "spinDirection": null
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

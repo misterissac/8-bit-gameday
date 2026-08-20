@@ -1,0 +1,386 @@
+{
+  "gameData": {
+    "datetime": {
+      "officialDate": "2025-06-15",
+      "dateTime": "2025-06-15T19:10:00Z"
+    },
+    "weather": {
+      "condition": "Clear",
+      "temp": "78"
+    },
+    "venue": {
+      "name": "Fixture Park",
+      "location": {
+        "elevation": 520,
+        "defaultCoordinates": {
+          "latitude": 39.7392,
+          "longitude": -104.9903
+        }
+      },
+      "fieldInfo": {
+        "roofType": "Open"
+      }
+    },
+    "status": {
+      "abstractGameState": "Live",
+      "detailedState": "In Progress"
+    },
+    "teams": {
+      "away": {
+        "id": 10,
+        "name": "Away Fixtures",
+        "abbreviation": "AWY"
+      },
+      "home": {
+        "id": 20,
+        "name": "Home Fixtures",
+        "abbreviation": "HME"
+      }
+    },
+    "players": {
+      "ID101": {
+        "height": "6' 2\""
+      },
+      "ID200": {
+        "height": "6' 4\""
+      },
+      "ID300": {
+        "height": "5' 11\""
+      }
+    }
+  },
+  "liveData": {
+    "linescore": {
+      "currentInning": 5,
+      "currentInningOrdinal": "5th",
+      "inningState": "Top",
+      "isTopInning": true,
+      "outs": 0,
+      "teams": {
+        "away": {
+          "runs": 3,
+          "hits": 7,
+          "errors": 0
+        },
+        "home": {
+          "runs": 2,
+          "hits": 5,
+          "errors": 1
+        }
+      }
+    },
+    "boxscore": {
+      "teams": {
+        "away": {
+          "batters": [],
+          "pitchers": [200],
+          "players": {
+            "ID200": {
+              "person": {
+                "fullName": "Fixture Pitcher"
+              },
+              "position": {
+                "abbreviation": "P"
+              },
+              "stats": {
+                "pitching": {
+                  "inningsPitched": "4.2",
+                  "hits": 5,
+                  "runs": 2,
+                  "earnedRuns": 2,
+                  "baseOnBalls": 1,
+                  "strikeOuts": 6
+                }
+              },
+              "seasonStats": {
+                "pitching": {
+                  "era": "3.21",
+                  "whip": "1.08",
+                  "wins": 7,
+                  "losses": 3,
+                  "strikeOuts": 98,
+                  "inningsPitched": "112.1"
+                }
+              }
+            }
+          }
+        },
+        "home": {
+          "batters": [101],
+          "pitchers": [],
+          "players": {
+            "ID101": {
+              "person": {
+                "fullName": "Fixture Batter"
+              },
+              "position": {
+                "abbreviation": "CF"
+              },
+              "stats": {
+                "batting": {
+                  "atBats": 3,
+                  "hits": 1,
+                  "runs": 1,
+                  "rbi": 1,
+                  "baseOnBalls": 0,
+                  "strikeOuts": 1
+                }
+              },
+              "seasonStats": {
+                "batting": {
+                  "avg": ".287",
+                  "obp": ".352",
+                  "slg": ".471",
+                  "homeRuns": 14,
+                  "rbi": 51
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "plays": {
+      "currentPlay": {
+        "pitchNumber": 2,
+        "matchup": {
+          "pitcher": {
+            "id": 200,
+            "fullName": "Fixture Pitcher"
+          },
+          "batter": {
+            "id": 101,
+            "fullName": "Fixture Batter"
+          }
+        },
+        "count": {
+          "balls": 1,
+          "strikes": 1,
+          "outs": 0
+        }
+      },
+      "allPlays": [
+        {
+          "about": {
+            "atBatIndex": 41,
+            "inning": 5,
+            "halfInning": "top",
+            "isComplete": true
+          },
+          "matchup": {
+            "pitcher": {
+              "id": 200,
+              "fullName": "Fixture Pitcher"
+            },
+            "batter": {
+              "id": 300,
+              "fullName": "Previous Batter"
+            }
+          },
+          "result": {
+            "type": "atBat",
+            "event": "Walk",
+            "eventType": "walk",
+            "description": "Walk"
+          },
+          "runners": [
+            {
+              "details": {
+                "runner": {
+                  "id": 300
+                }
+              },
+              "movement": {
+                "start": null,
+                "end": "1B",
+                "isOut": false,
+                "outNumber": null
+              },
+              "credits": []
+            }
+          ],
+          "playEvents": [
+            {
+              "isPitch": true,
+              "pitchNumber": 1,
+              "pitchData": {
+                "coordinates": {
+                  "x0": 0.1,
+                  "y0": 50.0,
+                  "z0": 5.9,
+                  "vX0": -1.5,
+                  "vY0": -135.0,
+                  "vZ0": -3.8,
+                  "aX": 4.0,
+                  "aY": 28.0,
+                  "aZ": -20.0
+                },
+                "breaks": {
+                  "spinRate": 2200,
+                  "spinDirection": 180
+                }
+              }
+            }
+          ]
+        },
+        {
+          "about": {
+            "atBatIndex": 42,
+            "inning": 5,
+            "halfInning": "top",
+            "isComplete": true
+          },
+          "matchup": {
+            "pitcher": {
+              "id": 200,
+              "fullName": "Fixture Pitcher"
+            },
+            "batter": {
+              "id": 101,
+              "fullName": "Fixture Batter"
+            },
+            "batSide": {
+              "code": "R"
+            },
+            "pitchHand": {
+              "code": "R"
+            }
+          },
+          "result": {
+            "type": "atBat",
+            "event": "Single",
+            "eventType": "hit",
+            "description": "Line drive single to center field"
+          },
+          "runners": [
+            {
+              "details": {
+                "runner": {
+                  "id": 300
+                }
+              },
+              "movement": {
+                "start": "1B",
+                "end": "2B",
+                "isOut": false,
+                "outNumber": null
+              },
+              "credits": []
+            },
+            {
+              "details": {
+                "runner": {
+                  "id": 101
+                }
+              },
+              "movement": {
+                "start": null,
+                "end": "1B",
+                "isOut": false,
+                "outNumber": null
+              },
+              "credits": []
+            }
+          ],
+          "playEvents": [
+            {
+              "isPitch": true,
+              "pitchNumber": 1,
+              "count": {
+                "balls": 0,
+                "strikes": 1,
+                "outs": 0
+              },
+              "details": {
+                "call": {
+                  "code": "C"
+                },
+                "description": "Called Strike"
+              },
+              "pitchData": {
+                "startSpeed": 94.2,
+                "strikeZoneTop": 3.45,
+                "strikeZoneBottom": 1.55,
+                "strikeZoneDepth": 8.5,
+                "coordinates": {
+                  "x0": -0.12,
+                  "y0": 50.0,
+                  "z0": 5.82,
+                  "vX0": 2.1,
+                  "vY0": -135.4,
+                  "vZ0": -4.1,
+                  "aX": -5.1,
+                  "aY": 28.1,
+                  "aZ": -20.4,
+                  "pfxX": -4.2,
+                  "pfxZ": 15.8,
+                  "pX": 0.18,
+                  "pZ": 2.55
+                },
+                "breaks": {
+                  "spinRate": 2250,
+                  "spinDirection": 184
+                }
+              }
+            },
+            {
+              "isPitch": true,
+              "pitchNumber": 2,
+              "count": {
+                "balls": 1,
+                "strikes": 1,
+                "outs": 0
+              },
+              "details": {
+                "type": {
+                  "code": "FF",
+                  "description": "4-Seam Fastball"
+                },
+                "call": {
+                  "code": "X"
+                },
+                "description": "In play, run(s)"
+              },
+              "hitData": {
+                "launchSpeed": 101.4,
+                "launchAngle": 18.0,
+                "totalDistance": 287,
+                "hardness": "Hard",
+                "location": "8",
+                "coordinates": {
+                  "coordX": 157.4,
+                  "coordY": 115.2
+                }
+              },
+              "pitchData": {
+                "startSpeed": 93.8,
+                "strikeZoneTop": 3.45,
+                "strikeZoneBottom": 1.55,
+                "strikeZoneDepth": 8.5,
+                "coordinates": {
+                  "x0": 0.08,
+                  "y0": 50.0,
+                  "z0": 5.79,
+                  "vX0": 3.4,
+                  "vY0": -134.8,
+                  "vZ0": -5.0,
+                  "aX": -4.7,
+                  "aY": 27.8,
+                  "aZ": -21.0,
+                  "pfxX": -4.0,
+                  "pfxZ": 15.3,
+                  "pX": 0.32,
+                  "pZ": 2.18
+                },
+                "breaks": {
+                  "spinRate": 2280,
+                  "spinDirection": 186
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

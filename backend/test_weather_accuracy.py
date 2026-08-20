@@ -4,8 +4,9 @@ For every pitch in a game's live feed (with Statcast pX/pZ available), run the
 RK4 trajectory simulation twice:
 
   * live    - environment from the weather engine (fetch_environment_params:
-              Open-Meteo observed surface pressure + relative humidity, plus
-              MLB feed temp)
+              venue elevation-derived station pressure + sky-condition humidity,
+              plus MLB feed temp — no Open-Meteo call; the observed P/RH
+              refinement was measured to add <=0.01 in of plate accuracy)
   * default - DEFAULT_ENV neutral baseline (70 F, 15 ft elev, 50% RH, 760 mmHg)
 
 Compare each simulated front-of-plate crossing to Statcast pX/pZ (inches) and
@@ -93,7 +94,7 @@ def run_game(game_pk, limit=0, seed=0, verbose=True):
     game_data = data.get("gameData", {})
     all_plays = data.get("liveData", {}).get("plays", {}).get("allPlays", [])
 
-    live_env, live_meta = fetch_environment_params(game_data, observed=True)
+    live_env, live_meta = fetch_environment_params(game_data, observed=False)
     live_rho, default_rho = arm_air_densities(live_env)
 
     events = []
@@ -118,9 +119,9 @@ def run_game(game_pk, limit=0, seed=0, verbose=True):
         try:
             # Each engine recovers spin from pfx with its own air-density
             # assumption, then integrates with that same air: the live engine
-            # uses the observed game density, the default engine uses the
-            # neutral DEFAULT_ENV density (so a roof-closed game, which the
-            # weather engine now maps to neutral conditions, is an exact tie).
+            # uses the game density (elevation-derived env), the default engine
+            # uses the neutral DEFAULT_ENV density (so a roof-closed game, which
+            # the weather engine now maps to neutral conditions, is an exact tie).
             parsed_live = _pitch_parameters_from_event(play, event, air_density_kg_m3=live_rho)
             parsed_default = _pitch_parameters_from_event(play, event, air_density_kg_m3=default_rho)
         except Exception:
@@ -172,14 +173,14 @@ def run_game(game_pk, limit=0, seed=0, verbose=True):
                   f"p95 {sorted(vals)[int(n * 0.95) - 1]:6.3f}   max {max(vals):6.3f}")
 
         print("\nTotal plate error vs Statcast (|Δx,Δz| inches):")
-        row("live   (weather engine)", live_errs)
+        row("live   (elevation-derived)", live_errs)
         row("default (baseline)", default_errs)
 
         print("\nSigned x error (sim − pX, inches):")
-        print(f"  {'live   (weather engine)':<24} mean {statistics.fmean(live_x):+6.3f}   median {statistics.median(live_x):+6.3f}")
+        print(f"  {'live   (elevation-derived)':<24} mean {statistics.fmean(live_x):+6.3f}   median {statistics.median(live_x):+6.3f}")
         print(f"  {'default (baseline)':<24} mean {statistics.fmean(default_x):+6.3f}   median {statistics.median(default_x):+6.3f}")
         print("Signed z error (sim − pZ, inches):")
-        print(f"  {'live   (weather engine)':<24} mean {statistics.fmean(live_z):+6.3f}   median {statistics.median(live_z):+6.3f}")
+        print(f"  {'live   (elevation-derived)':<24} mean {statistics.fmean(live_z):+6.3f}   median {statistics.median(live_z):+6.3f}")
         print(f"  {'default (baseline)':<24} mean {statistics.fmean(default_z):+6.3f}   median {statistics.median(default_z):+6.3f}")
 
         print(f"\nLive weather closer to Statcast: {better}/{n} pitches "
