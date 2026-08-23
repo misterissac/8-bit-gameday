@@ -69,6 +69,24 @@ body {
   animation: live-dot-pulse 1.5s ease-in-out infinite;
 }
 
+/* Skeleton loading pulse for the at-bat zone placeholder (App.jsx). */
+@keyframes at-bat-skeleton-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.7; }
+}
+.at-bat-skeleton {
+  animation: at-bat-skeleton-pulse 2s ease-in-out infinite;
+}
+
+/* Fade-in for at-bat content when it first appears after loading. */
+@keyframes at-bat-fade-in {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+.at-bat-fade-in {
+  animation: at-bat-fade-in 0.25s ease both;
+}
+
 #root {
   width: 1126px;
   max-width: 100%;

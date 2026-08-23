@@ -578,6 +578,26 @@ def _feed_url(game_pk: str = GAME_PK) -> str:
     """MLB Stats API live-feed URL for a game."""
     return f"https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live"
 
+
+# Hard ceiling on each MLB live-feed fetch. The statsapi feed is normally
+# sub-second, but during a pitching change / inning break it can stall; without
+# this a stalled fetch would hang the polling endpoints (trajectory, batted
+# ball) indefinitely. On timeout we raise a clean 502 so the client can retry.
+MLB_FEED_TIMEOUT_SECONDS = 15
+
+
+def _fetch_feed(game_pk: str = GAME_PK) -> dict:
+    """Fetch + parse the MLB live feed with a timeout, raising a clean 502 on
+    a network error/timeout or a non-200 response instead of leaking a raw
+    traceback (which FastAPI would surface as an opaque 500)."""
+    try:
+        response = requests.get(_feed_url(game_pk), timeout=MLB_FEED_TIMEOUT_SECONDS)
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Failed to fetch from MLB API (network error or timeout)")
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail="Failed to fetch from MLB API")
+    return response.json()
+
 # Pitch ``details.call.code`` values that mean the batter swung. Used to drive
 # the batter-swing animation: "X" = in play, "S" = swinging strike, "F" = foul,
 # "W" = swinging strike (blocked), "T" = foul tip.
@@ -772,6 +792,8 @@ def _trajectory_source_key(data: dict, env: EnvironmentParameters, env_meta: dic
     events = play.get('playEvents', [])
     next_event = events[pitch_index + 1] if pitch_index + 1 < len(events) else None
     latest_pitch = _latest_pitch_event(data)
+    all_plays = data.get('liveData', {}).get('plays', {}).get('allPlays') or []
+    newest_play = all_plays[-1] if all_plays else None
     env_values = {
         name: getattr(env, name, None)
         for name in (
@@ -791,6 +813,10 @@ def _trajectory_source_key(data: dict, env: EnvironmentParameters, env_meta: dic
         "pitch": pitch,
         "latest_pitch": latest_pitch[1] if latest_pitch else None,
         "next_event": next_event if next_event and not next_event.get('isPitch') else None,
+        # A no-pitch play appended after the last simulatable pitch (an
+        # automatic intentional walk) changes the pending_play_event surfaced
+        # in the response, so it must invalidate the cache too.
+        "newest_play_result": newest_play.get('result') if newest_play else None,
         "environment": env_values,
         "environment_meta": env_meta,
     })
@@ -814,12 +840,43 @@ def _batted_ball_source_key(data: dict) -> str:
 
 
 # Baserunning miscues recorded as a play's action events (not its result). A
-# wild pitch / passed ball is emitted as an action event immediately after the
-# pitch it happened on, so the frontend can surface it as WILD PITCH / PASSED
-# BALL instead of a bare BALL/STRIKE. Keys are the feed's ``eventType`` values.
+# wild pitch / passed ball / stolen base / caught stealing / pickoff attempt /
+# balk is emitted as an action event immediately after the pitch it happened on,
+# so the frontend can surface it instead of a bare BALL/STRIKE. Keys are the
+# feed's ``eventType`` values.
 _ACTION_EVENT_LABELS = {
     'wild_pitch': 'Wild Pitch',
     'passed_ball': 'Passed Ball',
+    'balk': 'Balk',
+    'stolen_base_2b': 'Stolen Base 2B',
+    'stolen_base_3b': 'Stolen Base 3B',
+    'stolen_base_home': 'Stolen Base Home',
+    'caught_stealing_2b': 'Caught Stealing 2B',
+    'caught_stealing_3b': 'Caught Stealing 3B',
+    'caught_stealing_home': 'Caught Stealing Home',
+    'pickoff_attempt_1b': 'Pickoff Attempt 1B',
+    'pickoff_attempt_2b': 'Pickoff Attempt 2B',
+    'pickoff_attempt_3b': 'Pickoff Attempt 3B',
+    'pickoff_attempt_home': 'Pickoff Attempt Home',
+}
+
+# Plays that can end with no pitch event at all (an automatic intentional walk
+# has no thrown pitches, and some pickoff attempts are recorded as standalone
+# plays). Their result still deserves a banner, so the trajectory endpoint
+# surfaces it via ``pending_play_event`` when the feed has moved past the last
+# simulatable pitch into one of these.
+_NON_PITCH_OUTCOME_EVENTS = {
+    'Intent Walk',
+    'Balk',
+    'Pickoff Attempt 1B',
+    'Pickoff Attempt 2B',
+    'Pickoff Attempt 3B',
+    'Caught Stealing 2B',
+    'Caught Stealing 3B',
+    'Caught Stealing Home',
+    'Stolen Base 2B',
+    'Stolen Base 3B',
+    'Stolen Base Home',
 }
 
 # ---------------------------------------------------------------------------
@@ -1140,6 +1197,20 @@ def _build_pitch_payload(data: dict, play: dict, pitch_event: dict, pitch_index:
     # can show a specific outcome instead of a generic BALL/STRIKE/OUT.
     result = play.get('result') or {}
     result_event = result.get('event')
+    # Whether this pitch is the at-bat's final pitch — the one that produced the
+    # play's resolved result. Non-final pitches still carry the at-bat's final
+    # ``result_event`` (e.g. "Strikeout"), so the frontend uses this flag to fall
+    # back to the pitch's own BALL/STRIKE/FOUL instead of surfacing the final
+    # outcome early when it drains a queue of catch-up plays.
+    final_pitch_number = max(
+        (event.get('pitchNumber') for event in play.get('playEvents', [])
+         if event.get('isPitch') and event.get('pitchNumber') is not None),
+        default=None,
+    )
+    is_at_bat_final = (
+        final_pitch_number is not None
+        and pitch_event.get('pitchNumber') == final_pitch_number
+    )
     # If the latest pitch got away from the catcher, the feed records that as
     # an action event right after the pitch event (the pitch's own details only
     # carry the ball/strike call). Surface it so the frontend can show WILD
@@ -1270,6 +1341,7 @@ def _build_pitch_payload(data: dict, play: dict, pitch_event: dict, pitch_index:
         "call_code": call_code,
         "is_contact": is_contact,
         "result_event": result_event,
+        "is_at_bat_final": is_at_bat_final,
         "action_event": action_event,
         "swing_path_tilt": bat_tracking["swing_path_tilt"],
         "attack_angle": bat_tracking["attack_angle"],
@@ -1335,10 +1407,7 @@ def get_trajectory(env: str = "live", game_pk: str = GAME_PK,
     from the feed — capture essentially all of the live-vs-default accuracy gain.
     """
     print(f"LOADING LEVEL... Polling game {game_pk} (env={env})")
-    response = requests.get(_feed_url(game_pk))
-    if response.status_code != 200:
-        raise HTTPException(status_code=502, detail="Failed to fetch from MLB API")
-    data = response.json()
+    data = _fetch_feed(game_pk)
     try:
         if env == "default":
             resolved_env, env_meta = DEFAULT_ENV, DEFAULT_ENV_META
@@ -1408,6 +1477,24 @@ def get_trajectory(env: str = "live", game_pk: str = GAME_PK,
             )
             payload.update(_pending_pitch_metadata(data))
             payload["queued_trajectories"] = queued_trajectories
+
+            # If the feed has advanced past the newest simulatable pitch into a
+            # play with no pitch event (an automatic intentional walk, a
+            # standalone pickoff attempt), surface that play's result so the
+            # frontend can show a banner even though there is nothing to
+            # animate.
+            all_plays = data.get('liveData', {}).get('plays', {}).get('allPlays') or []
+            newest_play = all_plays[-1] if all_plays else None
+            pending_play_event = None
+            if newest_play is not None:
+                newest_event = (newest_play.get('result') or {}).get('event')
+                has_simulatable_pitch = any(
+                    event.get('isPitch') and _pitch_is_simulatable(event)
+                    for event in newest_play.get('playEvents', [])
+                )
+                if not has_simulatable_pitch and newest_event in _NON_PITCH_OUTCOME_EVENTS:
+                    pending_play_event = newest_event
+            payload["pending_play_event"] = pending_play_event
             with _TRAJECTORY_CACHE_GUARD:
                 _TRAJECTORY_CACHE[cache_key] = {
                     "source_key": source_key,
@@ -1440,10 +1527,7 @@ def get_trajectory_compare(game_pk: str = GAME_PK):
     default – trajectory simulated with neutral MLB baseline conditions.
     """
     print(f"COMPARE MODE... Polling game {game_pk}")
-    response = requests.get(_feed_url(game_pk))
-    if response.status_code != 200:
-        raise HTTPException(status_code=502, detail="Failed to fetch from MLB API")
-    data = response.json()
+    data = _fetch_feed(game_pk)
     try:
         # No Open-Meteo call (observed=False): see get_trajectory docstring.
         live_env, live_meta   = fetch_environment_params(data.get('gameData', {}), observed=False)
@@ -1658,10 +1742,7 @@ def get_batted_ball(game_pk: str = GAME_PK,
     cannot make an in-play animation disappear.
     """
     print(f"BATTED BALL... Polling game {game_pk}")
-    response = requests.get(_feed_url(game_pk))
-    if response.status_code != 200:
-        raise HTTPException(status_code=502, detail="Failed to fetch from MLB API")
-    data = response.json()
+    data = _fetch_feed(game_pk)
     try:
         all_plays = data['liveData']['plays']['allPlays']
         if not all_plays:
@@ -1782,10 +1863,7 @@ def get_at_bat(at_bat_index: Optional[int] = None, game_pk: str = GAME_PK):
     trajectory + batted-ball payloads so the frontend can replay any of them.
     """
     print(f"AT-BAT... Polling game {game_pk} (at_bat_index={at_bat_index})")
-    response = requests.get(_feed_url(game_pk))
-    if response.status_code != 200:
-        raise HTTPException(status_code=502, detail="Failed to fetch from MLB API")
-    data = response.json()
+    data = _fetch_feed(game_pk)
     try:
         all_plays = data['liveData']['plays']['allPlays']
         if not all_plays:
@@ -2074,6 +2152,14 @@ def _game_state_snapshot(data: dict, target_play: dict,
     target_is_latest = bool(all_plays) and prefix and prefix[-1] is all_plays[-1]
     target_events = target_play.get('playEvents') or []
     target_is_final_event = pitch_index is None or pitch_index >= len(target_events) - 1
+    # The index of the play's last *pitch* event (a play can carry non-pitch
+    # events after its final pitch, e.g. a stolen-base or runner event). The
+    # snapshot for that final pitch represents the play's resolved state.
+    target_pitch_indices = [i for i, ev in enumerate(target_events) if ev.get('isPitch')]
+    target_is_final_pitch = (
+        pitch_index is None
+        or (target_pitch_indices and pitch_index >= target_pitch_indices[-1])
+    )
     live_totals = (linescore.get('teams') or {})
     derived_runs = _runs_through_plays(prefix)
     score = {}
@@ -2108,6 +2194,18 @@ def _game_state_snapshot(data: dict, target_play: dict,
         for event in play.get('playEvents', []) if event.get('isPitch')
     )
     outs = target_count.get('outs')
+    # The pitch's ``count.outs`` is the outs BEFORE the at-bat began. Once the
+    # play has fully resolved (the feed carries its final result/runners), the
+    # scoreboard must show the outs AFTER the play — e.g. a flyout with one
+    # out already in must report two, a double play two more. Add the outs the
+    # play recorded (batter + any runners put out, all listed in the play's
+    # ``runners``) to the pre-play total. Only for the play's final pitch: a
+    # queued mid-at-bat pitch's snapshot stays pre-resolution.
+    if outs is not None and about.get('isComplete') and target_is_final_pitch:
+        outs = outs + sum(
+            1 for r in target_play.get('runners', [])
+            if (r.get('movement') or {}).get('isOut')
+        )
     if outs is None:
         outs = linescore.get('outs') if target_is_latest else None
 
@@ -2180,6 +2278,65 @@ def _game_state_snapshot(data: dict, target_play: dict,
 # ---------------------------------------------------------------------------
 
 
+def _parse_sub_event(ev: dict, fallback_new: str = None) -> tuple[str | None, str | None]:
+    """Extract (new_player, old_player) names from a substitution action event.
+
+    The feed's ``details.description`` follows patterns like:
+      "Pitching Change: Julian Garcia replaces Nick Lodolo."
+      "Offensive Substitution: Pinch-runner Leo Rivas replaces Taylor Ward."
+      "Defensive Substitution: Enrique Hernández replaces center fielder Andy
+         Pages, batting 3rd, playing center field."
+
+    For pitching/offensive subs the names are clean after "replaces".
+    For defensive subs the old player's name is preceded by a position label
+    ("center fielder", "shortstop", etc.) and followed by a comma clause with
+    batting/position info that must be stripped.
+
+    Returns (new_player, old_player) or (fallback_new, None) if unparseable.
+    """
+    desc = (ev.get('details') or {}).get('description') or ''
+    if not desc:
+        return (fallback_new, None)
+    after_colon = desc.split(':', 1)[-1].strip().rstrip('.')
+    parts = after_colon.split(' replaces ')
+    new_player = parts[0].strip() if parts and parts[0].strip() else fallback_new
+    raw_old = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
+
+    # Remove the role prefix from the new player's name.
+    if new_player:
+        for prefix in ('Pinch-runner ', 'Pinch-hitter '):
+            if new_player.startswith(prefix):
+                new_player = new_player[len(prefix):].strip()
+                break
+
+    # For defensive substitutions, the old player's name is preceded by a
+    # position label and followed by a comma clause. Strip both so only the
+    # player name remains, e.g. "center fielder Andy Pages, batting 3rd,
+    # playing center field" -> "Andy Pages".
+    old_player = None
+    if raw_old:
+        # Drop everything from the first comma onward (batting/position info).
+        old_player = raw_old.split(',', 1)[0].strip()
+        # Strip a leading position label: the feed writes "<position> <Name>"
+        # where <position> is a lowercase phrase like "center fielder",
+        # "left fielder", "shortstop", "second baseman", "first baseman",
+        # "third baseman", "right fielder", "catcher", "pitcher",
+        # "designated hitter".
+        pos_labels = [
+            'center fielder ', 'left fielder ', 'right fielder ',
+            'first baseman ', 'second baseman ', 'third baseman ',
+            'shortstop ', 'catcher ', 'pitcher ', 'designated hitter ',
+            'pinch runner ', 'pinch hitter ',
+        ]
+        old_lower = old_player.lower()
+        for label in pos_labels:
+            if old_lower.startswith(label):
+                old_player = old_player[len(label):].strip()
+                break
+
+    return (new_player or fallback_new, old_player)
+
+
 def _game_status_snapshot(data: dict) -> dict:
     """Extract only the fields needed while the scoreboard is frozen."""
     game_data = data.get('gameData', {})
@@ -2198,6 +2355,62 @@ def _game_status_snapshot(data: dict) -> dict:
             if pitcher:
                 break
 
+    # Scan the current play's action events for mound visits, pitching
+    # substitutions, and offensive substitutions (pinch hitter/runner). The
+    # feed embeds these as non-pitch ``playEvents`` with
+    # ``details.eventType`` of 'mound_visit', 'pitching_substitution', or
+    # 'offensive_substitution'. This is far more reliable than inferring a
+    # pitching change from pitcher-identity comparison (which can't
+    # distinguish a real relief appearance from the defensive team simply
+    # swapping after an inning turns over).
+    mound_visit = False
+    pitching_change = False
+    pitching_change_pitcher = None
+    pitching_change_old_pitcher = None
+    offensive_sub = False
+    offensive_sub_new = None
+    offensive_sub_old = None
+    offensive_sub_role = None  # 'Pinch Hitter' or 'Pinch Runner'
+    defensive_sub = False
+    defensive_sub_new = None
+    defensive_sub_old = None
+    for ev in current_play.get('playEvents') or []:
+        details = ev.get('details') or {}
+        et = details.get('eventType') or ''
+        if et == 'mound_visit':
+            mound_visit = True
+        elif et == 'pitching_substitution':
+            pitching_change = True
+            new_name, old_name = _parse_sub_event(ev, pitcher.get('fullName'))
+            pitching_change_pitcher = new_name
+            pitching_change_old_pitcher = old_name
+        elif et == 'offensive_substitution':
+            offensive_sub = True
+            new_name, old_name = _parse_sub_event(ev)
+            offensive_sub_new = new_name
+            offensive_sub_old = old_name
+            # Determine if pinch hitter or pinch runner from the position.
+            pos_name = (ev.get('position') or {}).get('name') or ''
+            if 'Runner' in pos_name:
+                offensive_sub_role = 'Pinch Runner'
+            elif 'Hitter' in pos_name or 'Batter' in pos_name:
+                offensive_sub_role = 'Pinch Hitter'
+            else:
+                # Fall back to parsing the description for the role.
+                desc = details.get('description') or ''
+                if 'pinch-runner' in desc.lower():
+                    offensive_sub_role = 'Pinch Runner'
+                elif 'pinch-hitter' in desc.lower():
+                    offensive_sub_role = 'Pinch Hitter'
+                else:
+                    offensive_sub_role = 'Pinch Hitter'
+        elif et == 'defensive_substitution':
+            defensive_sub = True
+            new_name, old_name = _parse_sub_event(ev)
+            defensive_sub_new = new_name
+            defensive_sub_old = old_name
+
+    linescore = live_data.get('linescore') or {}
     status = game_data.get('status') or {}
     abstract_state = status.get('abstractGameState')
     detailed_state = status.get('detailedState')
@@ -2209,6 +2422,28 @@ def _game_status_snapshot(data: dict) -> dict:
         "detailedState": detailed_state,
         "pitcher": pitcher.get('fullName'),
         "pitcherId": pitcher.get('id'),
+        # Half-inning identity so the frontend can tell a real mid-inning
+        # pitching change from the other team's pitcher taking the mound after
+        # an inning turns over (which must NOT read as a pitching change).
+        "inningNumber": linescore.get('currentInning'),
+        "isTopInning": linescore.get('isTopInning'),
+        "inningState": linescore.get('inningState'),
+        # Action-event flags from the current play's playEvents so the
+        # scorebug can surface them without inferring from pitcher identity.
+        "moundVisit": mound_visit,
+        "pitchingChange": pitching_change,
+        # The new pitcher's name so the scorebug shows "Pitching Change: X"
+        # instead of a bare "Pitching Change".
+        "pitchingChangePitcher": pitching_change_pitcher,
+        # Offensive substitution (pinch hitter / pinch runner) flags + names.
+        "offensiveSub": offensive_sub,
+        "offensiveSubRole": offensive_sub_role,
+        "offensiveSubNew": offensive_sub_new,
+        "offensiveSubOld": offensive_sub_old,
+        # Defensive substitution (position player swap) flags + names.
+        "defensiveSub": defensive_sub,
+        "defensiveSubNew": defensive_sub_new,
+        "defensiveSubOld": defensive_sub_old,
     }
 
 
@@ -2221,10 +2456,7 @@ def get_game_status(game_pk: str = GAME_PK):
     change can appear without fetching/building the full scoreboard payload.
     """
     print(f"GAME STATUS... Polling game {game_pk}")
-    response = requests.get(_feed_url(game_pk))
-    if response.status_code != 200:
-        raise HTTPException(status_code=502, detail="Failed to fetch from MLB API")
-    data = response.json()
+    data = _fetch_feed(game_pk)
     try:
         return _game_status_snapshot(data)
     except KeyError as e:
@@ -2244,10 +2476,7 @@ def get_game_state(game_pk: str = GAME_PK):
     frontend can render a dash instead of a stale number.
     """
     print(f"GAME STATE... Polling game {game_pk}")
-    response = requests.get(_feed_url(game_pk))
-    if response.status_code != 200:
-        raise HTTPException(status_code=502, detail="Failed to fetch from MLB API")
-    data = response.json()
+    data = _fetch_feed(game_pk)
     try:
         game_data = data.get('gameData', {})
         live_data = data.get('liveData', {})
@@ -2376,6 +2605,57 @@ def get_game_state(game_pk: str = GAME_PK):
                 "ip": season.get('inningsPitched'),
             }
 
+        # Scan the current play's action events for mound visits, pitching
+        # substitutions, and offensive substitutions (same logic as
+        # _game_status_snapshot) so the non-frozen scorebug — which reads
+        # liveStatus from this endpoint — can surface them without inferring
+        # from pitcher-identity comparison.
+        mound_visit = False
+        pitching_change = False
+        pitching_change_pitcher = None
+        pitching_change_old_pitcher = None
+        offensive_sub = False
+        offensive_sub_new = None
+        offensive_sub_old = None
+        offensive_sub_role = None
+        defensive_sub = False
+        defensive_sub_new = None
+        defensive_sub_old = None
+        live_pitcher_name = matchup.get('pitcher', {}).get('fullName')
+        for ev in current_play.get('playEvents') or []:
+            details = ev.get('details') or {}
+            et = details.get('eventType') or ''
+            if et == 'mound_visit':
+                mound_visit = True
+            elif et == 'pitching_substitution':
+                pitching_change = True
+                new_name, old_name = _parse_sub_event(ev, live_pitcher_name)
+                pitching_change_pitcher = new_name
+                pitching_change_old_pitcher = old_name
+            elif et == 'offensive_substitution':
+                offensive_sub = True
+                new_name, old_name = _parse_sub_event(ev)
+                offensive_sub_new = new_name
+                offensive_sub_old = old_name
+                pos_name = (ev.get('position') or {}).get('name') or ''
+                if 'Runner' in pos_name:
+                    offensive_sub_role = 'Pinch Runner'
+                elif 'Hitter' in pos_name or 'Batter' in pos_name:
+                    offensive_sub_role = 'Pinch Hitter'
+                else:
+                    desc = details.get('description') or ''
+                    if 'pinch-runner' in desc.lower():
+                        offensive_sub_role = 'Pinch Runner'
+                    elif 'pinch-hitter' in desc.lower():
+                        offensive_sub_role = 'Pinch Hitter'
+                    else:
+                        offensive_sub_role = 'Pinch Hitter'
+            elif et == 'defensive_substitution':
+                defensive_sub = True
+                new_name, old_name = _parse_sub_event(ev)
+                defensive_sub_new = new_name
+                defensive_sub_old = old_name
+
         status = game_data.get('status', {})
         return {
             "success": True,
@@ -2402,6 +2682,27 @@ def get_game_state(game_pk: str = GAME_PK):
             # Season stats for the current matchup, for the hover popovers.
             "batterSeason": batter_season,
             "pitcherSeason": pitcher_season,
+            # Action-event flags for the game-status label (mound visit /
+            # pitching change), so the non-frozen scorebug matches the frozen
+            # one's behavior.
+            "moundVisit": mound_visit,
+            "pitchingChange": pitching_change,
+            # The new pitcher's name so the scorebug shows
+            # "Pitching Change: X" instead of a bare "Pitching Change".
+            "pitchingChangePitcher": pitching_change_pitcher,
+            # Offensive substitution (pinch hitter / pinch runner).
+            "offensiveSub": offensive_sub,
+            "offensiveSubRole": offensive_sub_role,
+            "offensiveSubNew": offensive_sub_new,
+            "offensiveSubOld": offensive_sub_old,
+            # Defensive substitution (position player swap).
+            "defensiveSub": defensive_sub,
+            "defensiveSubNew": defensive_sub_new,
+            "defensiveSubOld": defensive_sub_old,
+            # Half-inning identity for the status label.
+            "inningNumber": linescore.get('currentInning'),
+            "isTopInning": linescore.get('isTopInning'),
+            "inningState": linescore.get('inningState'),
         }
     except KeyError as e:
         raise HTTPException(status_code=500, detail=f"Data parsing error: {e}")
@@ -2427,10 +2728,7 @@ def get_box_score(game_pk: str = GAME_PK):
     unlike game-state it isn't needed every second.
     """
     print(f"BOX SCORE... Polling game {game_pk}")
-    response = requests.get(_feed_url(game_pk))
-    if response.status_code != 200:
-        raise HTTPException(status_code=502, detail="Failed to fetch from MLB API")
-    data = response.json()
+    data = _fetch_feed(game_pk)
     try:
         game_data = data.get('gameData', {})
         live_data = data.get('liveData', {})
@@ -2531,12 +2829,12 @@ def get_box_score(game_pk: str = GAME_PK):
 
 @app.get("/api/live-games")
 def get_live_games():
-    """List MLB games currently in progress.
+    """List MLB games currently in progress and upcoming.
 
     Fetches the MLB Stats API schedule for a short window around today (UTC)
-    and returns the games whose abstract state is "Live" (in progress,
-    delayed, etc.), with the team/score/inning summary the frontend's
-    live-games drawer needs to let the user pick a game to watch.
+    and returns live games (abstract state "Live") plus not-yet-started games
+    ("Preview"), each with the team/score/inning/venue/start-time summary the
+    frontend's live-games drawer needs.
     """
     schedule_url = "https://statsapi.mlb.com/api/v1/schedule"
     today = datetime.now(timezone.utc).date()
@@ -2556,37 +2854,50 @@ def get_live_games():
     except Exception:
         raise HTTPException(status_code=502, detail="Failed to fetch MLB schedule")
 
-    games = []
+    live_games = []
+    upcoming_games = []
+
+    def summarize(game, state):
+        linescore = game.get("linescore") or {}
+        teams = {}
+        for side in ("away", "home"):
+            t = (game.get("teams") or {}).get(side, {})
+            team = t.get("team", {})
+            teams[side] = {
+                "name": team.get("name", "—"),
+                "abbreviation": team.get("abbreviation", side.upper()),
+                "id": team.get("id"),
+                "score": t.get("score"),
+            }
+        summary = {
+            "game_pk": game.get("gamePk"),
+            "game_date": game.get("gameDate"),
+            "status": (game.get("status") or {}).get("detailedState") or state,
+            "venue": (game.get("venue") or {}).get("name", "—"),
+            "teams": teams,
+            "start_time_tbd": bool((game.get("status") or {}).get("startTimeTBD")),
+        }
+        if state == "Live":
+            summary["inning"] = {
+                "number": linescore.get("currentInning"),
+                "ordinal": linescore.get("currentInningOrdinal"),
+                "isTop": linescore.get("isTopInning"),
+                "state": linescore.get("inningState"),
+            }
+        return summary
+
     for date_block in data.get("dates", []):
         for game in date_block.get("games", []):
-            status = game.get("status", {})
-            if status.get("abstractGameState") != "Live":
-                continue
-            linescore = game.get("linescore") or {}
-            teams = {}
-            for side in ("away", "home"):
-                t = (game.get("teams") or {}).get(side, {})
-                team = t.get("team", {})
-                teams[side] = {
-                    "name": team.get("name", "—"),
-                    "abbreviation": team.get("abbreviation", side.upper()),
-                    "id": team.get("id"),
-                    "score": t.get("score"),
-                }
-            games.append({
-                "game_pk": game.get("gamePk"),
-                "game_date": game.get("gameDate"),
-                "status": status.get("detailedState", "Live"),
-                "venue": (game.get("venue") or {}).get("name", "—"),
-                "teams": teams,
-                "inning": {
-                    "number": linescore.get("currentInning"),
-                    "ordinal": linescore.get("currentInningOrdinal"),
-                    "isTop": linescore.get("isTopInning"),
-                    "state": linescore.get("inningState"),
-                },
-            })
-    return {"success": True, "games": games}
+            state = (game.get("status") or {}).get("abstractGameState")
+            if state == "Live":
+                live_games.append(summarize(game, state))
+            elif state == "Preview":
+                upcoming_games.append(summarize(game, state))
+
+    # Upcoming games read like a schedule: soonest first.
+    upcoming_games.sort(key=lambda g: g.get("game_date") or "")
+
+    return {"success": True, "games": live_games, "upcoming": upcoming_games}
 
 
 # ── League-average pitch break (Baseball Savant Statcast CSV) ─────────────────

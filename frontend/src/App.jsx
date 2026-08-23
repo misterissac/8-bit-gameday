@@ -7,7 +7,7 @@ import { Scene } from './components/Scene';
 import { isHitFieldingReady } from './util/battedBall';
 import { isGameTerminal } from './util/scorebug';
 import { Scorebug } from './components/Scorebug';
-import { AtBatZone } from './components/AtBatZone';
+import { AtBatZone, AtBatLoadingPlaceholder } from './components/AtBatZone';
 import { setTimeScale, setCycleDuration, CYCLE_PAUSE, SLOWEST_SPEED } from './constants/playback';
 import { BALL_RELEASE_TIME } from './components/Pitcher';
 import './App.css';
@@ -16,10 +16,35 @@ import './App.css';
 // deduplicate already-seen plays and queue newer payloads until the current
 // pitch/play animation has finished.
 const LIVE_POLL_MS = 1000;
+// Hard ceiling on each live poll request. Without this a hung backend response
+// (slow MLB feed during a pitching change / inning break) would leave the
+// in-flight counter stuck above zero forever and freeze the 1s poller, which
+// reads exactly like polling "stopping". A timed-out request is silently
+// dropped and the next tick retries.
+// A trajectory request can legitimately take a while on a cold backend cache:
+// the backend re-fetches the MLB feed (up to 15s) and, on a process restart,
+// the Statcast bat-tracking CSV (up to 15s) before simulating. 20s was too
+// tight for that worst case, which made Jump to newest look broken with a
+// spurious "Failed to fetch trajectory" banner. Give the request headroom over
+// the backend's own timeouts so a cold rebuild completes instead of timing out.
+const LIVE_POLL_TIMEOUT_MS = 45000;
+// How often the Live Games drawer re-fetches so the live/upcoming lists stay
+// current without a manual refresh.
+const LIVE_GAMES_REFRESH_MS = 30000;
 const NO_SIMULATABLE_PITCH_DETAIL = 'No simulated pitch data yet.';
 // Playback speed used while the tunneling comparison plays several pitches /
-// batted balls overlaid together (0.3x slow motion). Restored on exit.
-const COMPARE_PLAYBACK_SPEED = 0.3;
+// batted balls overlaid together (0.2x slow motion). Restored on exit.
+const COMPARE_PLAYBACK_SPEED = 0.2;
+// Cap on how many plays may wait behind the currently-animating play. After a
+// long catch-up gap the backend can return a whole stretch of pitches at once;
+// without a cap those drain one-by-one and the live view lags for minutes. At
+// most MAX_QUEUED_PLAYS plays wait, and overflow is dropped from the front so
+// the newest plays always survive and animate.
+const MAX_QUEUED_PLAYS = 5;
+// Pause between draining queued plays so the just-finished play's outcome
+// indicator stays visible (in order) before the next play clears it.
+const QUEUE_PLAY_GAP_MS = 700;
+
 
 // Fallback league-average induced break (inches, Statcast pfx convention:
 // pfxX > 0 = breaks toward the pitcher's glove side / away from an RHB,
@@ -50,8 +75,8 @@ const FALLBACK_BREAK_BY_TYPE = {
 const specificOutcomeLabel = (event) => {
   switch (event) {
     case 'Strikeout': return 'STRIKEOUT';
-    case 'Walk':
-    case 'Intent Walk': return 'WALK';
+    case 'Walk': return 'WALK';
+    case 'Intent Walk': return 'INTENTIONAL WALK';
     case 'Hit By Pitch': return 'HIT BY PITCH';
     case 'Flyout': return 'FLYOUT';
     case 'Pop Out': return 'POPOUT';
@@ -79,11 +104,22 @@ const specificOutcomeLabel = (event) => {
     case 'Pickoff Caught Stealing 2B':
     case 'Pickoff Caught Stealing 3B':
     case 'Pickoff Caught Stealing Home': return 'PICKOFF';
+    case 'Balk':
+    case 'balk': return 'BALK';
+    case 'Pickoff Attempt 1B':
+    case 'Pickoff Attempt 2B':
+    case 'Pickoff Attempt 3B': return 'PICKOFF ATTEMPT';
     case 'Wild Pitch':
     case 'wild_pitch': return 'WILD PITCH';
     case 'Passed Ball':
     case 'passed_ball': return 'PASSED BALL';
-    default: return null;
+    default:
+      // Fall back to the raw event uppercased so an unmapped out/result (e.g.
+      // "Fielders Choice Out", "Sac Fly DP", "Runner Out") never reads as a
+      // bare 'OUT' when its play hasn't resolved to a known label.
+      return (typeof event === 'string' && event.trim())
+        ? event.trim().toUpperCase()
+        : null;
   }
 };
 
@@ -128,6 +164,7 @@ const IMMEDIATE_RESULT_EVENTS = new Set([
   'Caught Stealing 2B', 'Caught Stealing 3B', 'Caught Stealing Home',
   'Pickoff 1B', 'Pickoff 2B', 'Pickoff 3B',
   'Pickoff Caught Stealing 2B', 'Pickoff Caught Stealing 3B', 'Pickoff Caught Stealing Home',
+  'Pickoff Attempt 1B', 'Pickoff Attempt 2B', 'Pickoff Attempt 3B',
 ]);
 
 // The subset of immediate results that only make sense on the pitch that ended
@@ -137,16 +174,66 @@ const IMMEDIATE_RESULT_EVENTS = new Set([
 // pickoffs are attached to a specific pitch, so they stay immediate regardless.
 const AT_BAT_ENDING_EVENTS = new Set(['Strikeout', 'Walk', 'Intent Walk', 'Hit By Pitch']);
 
+// The single outcome-resolution function for every reveal path: the plate
+// arrival (with a bare ball/strike fallback), the same-play late poll (a
+// stolen base / walk / strikeout that lands a poll after the pitch), and a
+// no-pitch play (automatic intentional walk / standalone pickoff) surfaced via
+// ``pending_play_event``. Priority: the no-pitch play event, then the resolved
+// result (a strikeout double play reads STRIKEOUT, not the caught-stealing
+// runner), then an action event (stolen base / caught stealing / pickoff
+// attempt / wild pitch / passed ball / balk), and finally the pitch's own
+// ball/strike call.
+const resolvePlayOutcomeLabel = (d) => {
+  const pending = d?.pending_play_event;
+  if (pending) return specificOutcomeLabel(pending);
+  const event = d?.result_event;
+  if (event && IMMEDIATE_RESULT_EVENTS.has(event)) {
+    if (!AT_BAT_ENDING_EVENTS.has(event) || d?.is_at_bat_final !== false) {
+      return specificOutcomeLabel(event);
+    }
+  }
+  const action = d?.action_event;
+  if (action) return specificOutcomeLabel(action);
+  const call = d?.call_code;
+  if (call === 'B' || call === '*B' || call === 'P') return 'BALL';
+  if (call === 'H') return 'HIT BY PITCH';
+  if (call === 'F' || call === 'T' || call === 'L') return 'FOUL';
+  if (call === 'C' || call === 'S' || call === 'W' || call === 'M') return 'STRIKE';
+  return null;
+};
+
 // Banner color by outcome: green for batter-friendly results, red for strikes,
 // yellow for big plays (runs / multiple outs), fiery orange for home runs,
 // white for everything else.
 const outcomeColor = (label) => {
   if (label === 'HOME RUN') return '#ff9f1c';
-  if (label === 'BALL' || label === 'WALK' || label === 'HIT BY PITCH' || label === 'STOLEN BASE') return '#7ee0a0';
+  if (label === 'BALL' || label === 'WALK' || label === 'INTENTIONAL WALK' || label === 'HIT BY PITCH' || label === 'STOLEN BASE') return '#7ee0a0';
   if (label === 'STRIKE' || label === 'STRIKEOUT' || label === 'CAUGHT STEALING' || label === 'PICKOFF') return '#ff6b6b';
   if (label === 'FOUL') return '#ffb066';
-  if (label === 'RUN' || label === 'DOUBLE PLAY' || label === 'TRIPLE PLAY' || label === 'WILD PITCH' || label === 'PASSED BALL') return '#ffd166';
+  if (label === 'RUN' || label === 'DOUBLE PLAY' || label === 'TRIPLE PLAY' || label === 'WILD PITCH' || label === 'PASSED BALL' || label === 'BALK' || label === 'PICKOFF ATTEMPT') return '#ffd166';
   return '#ffffff';
+};
+
+// Local calendar-day offset for a game's start time relative to today
+// (0 = today, 1 = tomorrow, ...). Null when the schedule hasn't published a
+// parseable time yet.
+const gameDayOffset = (game) => {
+  if (!game?.game_date) return null;
+  const date = new Date(game.game_date);
+  if (Number.isNaN(date.getTime())) return null;
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const gameStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  return Math.round((gameStart - todayStart) / 86400000);
+};
+
+// Local start time for an upcoming game (e.g. "7:05 PM"). Falls back when the
+// schedule hasn't published a time yet.
+const formatGameStartTime = (game) => {
+  if (!game?.game_date || game?.start_time_tbd) return 'Start time TBD';
+  const date = new Date(game.game_date);
+  if (Number.isNaN(date.getTime())) return 'Start time TBD';
+  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 };
 
 // ── OUTCOME BANNER ────────────────────────────────────────────────────────
@@ -168,7 +255,7 @@ const OUTCOME_COLLAPSE_DELAY_MS = OUTCOME_TEXT_OUT_MS;
 // a short text fade on a smaller pill.
 const SMALL_TEXT_IN_MS = 220;
 const SMALL_TEXT_OUT_MS = 220;
-const OutcomeBanner = ({ label, replay }) => {
+const OutcomeBanner = ({ label }) => {
   const [display, setDisplay] = useState(null); // label currently rendered
   const [hiding, setHiding] = useState(false);  // true while the fold-out plays
   // Mirrors ``display`` without triggering the effect: the effect keys only on
@@ -274,40 +361,127 @@ const OutcomeBanner = ({ label, replay }) => {
             }),
           }}
         />
-        <ReplayIndicator replay={replay} />
       </div>
     </div>
   );
 };
 
-// Replay marker attached to the outcome banner so historical pitch replays
-// remain visually distinct without competing with the outcome text.
-const ReplayIndicator = ({ replay }) => {
-  if (!replay?.active) return null;
+// ── WAITING FOR PLAY TO RESOLVE BANNER ────────────────────────────────────
+// Contact-pitch notice that drops down from the top when the batted ball's
+// Statcast fielding point is still pending, and slides back up out of view
+// once it arrives. It stays mounted through the exit animation, then unmounts
+// when the slide-out finishes.
+const RESOLVE_BANNER_IN_MS = 420;
+const RESOLVE_BANNER_OUT_MS = 360;
+const WaitingResolveBanner = ({ active }) => {
+  const [shown, setShown] = useState(false);
+  const [hiding, setHiding] = useState(false);
+  const shownRef = useRef(false);
+
+  useEffect(() => {
+    if (active) {
+      shownRef.current = true;
+      setShown(true);
+      setHiding(false);
+    } else if (shownRef.current) {
+      setHiding(true);
+    }
+  }, [active]);
+
+  if (!shown) return null;
+
+  const finishHide = () => {
+    if (hiding) {
+      shownRef.current = false;
+      setShown(false);
+      setHiding(false);
+    }
+  };
+
   return (
     <div style={{
       position: 'absolute',
+      top: 20,
+      left: 0,
       right: 0,
-      bottom: -27,
-      zIndex: 2,
+      zIndex: 20,
+      textAlign: 'center',
       pointerEvents: 'none',
     }}>
-      <span style={{
-        display: 'inline-block',
-        padding: '5px 12px 6px',
-        background: 'rgba(42,46,54,0.96)',
-        color: '#ffd166',
-        border: 'none',
-        borderRadius: '0 0 7px 7px',
-        fontSize: 13,
-        fontFamily: 'monospace',
-        fontWeight: 'bold',
-        letterSpacing: '0.02em',
-        lineHeight: '16px',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
-        whiteSpace: 'nowrap',
-      }}>
-        ↺ REPLAY
+      <span
+        onAnimationEnd={hiding ? finishHide : undefined}
+        style={{
+          display: 'inline-block',
+          padding: '10px 22px',
+          background: 'rgba(0,0,0,0.72)',
+          color: '#ffd166',
+          border: '1px solid rgba(255,209,102,0.35)',
+          borderRadius: 8,
+          fontFamily: 'monospace',
+          fontWeight: 'bold',
+          fontSize: 16,
+          letterSpacing: '0.06em',
+          animation: hiding
+            ? `waiting-banner-out ${RESOLVE_BANNER_OUT_MS}ms ease-in forwards`
+            : `waiting-banner-in ${RESOLVE_BANNER_IN_MS}ms ease-out forwards`,
+        }}
+      >
+        ⏳ Waiting for play to resolve…
+      </span>
+    </div>
+  );
+};
+
+// ── FORCED-COMPLETION TOAST ───────────────────────────────────────────────
+// Small diagnostic toast that appears when the BattedBall watchdog has to
+// force a play to complete (instead of the choreography reaching its end
+// time). Auto-dismisses after a short hold so it reads as a brief flash.
+const FORCED_TOAST_IN_MS = 260;
+const FORCED_TOAST_HOLD_MS = 3200;
+const FORCED_TOAST_OUT_MS = 260;
+
+const ForcedCompleteToast = ({ toast, onHidden }) => {
+  const [hiding, setHiding] = useState(false);
+  useEffect(() => {
+    if (!toast) return;
+    setHiding(false);
+    const t = setTimeout(() => setHiding(true), FORCED_TOAST_HOLD_MS);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  if (!toast) return null;
+  const finishHide = () => { if (hiding) onHidden(); };
+
+  return (
+    <div style={{
+      position: 'absolute',
+      top: 96,
+      left: 0,
+      right: 0,
+      zIndex: 19,
+      textAlign: 'center',
+      pointerEvents: 'none',
+    }}>
+      <span
+        onAnimationEnd={finishHide}
+        style={{
+          display: 'inline-block',
+          padding: '7px 16px',
+          background: 'rgba(24,10,12,0.85)',
+          color: '#ff9e9e',
+          border: '1px solid rgba(255,107,107,0.5)',
+          borderRadius: 7,
+          fontFamily: 'monospace',
+          fontWeight: 'bold',
+          fontSize: 13,
+          letterSpacing: '0.04em',
+          boxShadow: '0 4px 18px rgba(255,80,80,0.25)',
+          animation: hiding
+            ? `forced-toast-out ${FORCED_TOAST_OUT_MS}ms ease-in forwards`
+            : `forced-toast-in ${FORCED_TOAST_IN_MS}ms ease-out forwards`,
+        }}
+      >
+        ⚠ Watchdog completion · {toast.playId ?? 'unknown play'} · {toast.reason}
       </span>
     </div>
   );
@@ -460,6 +634,15 @@ function AppContent() {
   const [pitchData, setPitchData] = useState(null);
   const [battedBallData, setBattedBallData] = useState(null);
   const [playbackSpeed, setPlaybackSpeed] = useState(1); // shared simulation time scale
+  // Defaults ON: the camera follows each live batted ball's trajectory once,
+  // then returns to the pre-play angle. Disabled automatically in comparison
+  // and historical-replay modes.
+  const [followBattedBall, setFollowBattedBall] = useState(true);
+  // Toggles for the pitch trail layers, default ON. Hiding them reduces visual
+  // clutter without changing the simulation (the ball still flies; only the
+  // colored tail / billow wake are dropped).
+  const [showColoredTails, setShowColoredTails] = useState(true);
+  const [showBillowParticles, setShowBillowParticles] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   // The feed can publish a new pitch before its coordinates/spin arrive. Keep
@@ -486,6 +669,15 @@ function AppContent() {
   const [atBatData, setAtBatData] = useState(null);
   const [atBatLoading, setAtBatLoading] = useState(false);
   const [atBatError, setAtBatError] = useState(null);
+  // Snapshot the pitch panel's rendered width when switching to the at-bat
+  // view so the loading placeholder doesn't shrink the panel during the fetch.
+  const [atBatSnapshotWidth, setAtBatSnapshotWidth] = useState(null);
+  // Same snapshot for height, used in both directions so the panel eases
+  // between the two views' content heights instead of snapping.
+  const [atBatSnapshotHeight, setAtBatSnapshotHeight] = useState(null);
+  // Incremented each time the Pitch tab is selected, used as a React key on
+  // the pitch content wrapper so it remounts and plays the fade-in animation.
+  const [pitchContentKey, setPitchContentKey] = useState(0);
   // Tunneling comparison visualizer: 'idle' (single-pitch view) →
   // 'selecting' (click pitches in the at-bat zone to build a set) →
   // 'active' (selected pitches + batted balls animate overlaid together).
@@ -494,7 +686,15 @@ function AppContent() {
   const [compareSelectedIds, setCompareSelectedIds] = useState([]);
   // [{ pitch, hit }] actually animating in 'active' mode.
   const [comparisonPlays, setComparisonPlays] = useState([]);
-  // Playback speed to restore when leaving comparison (0.3x is forced on enter).
+  // Bumped to restart the active comparison from the beginning (remounts the
+  // overlaid pitch/batted-ball components via their keys), so a lengthy batted
+  // ball flight can be skipped and watched again without waiting for it to land.
+  const [comparisonReplayKey, setComparisonReplayKey] = useState(0);
+  // Pitch-type labels under each overlaid pitch's strike-zone ring in
+  // comparison mode. Default ON; toggled from the comparison controls so the
+  // rings can be identified or left clean. Persists across comparisons.
+  const [showComparisonRingLabels, setShowComparisonRingLabels] = useState(true);
+  // Playback speed to restore when leaving comparison (0.2x is forced on enter).
   const [preComparisonSpeed, setPreComparisonSpeed] = useState(null);
   // Bumped each time a pitch/play resolves so the at-bat zone adds that pitch
   // only after its animation finishes (instead of spoiling it on arrival).
@@ -528,12 +728,20 @@ function AppContent() {
   // the scoreboard snapshot and advances the queue AFTER the reveal render, so
   // the outcome banner gets a frame to display before the next play starts.
   const [playCompletion, setPlayCompletion] = useState(0);
+  // Debug: how the most recent play finished — 'normal' once the choreography
+  // reached its end time, or 'watchdog' when the cycle-wrap safety net forced
+  // the completion — plus a running count of forced completions. Surfaced in
+  // the debug overlays drawer.
+  const [completionDebug, setCompletionDebug] = useState({ source: null, forced: 0 });
+  // Transient toast shown when the BattedBall watchdog force-completes a play.
+  const [forcedToast, setForcedToast] = useState(null);
   const [activeGamePk, setActiveGamePk] = useState(null); // null = backend's default game
   // Once the feed reports the game as finished (Final / Game Over / Completed
   // Early) there is nothing new to poll, so the app-level trajectory and
   // batted-ball pollers stop until a different game is selected.
   const [gameTerminal, setGameTerminal] = useState(false);
   const [liveGames, setLiveGames] = useState(null);
+  const [upcomingGames, setUpcomingGames] = useState(null);
   const [liveGamesLoading, setLiveGamesLoading] = useState(false);
   // The live-games drawer is capped so it stretches from below the control
   // panel down to just above the bottom-left pitch panel (or the WASD hint
@@ -550,6 +758,14 @@ function AppContent() {
   const gamesListRef = useRef(null);
   const [drawerMaxHeight, setDrawerMaxHeight] = useState(null);
   const [gamesListMaxHeight, setGamesListMaxHeight] = useState(null);
+  // Rendered width of the bottom-left pitch/at-bat panel, so the live-games
+  // drawer can match it exactly.
+  const pitchPanelRef = useRef(null);
+  const [pitchPanelWidth, setPitchPanelWidth] = useState(null);
+  // The debug-overlays drawer's rendered width, measured so the playback
+  // panel above it can match it exactly.
+  const overlaysRef = useRef(null);
+  const [overlaysWidth, setOverlaysWidth] = useState(null);
   // play_id of the currently-animating pitch / batted ball, so polling can
   // tell a genuinely new play from a re-fetch of the same one.
   const lastTrajectoryPlayId = useRef(null);
@@ -570,6 +786,12 @@ function AppContent() {
   const trajectoryQueueRef = useRef([]);
   const queuedTrajectoryPlayIdsRef = useRef(new Set());
   const knownTrajectoryPlayIdsRef = useRef(new Set());
+  // Timer for the QUEUE_PLAY_GAP_MS pause between back-to-back queued plays.
+  const queueStartTimerRef = useRef(null);
+  // Mirror of trajectoryQueueRef.current.length kept in React state so the UI
+  // (the Jump-to-newest control) can show the queue size / appear only when
+  // plays are actually waiting. Synced at every queue mutation.
+  const [queuedPlayCount, setQueuedPlayCount] = useState(0);
   const pitchDataRef = useRef(null);
   // A play can be enriched (run/out/result) after its trajectory starts. Keep
   // the newest scoreboard snapshot without replacing pitchData and restarting
@@ -577,14 +799,26 @@ function AppContent() {
   const currentPitchScoreSnapshotRef = useRef(null);
   // The scoreboard snapshot captured the moment a play finished, held so the
   // deferred completion effect can commit exactly that play's state even if a
-  // newer poll has already applied the next play.
+  // newer poll has already applied the next play. Refreshed by the late-
+  // resolution guard when an enriched payload arrives after the animation
+  // finished, so the deferred commit still lands the play's final state.
   const completedPlaySnapshotRef = useRef(null);
   const replayRef = useRef(replay);
+  // Comparison mode's live baseline: the play_id that was current when the
+  // overlaid comparison started. Polling continues, but a genuinely newer
+  // play is surfaced as a notice instead of replacing the comparison.
+  const compareModeRef = useRef(compareMode);
+  const comparisonBaselinePlayIdRef = useRef(null);
   pitchDataRef.current = pitchData;
   replayRef.current = replay;
+  compareModeRef.current = compareMode;
   // play_id whose outcome has already been shown, so the looping playback
   // doesn't re-trigger the indicator for the same pitch.
   const outcomeShownPlayId = useRef(null);
+  // Last no-pitch play outcome surfaced from the trajectory payload (an
+  // automatic intentional walk / standalone pickoff attempt), so the 1s poll
+  // doesn't re-show the same banner on every tick.
+  const lastPendingPlayEventRef = useRef(null);
   // Whether the currently-active play has fully finished animating (every out
   // and the final result emitted). Separate from the revealed outcome label so
   // an intermediate OUT on a double/triple play can't be mistaken for the play
@@ -730,6 +964,7 @@ function AppContent() {
         withGame(`${API_BASE}/api/trajectory`, gamePk, {
           after_play_id: lastTrajectoryPlayId.current,
         }),
+        { timeout: LIVE_POLL_TIMEOUT_MS },
       );
       const d = response.data;
       // Drop this response only when a NEWER response has already been
@@ -755,6 +990,18 @@ function AppContent() {
       setWaitingForPitchData(waiting);
       setPendingPitchNumber(waiting ? (d?.pending_pitch_number ?? null) : null);
 
+      // A no-pitch play (an automatic intentional walk, a standalone pickoff
+      // attempt) has no trajectory to animate, but its result still deserves a
+      // banner. The backend surfaces it via ``pending_play_event`` when the
+      // feed has moved past the last simulatable pitch into such a play.
+      const pendingPlayEvent = d?.pending_play_event || null;
+      if (pendingPlayEvent !== lastPendingPlayEventRef.current) {
+        lastPendingPlayEventRef.current = pendingPlayEvent;
+        if (pendingPlayEvent) {
+          setPitchOutcome(resolvePlayOutcomeLabel({ pending_play_event: pendingPlayEvent }));
+        }
+      }
+
       // While replaying, keep the selected historical pitch on screen. The
       // poller still runs so a later live play can be detected, but it must not
       // silently end the replay. The baseline was already live when replay
@@ -770,6 +1017,22 @@ function AppContent() {
           d?.pending_pitch_id != null &&
           d.pending_pitch_id !== replayRef.current.playId &&
           d.pending_pitch_id !== replayRef.current.livePlayId
+        );
+        if (hasNewLivePlay || hasNewPendingPitch) setNewLivePlayAvailable(true);
+        return;
+      }
+      // While the tunneling comparison is being set up or animating, protect
+      // it the same way: a newer live play must not change the at-bat being
+      // selected from, replace the overlaid pitches, or restart anything
+      // underneath them. Surface it as a notice instead, and let the next poll
+      // apply it once the comparison is cancelled or exited.
+      if ((compareModeRef.current === 'selecting' || compareModeRef.current === 'active') && comparisonBaselinePlayIdRef.current != null) {
+        const baseline = comparisonBaselinePlayIdRef.current;
+        const hasNewLivePlay = d?.play_id != null && d?.play_id !== baseline;
+        const hasNewPendingPitch = (
+          waiting &&
+          d?.pending_pitch_id != null &&
+          d.pending_pitch_id !== baseline
         );
         if (hasNewLivePlay || hasNewPendingPitch) setNewLivePlayAvailable(true);
         return;
@@ -821,11 +1084,49 @@ function AppContent() {
         // DOUBLE PLAY callbacks can catch up with the current flight clock.
         if (nextTrajectoryResolutionKey === lastTrajectoryResolutionKey.current) return;
         lastTrajectoryResolutionKey.current = nextTrajectoryResolutionKey;
+        // A late-arriving action_event (stolen base / caught stealing / pickoff
+        // attempt / balk / wild pitch / passed ball) or a late-resolved
+        // result_event (walk / strikeout / ...) can land a poll after the pitch
+        // already reached the plate and showed a bare BALL/STRIKE. Merge those
+        // two fields into the live pitch in place — same object identity, so
+        // the Pitch/Batter/BattedBall clocks don't restart — then surface the
+        // outcome the earlier reveal missed.
+        const livePitch = pitchDataRef.current;
+        if (livePitch && livePitch.play_id === d.play_id) {
+          const prevAction = livePitch.action_event ?? null;
+          const prevResult = livePitch.result_event ?? null;
+          const nextAction = d.action_event ?? null;
+          const nextResult = d.result_event ?? null;
+          if (nextAction !== prevAction) livePitch.action_event = nextAction;
+          if (nextResult !== prevResult) livePitch.result_event = nextResult;
+          // Only surface the late outcome once the play has already finished
+          // (a take/whiff resolves at the plate). If the poll lands while the
+          // pitch is still in flight, just merge the fields above: the upcoming
+          // handlePitchArrival reads the enriched pitchData and reveals the
+          // right label at the plate instead of spoiling it early. Showing
+          // early would also mark the outcome shown and make handlePitchArrival
+          // skip finishCurrentPlay, which would wedge the queue.
+          if ((nextAction !== prevAction || nextResult !== prevResult) && playFinishedRef.current) {
+            const lateLabel = resolvePlayOutcomeLabel(livePitch);
+            if (lateLabel) showOutcome(lateLabel);
+          }
+        }
         if (nextBattedPayload && nextBattedResolutionKey !== lastBattedResolutionKey.current) {
           lastBattedPlayId.current = nextBattedPayload.play_id;
           lastBattedResolutionKey.current = nextBattedResolutionKey;
           rememberAppliedBattedBall(nextBattedPayload, nextBattedResolutionKey);
           setBattedBallData(nextBattedBall);
+        }
+        // Late-resolution guard: a play can gain its run/out/result after its
+        // animation already finished. The completion committed the play's
+        // un-enriched snapshot, so re-commit the enriched one here — the
+        // scorebug must reflect the late result even though nothing is left to
+        // animate. Refresh the deferred completion snapshot too, so a
+        // completion effect that hasn't run yet commits the enriched state
+        // instead of overwriting this override with the stale one.
+        if (playFinishedRef.current && d?.game_state) {
+          completedPlaySnapshotRef.current = d.game_state;
+          setScorebugStateOverride(d.game_state);
         }
         return;
       }
@@ -856,11 +1157,25 @@ function AppContent() {
     } catch (err) {
       const detail = err.response?.data?.detail;
       const isWaiting = detail === NO_SIMULATABLE_PITCH_DETAIL;
+      // The backend returns a 502 when the MLB feed itself is slow or down.
+      // That's transient — the 1s poller retries and recovers — so it must not
+      // flash a hard "Failed to fetch trajectory" banner (which made Jump to
+      // newest look broken during a cold rebuild or a momentary feed outage).
+      const isFeedDown = typeof detail === 'string' && detail.startsWith('Failed to fetch from MLB API');
       if (isWaiting && seq >= lastTrajectoryAppliedSeq.current) {
         // A game can have no valid pitch yet, so there is no previous payload
         // to carry the status. Treat the expected 404 as a waiting state, not
         // as a red error banner.
         setWaitingForPitchData(true);
+        setPendingPitchNumber(null);
+        setError(null);
+      } else if (isFeedDown) {
+        // Keep the current view and let the poller retry; surface nothing more
+        // than a console warning so the feed blip isn't mistaken for a failure.
+        if (!silent && seq === trajectoryReqSeq.current) {
+          console.warn("Trajectory feed temporarily unavailable, will retry", err);
+        }
+        setWaitingForPitchData(false);
         setPendingPitchNumber(null);
         setError(null);
       } else if (!silent && seq === trajectoryReqSeq.current) {
@@ -921,6 +1236,15 @@ function AppContent() {
     }
     queuedTrajectoryPlayIdsRef.current.add(playId);
     trajectoryQueueRef.current.push(d);
+    // Cap the backlog: once the queue passes the max, drop the oldest
+    // unrendered play. Its id stays in knownTrajectoryPlayIdsRef so a later
+    // poll's catch-up list won't resurrect it; the newest plays always remain
+    // queued and animate next.
+    while (trajectoryQueueRef.current.length > MAX_QUEUED_PLAYS) {
+      const dropped = trajectoryQueueRef.current.shift();
+      queuedTrajectoryPlayIdsRef.current.delete(dropped?.play_id ?? null);
+    }
+    setQueuedPlayCount(trajectoryQueueRef.current.length);
     return true;
   };
 
@@ -1014,19 +1338,45 @@ function AppContent() {
     setPitchData(d);
   };
 
+  const cancelQueuedStart = () => {
+    if (queueStartTimerRef.current) {
+      clearTimeout(queueStartTimerRef.current);
+      queueStartTimerRef.current = null;
+    }
+  };
+
   // Drain the queue by starting the next play when the current one is finished
   // (or when nothing is active). This is the single point that advances from
   // one play to the next, so queued plays always animate in arrival order and
   // never skip ahead to a play that hasn't animated yet.
   const startNextQueuedPlay = () => {
     if (replayRef.current.active) return;
+    // If a gap between plays is already scheduled, leave it to that tick so a
+    // concurrent poll can't jump the queue and clear the finished play's
+    // outcome before it has been seen.
+    if (queueStartTimerRef.current) return;
     const hasActivePitch = !!pitchDataRef.current || lastTrajectoryPlayId.current != null;
     if (hasActivePitch && !playFinishedRef.current) return;
     const next = trajectoryQueueRef.current.shift();
     if (next) {
       queuedTrajectoryPlayIdsRef.current.delete(next.play_id ?? null);
       applyTrajectoryPayload(next);
+      // A play left the queue: refresh the on-screen count so the Jump-to-
+      // newest control keeps its badge accurate as the backlog drains.
+      setQueuedPlayCount(trajectoryQueueRef.current.length);
     }
+  };
+
+  // Advance the queue after a short pause so each just-finished play's outcome
+  // indicator is visible in order before the next play's animation clears it.
+  // Idempotent: re-scheduling replaces any pending timer.
+  const scheduleNextQueuedPlay = () => {
+    if (replayRef.current.active) return;
+    cancelQueuedStart();
+    queueStartTimerRef.current = setTimeout(() => {
+      queueStartTimerRef.current = null;
+      startNextQueuedPlay();
+    }, QUEUE_PLAY_GAP_MS);
   };
 
   const fetchBattedBall = async (gamePk = activeGamePk, { silent = false } = {}) => {
@@ -1037,6 +1387,7 @@ function AppContent() {
         withGame(`${API_BASE}/api/batted-ball`, gamePk, {
           after_play_id: lastBattedPlayId.current,
         }),
+        { timeout: LIVE_POLL_TIMEOUT_MS },
       );
       const d = response.data;
       // Drop this response only when a NEWER response has already arrived, so
@@ -1060,20 +1411,35 @@ function AppContent() {
     }
   };
 
-  const fetchLiveGames = async () => {
+  const fetchLiveGames = async ({ silent = false } = {}) => {
     try {
-      setLiveGamesLoading(true);
+      if (!silent) setLiveGamesLoading(true);
       const response = await axios.get(`${API_BASE}/api/live-games`);
       setLiveGames(response.data?.games ?? []);
+      setUpcomingGames(response.data?.upcoming ?? []);
     } catch (err) {
       console.error("Failed to fetch live games", err);
     } finally {
-      setLiveGamesLoading(false);
+      if (!silent) setLiveGamesLoading(false);
     }
   };
 
-  // Force a full re-fetch + re-animate, used by the Refresh button and when a
-  // game is picked from the live-games drawer.
+  // Auto-refresh the drawer in the background. A ref keeps the interval stable
+  // across the frequent re-renders caused by live pitch polling (re-keying the
+  // effect on ``fetchLiveGames`` would restart the timer every render).
+  const fetchLiveGamesRef = useRef(fetchLiveGames);
+  fetchLiveGamesRef.current = fetchLiveGames;
+  useEffect(() => {
+    const id = setInterval(() => fetchLiveGamesRef.current({ silent: true }), LIVE_GAMES_REFRESH_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  // Force a full re-fetch + re-animate to the newest live play, used whenever
+  // the user returns to the live feed: picking a game from the live-games
+  // drawer, re-entering the currently-watched game, abandoning a replay back
+  // to live, or exiting a comparison. It discards any queued-but-unrendered
+  // plays and resets every cursor so the next fetch applies ONLY the newest
+  // play instead of draining a stale catch-up list one animation at a time.
   const refreshAll = (gamePk = activeGamePk) => {
     // Invalidate any poll still in flight from a previous game or replay
     // period. A replay-period request is built from the replayed pitch's
@@ -1088,6 +1454,8 @@ function AppContent() {
 
     trajectoryQueueRef.current = [];
     queuedTrajectoryPlayIdsRef.current.clear();
+    setQueuedPlayCount(0);
+    cancelQueuedStart();
     knownTrajectoryPlayIdsRef.current.clear();
     pendingBattedBallsRef.current.clear();
     setNewLivePlayAvailable(false);
@@ -1099,13 +1467,24 @@ function AppContent() {
     lastBattedPlayId.current = null;
     lastTrajectoryResolutionKey.current = null;
     lastBattedResolutionKey.current = null;
+    lastPendingPlayEventRef.current = null;
     fetchTrajectory(gamePk);
     fetchBattedBall(gamePk);
     setHudRefresh(prev => prev + 1);
   };
 
   const selectGame = (gamePk) => {
-    if (gamePk === activeGamePk) return;
+    if (gamePk === activeGamePk) {
+      // Re-entering the game the user is already on: if plays are queued but
+      // not yet rendered, drop them and jump straight to the newest play.
+      // Nothing is skipped when nothing is waiting (a plain no-op).
+      if (trajectoryQueueRef.current.length > 0
+          || queuedTrajectoryPlayIdsRef.current.size > 0
+          || pendingBattedBallsRef.current.size > 0) {
+        refreshAll(activeGamePk);
+      }
+      return;
+    }
     setActiveGamePk(gamePk);
     // Clear the previous game's pitch/batted-ball/at-bat state so a live game
     // whose first fetch fails (or which has no pitch data yet, e.g. a warmup
@@ -1123,11 +1502,20 @@ function AppContent() {
     outcomeShownPlayId.current = null;
     setAtBatData(null);
     setAtBatError(null);
-    setPitchPanelOpen(false);
+    // Keep the at-bat window expanded (and its view) across the new game's
+    // first fetch: it collapses only when the new game's first play starts
+    // animating and reopens in the same view once it finishes.
     // Selecting a different game resumes the app-level pollers; the new
     // game's first payload flips this back if it is already final.
     setGameTerminal(false);
     refreshAll(gamePk);
+  };
+
+  // Snap the live view straight to the newest play: discard any queued-but-
+  // unrendered plays and re-fetch the newest from scratch (the same discard
+  // path used by switching games, exiting replay, and exiting comparison).
+  const jumpToNewest = () => {
+    refreshAll(activeGamePk);
   };
 
   const fetchAtBat = async (atBatIndex) => {
@@ -1157,16 +1545,36 @@ function AppContent() {
   };
 
   const selectPitchView = () => {
-    // Leaving the at-bat view ends an active comparison (its controls live in
-    // the at-bat body, so there'd otherwise be no way out).
+    // Leaving the at-bat view ends an active comparison or drops a pending
+    // selection (its controls live in the at-bat view, so there'd otherwise
+    // be no way out).
     if (compareMode === 'active') exitComparison();
+    if (compareMode === 'selecting') cancelCompareSelecting();
     if (!pitchData) return;
+    // Freeze the panel's current dimensions so the switch back to the pitch
+    // view eases from the at-bat content's size instead of snapping.
+    const panel = pitchPanelRef.current;
+    if (panel) {
+      const rect = panel.getBoundingClientRect();
+      setAtBatSnapshotWidth(rect.width);
+      setAtBatSnapshotHeight(rect.height);
+    }
     setAtBatOpen(false);
     setPitchPanelOpen(true);
+    // Bump the key so the pitch content wrapper remounts and fades in.
+    setPitchContentKey((k) => k + 1);
   };
 
   const selectAtBatView = () => {
     if (!pitchData) return;
+    // Freeze the panel's current rendered dimensions so the loading state
+    // (or the empty gap before it) doesn't collapse the panel inward.
+    const panel = pitchPanelRef.current;
+    if (panel) {
+      const rect = panel.getBoundingClientRect();
+      setAtBatSnapshotWidth(rect.width);
+      setAtBatSnapshotHeight(rect.height);
+    }
     setAtBatOpen(true);
     setPitchPanelOpen(true);
   };
@@ -1177,6 +1585,21 @@ function AppContent() {
   const startCompareSelecting = () => {
     setCompareSelectedIds([]);
     setCompareMode('selecting');
+    // Protect the at-bat being selected from: a new live play is surfaced as
+    // a notice instead of swapping in and resetting the zone mid-selection.
+    comparisonBaselinePlayIdRef.current = lastTrajectoryPlayId.current;
+    setNewLivePlayAvailable(false);
+  };
+
+  // Drop a pending comparison selection and return to the normal at-bat view
+  // (playback speed is untouched — it only changes when the comparison runs).
+  const cancelCompareSelecting = () => {
+    setCompareMode('idle');
+    setCompareSelectedIds([]);
+    // Releasing the protection lets the next poll apply any play that arrived
+    // while the selection was open.
+    comparisonBaselinePlayIdRef.current = null;
+    setNewLivePlayAvailable(false);
   };
 
   const toggleCompareSelection = (p) => {
@@ -1188,7 +1611,7 @@ function AppContent() {
     ));
   };
 
-  // Turn the selected pitches into overlaid animations. Forced down to 0.3x,
+  // Turn the selected pitches into overlaid animations. Forced down to 0.2x,
   // with the pre-comparison speed saved so exit can restore it.
   const startComparison = () => {
     if (compareSelectedIds.length < 2) return;
@@ -1215,17 +1638,37 @@ function AppContent() {
     setTimeScale(COMPARE_PLAYBACK_SPEED);
     setComparisonPlays(plays);
     setCompareMode('active');
+    // A live play that arrives while the overlaid pitches animate is protected
+    // (see fetchTrajectory) and surfaced as a notice, so it can't knock the
+    // viewer out of the comparison. Remember which play was live when it began.
+    comparisonBaselinePlayIdRef.current = lastTrajectoryPlayId.current;
+    setNewLivePlayAvailable(false);
   };
 
   const exitComparison = () => {
     setCompareMode('idle');
     setComparisonPlays([]);
     setCompareSelectedIds([]);
+    comparisonBaselinePlayIdRef.current = null;
+    setNewLivePlayAvailable(false);
     if (preComparisonSpeed != null) {
       setPlaybackSpeed(preComparisonSpeed);
       setTimeScale(preComparisonSpeed);
     }
     setPreComparisonSpeed(null);
+    // Returning to the live feed: discard any queued-but-unrendered plays and
+    // animate only the newest live play, same as Back to Live and switching
+    // games. The trajectory cursor stayed frozen at the pre-comparison
+    // baseline while the overlay ran, so re-fetching from scratch (rather
+    // than letting the next poll drain the catch-up list of everything that
+    // happened meanwhile) is what prevents a barrage of stale plays.
+    setPitchData(null);
+    setBattedBallData(null);
+    setPitchOutcome(null);
+    setWaitingForPitchData(false);
+    setPendingPitchNumber(null);
+    outcomeShownPlayId.current = null;
+    refreshAll(activeGamePk);
   };
 
   // Replay one pitch from the at-bat: swap it in exactly like a freshly-arrived
@@ -1236,6 +1679,16 @@ function AppContent() {
     // can't overwrite the replayed pitch after it lands.
     trajectoryReqSeq.current += 1;
     battedReqSeq.current += 1;
+    // Freeze the panel's current dimensions (at-bat content) so the switch
+    // back to the pitch view eases smoothly instead of snapping.
+    const panel = pitchPanelRef.current;
+    if (panel) {
+      const rect = panel.getBoundingClientRect();
+      setAtBatSnapshotWidth(rect.width);
+      setAtBatSnapshotHeight(rect.height);
+    }
+    // Bump the key so the pitch content wrapper remounts and fades in.
+    setPitchContentKey((k) => k + 1);
     setAtBatOpen(false);
     if (!replayRef.current.active) setNewLivePlayAvailable(false);
     const nextReplay = {
@@ -1253,6 +1706,7 @@ function AppContent() {
     };
     trajectoryQueueRef.current = [];
     queuedTrajectoryPlayIdsRef.current.clear();
+    setQueuedPlayCount(0);
     replayRef.current = nextReplay;
     setReplay(nextReplay);
     outcomeShownPlayId.current = null;
@@ -1276,14 +1730,15 @@ function AppContent() {
     queuedTrajectoryPlayIdsRef.current.clear();
     setScorebugStateOverride(null);
     setReplay(nextReplay);
-    setAtBatOpen(false);
+    // Keep the at-bat window expanded and in its current view across the live
+    // re-fetch: it collapses only when the new live play starts animating
+    // (applyTrajectoryPayload) and reopens in the same view once it finishes.
     // Clear the replayed pitch immediately so the scene doesn't keep looping
-    // it while the fresh live fetch is in flight, and reset the outcome/panel
-    // state so the next live play reveals cleanly.
+    // it while the fresh live fetch is in flight, and reset the outcome state
+    // so the next live play reveals cleanly.
     setPitchData(null);
     setBattedBallData(null);
     setPitchOutcome(null);
-    setPitchPanelOpen(false);
     setWaitingForPitchData(false);
     setPendingPitchNumber(null);
     outcomeShownPlayId.current = null;
@@ -1320,41 +1775,11 @@ function AppContent() {
     // A pitch the bat met hands off to BattedBall, which finishes the play via
     // handlePlayComplete. A take / whiff is fully resolved at the plate.
     const isContactPitch = pitchData?.is_contact === true;
-    const event = pitchData?.result_event;
-    // A strikeout / walk / hit-by-pitch / stolen base / caught stealing /
-    // pickoff is final the moment the ball reaches the plate, so reveal its
-    // specific outcome right away instead of a bare BALL/STRIKE.
-    if (event && IMMEDIATE_RESULT_EVENTS.has(event)) {
-      // Strikeout/walk/hit-by-pitch are only "immediate" when this pitch is
-      // the one that ended the at-bat. Replaying an earlier pitch of a
-      // completed at-bat must show that pitch's own BALL/STRIKE/FOUL instead.
-      // (``is_at_bat_final`` is absent on live payloads, which are always the
-      // final pitch of their at-bat, so the shortcut still applies there.)
-      if (!AT_BAT_ENDING_EVENTS.has(event) || pitchData?.is_at_bat_final !== false) {
-        showOutcome(specificOutcomeLabel(event));
-        if (!isContactPitch) finishCurrentPlay();
-        return;
-      }
-    }
-    // A wild pitch / passed ball is an action event attached to the pitch that
-    // got away, not the play's result. Show it when the batter's outcome
-    // wasn't already definitive, so it isn't hidden behind a bare BALL/STRIKE.
-    const action = pitchData?.action_event;
-    if (action === 'Wild Pitch' || action === 'Passed Ball') {
-      showOutcome(specificOutcomeLabel(action));
-      if (!isContactPitch) finishCurrentPlay();
-      return;
-    }
-    const call = pitchData?.call_code;
-    if (call === 'B' || call === '*B' || call === 'P') {
-      showOutcome('BALL');
-    } else if (call === 'H') {
-      showOutcome('HIT BY PITCH');
-    } else if (call === 'F' || call === 'T' || call === 'L') {
-      showOutcome('FOUL');
-    } else if (call === 'C' || call === 'S' || call === 'W' || call === 'M') {
-      showOutcome('STRIKE');
-    }
+    // Resolve and reveal the outcome now (specific result/action, or the bare
+    // ball/strike call). A take / whiff finishes at the plate; a contact pitch
+    // hands completion to BattedBall.
+    const label = resolvePlayOutcomeLabel(pitchData);
+    if (label) showOutcome(label);
     if (!isContactPitch) finishCurrentPlay();
   };
 
@@ -1386,14 +1811,53 @@ function AppContent() {
   // settled). Unlike handlePlayResult, which fires per result (including the
   // intermediate OUT of a double play), this fires exactly once per play and
   // is the signal that advances to the next queued play.
-  const handlePlayComplete = () => {
+  const handlePlayComplete = (source, details) => {
     finishCurrentPlay();
+    const isWatchdog = source === 'watchdog';
+    // A play can finish without ever showing an outcome: a watchdog completion
+    // can fire before the batted-ball choreography emitted its OUT/SINGLE/etc.,
+    // and a contacted pitch whose hit never arrived never emits one at all.
+    // Surface the specific play result in that case so the banner isn't blank
+    // (an out in play reads OUT as a last resort).
+    //
+    // Guard: only override the outcome for contact pitches (call_code 'X' / 'E'
+    // / 'D' / 'F' / 'L'). A watchdog that fires spuriously for a non-contact
+    // pitch (a race where stale BattedBall refs survived the pitchData swap)
+    // must NOT surface the at-bat's final result_event as an OUT — the pitch's
+    // own arrival handler already revealed the correct BALL/STRIKE and finished
+    // the play.
+    if (outcomeShownPlayId.current !== (pitchData?.play_id ?? null)) {
+      const isContact = ['X', 'E', 'D', 'F', 'L'].includes(pitchData?.call_code);
+      const label = isContact
+        ? (specificOutcomeLabel(battedBallData?.event || pitchData?.result_event)
+           || (pitchData?.call_code === 'X' ? 'OUT' : null))
+        : null;
+      if (label) showOutcome(label);
+    }
+    setCompletionDebug((prev) => ({
+      source: isWatchdog ? 'watchdog' : 'normal',
+      forced: prev.forced + (isWatchdog ? 1 : 0),
+    }));
+    if (isWatchdog) {
+      const playId = details?.playId ?? pitchData?.play_id ?? null;
+      const reason = details?.reason ?? 'unknown';
+      console.warn('[watchdog] forced play completion', {
+        playId,
+        reason,
+        endTime: details?.endTime,
+      });
+      setForcedToast({ key: performance.now(), playId, reason });
+    }
   };
 
   useEffect(() => {
     fetchTrajectory();
     fetchBattedBall();
     fetchLiveGames();
+    // Clear any pending queue-advance timer if the app unmounts.
+    return () => {
+      if (queueStartTimerRef.current) clearTimeout(queueStartTimerRef.current);
+    };
   }, []);
 
   // League-average break by pitch type for the panel's H/V Break comparison
@@ -1439,6 +1903,29 @@ function AppContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [atBatOpen, pitchData?.at_bat_index, atBatOutcomeRefresh]);
 
+  // Release the frozen panel dimensions once the at-bat data arrives (the
+  // loading state is done) or when switching back to the pitch view. The
+  // useEffect fires after paint, so the min-width/min-height transition
+  // plays from the snapshot to the new natural size instead of snapping.
+  //
+  // Height is released first so the panel eases to its target vertical
+  // size, then width follows after a short stagger to feel more deliberate
+  // — avoids both dimensions shifting at once when the content sizes differ.
+  useEffect(() => {
+    if (!atBatOpen || atBatData) {
+      const heightRaf = requestAnimationFrame(() => {
+        setAtBatSnapshotHeight(null);
+      });
+      const widthTimer = setTimeout(() => {
+        setAtBatSnapshotWidth(null);
+      }, 160);
+      return () => {
+        cancelAnimationFrame(heightRaf);
+        clearTimeout(widthTimer);
+      };
+    }
+  }, [atBatOpen, atBatData]);
+
   // Once a play fully finishes, commit its scoreboard snapshot, open the panel,
   // and start the next queued play. Deferred to an effect (keyed on
   // playCompletion rather than pitchOutcome) so it runs exactly once per play —
@@ -1457,7 +1944,7 @@ function AppContent() {
     setScorebugOutcomeRefresh(prev => prev + 1);
     setAtBatOutcomeRefresh(prev => prev + 1);
 
-    startNextQueuedPlay();
+    scheduleNextQueuedPlay();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playCompletion]);
 
@@ -1477,6 +1964,25 @@ function AppContent() {
     pitchData?.call_code !== 'F' &&
     pitchData?.call_code !== 'L' &&
     !isHitFieldingReady(battedBallData)
+  );
+
+  // Shared base style for the lightweight top-left status lines (loading /
+  // waiting-for-pitch-data / error). No panel box, just readable text over the
+  // field with a dark shadow so it stays legible against the grass and sky.
+  const topLeftStatusTextStyle = {
+    fontFamily: 'monospace',
+    fontSize: 12,
+    lineHeight: '16px',
+    padding: '2px 4px',
+    textShadow: '0 1px 3px rgba(0,0,0,0.9), 0 0 8px rgba(0,0,0,0.6)',
+    whiteSpace: 'pre-wrap',
+    maxWidth: '280px',
+  };
+
+  // The Upcoming section only shows today's not-yet-started games; tomorrow's
+  // games are omitted so the drawer stays focused on the current day.
+  const todayUpcomingGames = (upcomingGames ?? []).filter(
+    (g) => gameDayOffset(g) === 0,
   );
 
   // Horizontal/vertical break display: Statcast pfx (in) plus how far above or
@@ -1563,9 +2069,38 @@ function AppContent() {
     };
   }, [pitchData, pitchPanelOpen, loading, error, waitingForPitchData, pendingPitchNumber, newLivePlayAvailable]);
 
+  // Track the debug-overlays drawer's rendered width so the playback panel
+  // above it matches exactly (the drawer only mounts once overlay data exists,
+  // so re-run whenever its render condition could change).
+  useLayoutEffect(() => {
+    const drawer = overlaysRef.current;
+    if (!drawer) return;
+    const update = () => setOverlaysWidth(drawer.getBoundingClientRect().width);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(drawer);
+    return () => ro.disconnect();
+  }, [crossings, pitchData, battedBallData]);
+
+  // Track the bottom-left pitch/at-bat panel's rendered width so the
+  // live-games drawer matches it exactly (including the at-bat view, which
+  // can render wider than the pitch view).
+  useLayoutEffect(() => {
+    const panel = pitchPanelRef.current;
+    if (!panel) {
+      setPitchPanelWidth(null);
+      return;
+    }
+    const update = () => setPitchPanelWidth(panel.getBoundingClientRect().width);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(panel);
+    return () => ro.disconnect();
+  }, [pitchData]);
+
   return (
     <div style={{ width: '100vw', height: '100vh', position: 'relative' }}>
-      {/* ── TOP-LEFT: control panel + live games drawer ── */}
+      {/* ── TOP-LEFT: status text / replay badge + live games drawer ── */}
       <div ref={topLeftRef} style={{
         position: 'absolute',
         top: 20,
@@ -1576,86 +2111,88 @@ function AppContent() {
         alignItems: 'flex-start',
         gap: 10,
       }}>
-      <div style={{
-        background: 'rgba(0,0,0,0.7)',
-        color: 'white',
-        padding: '10px 20px',
-        borderRadius: '8px',
-        fontFamily: 'monospace',
-        minWidth: '250px'
-      }}>
-        <div style={{
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'
-        }}>
-          <h2 style={{ margin: '0' }}>8-Bit Pitch</h2>
-          <button 
-            onClick={() => refreshAll()}
-            disabled={loading}
-            style={{ padding: '4px 8px', cursor: 'pointer', background: '#444', color: 'white', border: 'none', borderRadius: '4px' }}
-          >
-            Refresh
-          </button>
-        </div>
-        
-        <button 
-          onClick={() => setSnapTrigger(prev => prev + 1)}
-          style={{ width: '100%', padding: '6px 8px', marginBottom: '6px', cursor: 'pointer', background: '#0066cc', color: 'white', border: 'none', borderRadius: '4px', fontWeight: 'bold' }}
-        >
-          Snap to Strike Zone
-        </button>
-
-        {/* ── PLAYBACK SPEED SLIDER ─────────────────────── */}
+      {/* Lightweight status text replaces the old 8-Bit Pitch panel: backend
+          failures and feed-catching-up state stay visible without a box. */}
+      {loading && !waitingForPitchData && !replay.active && (
+        <div style={{ ...topLeftStatusTextStyle, color: '#e6e6e6' }}>Loading data…</div>
+      )}
+      {waitingForPitchData && !replay.active && (
         <div
-          id="playback-speed-slider"
-          title="Scales the whole simulation (pitch, swing, and batted ball) together"
-          style={{
-            width: '100%',
-            marginBottom: '10px',
-            padding: '6px 8px',
-            borderRadius: '4px',
-            background: playbackSpeed === 1
-              ? 'linear-gradient(90deg, #0e4a4a 0%, #1a8a8a 100%)'
-              : 'linear-gradient(90deg, #7a3a00 0%, #ff9933 100%)',
-            boxShadow: playbackSpeed === 1 ? '0 0 8px #1a8a8a44' : '0 0 8px #ff993344',
-          }}
+          role="status"
+          aria-live="polite"
+          style={{ ...topLeftStatusTextStyle, color: '#ffd166' }}
         >
-          <label
-            htmlFor="playback-speed-range"
-            style={{ display: 'block', marginBottom: '4px', fontWeight: 'bold', fontSize: '11px', letterSpacing: '0.03em', color: 'white' }}
-          >
-            {playbackSpeed === 1
-              ? '⏱ Playback: 1× Real Time'
-              : `⏱ Playback: ${Number(playbackSpeed.toFixed(2))}× Slow-Mo`}
-          </label>
-          <input
-            id="playback-speed-range"
-            type="range"
-            min={SLOWEST_SPEED}
-            max={1}
-            step={0.01}
-            value={playbackSpeed}
-            onChange={(e) => {
-              const next = parseFloat(e.target.value);
-              setPlaybackSpeed(next);
-              setTimeScale(next);
-            }}
-            style={{ width: '100%', cursor: 'pointer', accentColor: '#22cccc' }}
-          />
+          ⏳ Waiting for pitch data
+          {pendingPitchNumber != null ? ` (pitch ${pendingPitchNumber})` : '…'}
         </div>
+      )}
+      {error && (
+        <div role="alert" style={{ ...topLeftStatusTextStyle, color: '#ff6b6b' }}>
+          {error}
+        </div>
+      )}
 
-        {loading && !waitingForPitchData && <p>Loading data...</p>}
-        {waitingForPitchData && (
-          <p
-            role="status"
-            aria-live="polite"
-            style={{ color: '#ffd166', margin: '8px 0 0' }}
+      {/* Snap the live view to the newest play, discarding any plays queued
+          behind the current animation (they would otherwise drain one-by-one
+          and lag the live feed). Shown only when plays are actually waiting —
+          clean control surface during normal play — with a badge of how many
+          plays are behind. Hidden while replaying/comparing; they have their
+          own return-to-live controls. */}
+      {!replay.active && compareMode === 'idle' && queuedPlayCount > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button
+            onClick={jumpToNewest}
+            title="Discard queued plays and jump to the newest live play"
+            style={{
+              padding: '4px 10px',
+              cursor: 'pointer',
+              background: '#1a4a7a',
+              color: 'white',
+              border: '1px solid #4a9eff',
+              borderRadius: '6px',
+              fontSize: '11px',
+              fontFamily: 'monospace',
+              fontWeight: 'bold',
+            }}
           >
-            ⏳ Waiting for pitch data
-            {pendingPitchNumber != null ? ` (pitch ${pendingPitchNumber})` : '…'}
-          </p>
-        )}
-        {error && <p style={{ color: '#ff6b6b' }}>{error}</p>}
-      </div>
+            ⤓ Jump to newest
+          </button>
+          <span
+            title={`${queuedPlayCount} play${queuedPlayCount === 1 ? '' : 's'} queued behind the current animation`}
+            style={{
+              padding: '2px 7px',
+              background: 'rgba(234,179,8,0.16)',
+              color: '#ffd166',
+              border: '1px solid rgba(234,179,8,0.5)',
+              borderRadius: '10px',
+              fontSize: '10px',
+              fontFamily: 'monospace',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {queuedPlayCount} plays behind
+          </span>
+        </div>
+      )}
+
+      {/* While a historical pitch is being replayed, the replay badge takes
+          the old 8-Bit Pitch panel's spot so the mode reads at a glance. */}
+      {replay.active && (
+        <div style={{
+          background: 'rgba(42,46,54,0.96)',
+          color: '#ffd166',
+          padding: '6px 12px',
+          borderRadius: '7px',
+          fontFamily: 'monospace',
+          fontWeight: 'bold',
+          fontSize: 13,
+          letterSpacing: '0.02em',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+          whiteSpace: 'nowrap',
+        }}>
+          ↺ REPLAY
+        </div>
+      )}
 
         {/* ── LIVE GAMES DRAWER ── */}
         <div
@@ -1667,7 +2204,8 @@ function AppContent() {
             borderRadius: '8px',
             fontFamily: 'monospace',
             fontSize: '11px',
-            minWidth: '220px',
+            width: pitchPanelWidth ?? 280,
+            boxSizing: 'border-box',
             backdropFilter: 'blur(6px)',
             border: '1px solid rgba(255,255,255,0.1)',
             maxHeight: drawerMaxHeight ?? 'none',
@@ -1682,7 +2220,7 @@ function AppContent() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                 <span style={{ opacity: 0.7 }}>{liveGames ? `${liveGames.length} live` : '—'}</span>
                 <button
-                  onClick={fetchLiveGames}
+                  onClick={() => fetchLiveGames()}
                   disabled={liveGamesLoading}
                   style={{ padding: '2px 8px', cursor: 'pointer', background: '#333', color: 'white', border: 'none', borderRadius: '4px', fontSize: '11px', fontFamily: 'monospace' }}
                 >
@@ -1736,6 +2274,50 @@ function AppContent() {
                   </button>
                 );
               })}
+              {todayUpcomingGames.length > 0 && (
+                <>
+                  <div style={{
+                    marginTop: 10,
+                    paddingTop: 8,
+                    borderTop: '1px solid rgba(255,255,255,0.15)',
+                    marginBottom: 6,
+                    fontWeight: 'bold',
+                    letterSpacing: '0.03em',
+                    opacity: 0.9,
+                  }}>
+                    ⏳ Upcoming
+                  </div>
+                  {todayUpcomingGames.map((g) => (
+                    <div
+                      key={g.game_pk}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        width: '100%',
+                        boxSizing: 'border-box',
+                        padding: '6px 8px',
+                        marginBottom: 4,
+                        background: '#1c1c1c',
+                        color: '#ddd',
+                        border: '1px solid #333',
+                        borderRadius: '6px',
+                        fontSize: '11px',
+                        fontFamily: 'monospace',
+                      }}
+                    >
+                      <span style={{ fontWeight: 'bold', letterSpacing: '0.03em' }}>
+                        {g.teams?.away?.abbreviation}
+                        <span style={{ opacity: 0.6 }}> @ </span>
+                        {g.teams?.home?.abbreviation}
+                      </span>
+                      <span style={{ opacity: 0.7 }}>
+                        {formatGameStartTime(g)}
+                      </span>
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
           </details>
         </div>
@@ -1746,38 +2328,15 @@ function AppContent() {
           top of the screen once each pitch/play resolves). The pill expands
           out sideways when it appears and folds back in when the next pitch
           clears the outcome. ── */}
-      <OutcomeBanner label={pitchOutcome} replay={replay} />
+      <OutcomeBanner label={pitchOutcome} />
 
       {/* ── WAITING FOR PLAY TO RESOLVE BANNER (contact pitch whose Statcast
-          fielding point hasn't arrived yet) ── */}
-      {waitingForPlayResolve && (
-        <div style={{
-          position: 'absolute',
-          top: 20,
-          left: 0,
-          right: 0,
-          zIndex: 20,
-          textAlign: 'center',
-          pointerEvents: 'none',
-        }}>
-          <span style={{
-            display: 'inline-block',
-            padding: '10px 22px',
-            background: 'rgba(0,0,0,0.72)',
-            color: '#ffd166',
-            border: '1px solid rgba(255,209,102,0.35)',
-            borderRadius: 8,
-            fontFamily: 'monospace',
-            fontWeight: 'bold',
-            fontSize: 16,
-            letterSpacing: '0.06em',
-          }}>
-            ⏳ Waiting for play to resolve…
-          </span>
-        </div>
-      )}
+          fielding point hasn't arrived yet). Drops in and slides out via CSS
+          keyframes; WaitingResolveBanner owns its exit animation. ── */}
+      <WaitingResolveBanner active={waitingForPlayResolve} />
+      <ForcedCompleteToast toast={forcedToast} onHidden={() => setForcedToast(null)} />
 
-      {/* ── TOP-RIGHT DRAWERS (debug overlays) ── */}
+      {/* ── TOP-RIGHT: playback controls + debug overlays ── */}
       <div style={{
         position: 'absolute',
         top: 20,
@@ -1789,9 +2348,147 @@ function AppContent() {
         gap: 10,
       }}>
 
+        {/* ── PLAYBACK CONTROLS PANEL (camera snap + speed slider). Width
+            matches the overlays drawer below it exactly. ── */}
+        <div style={{
+          width: overlaysWidth ?? 210,
+          boxSizing: 'border-box',
+          background: 'linear-gradient(180deg, rgba(10,14,20,0.92), rgba(6,9,14,0.92))',
+          border: '1px solid rgba(255,255,255,0.18)',
+          borderRadius: 10,
+          fontFamily: 'monospace',
+          color: '#fff',
+          padding: '10px 14px',
+          backdropFilter: 'blur(6px)',
+          boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
+          userSelect: 'none',
+        }}>
+          <button
+            onClick={() => setSnapTrigger((prev) => prev + 1)}
+            title="Snap the camera to the strike zone"
+            style={{
+              width: '100%',
+              padding: '5px 8px',
+              background: 'rgba(255,209,102,0.12)',
+              border: '1px solid rgba(255,209,102,0.5)',
+              color: '#ffd166',
+              borderRadius: 4,
+              fontSize: 11,
+              fontFamily: 'monospace',
+              fontWeight: 'bold',
+              letterSpacing: '0.08em',
+              cursor: 'pointer',
+            }}
+          >
+            Strike Zone
+          </button>
+          <button
+            onClick={() => setFollowBattedBall((v) => !v)}
+            title={followBattedBall
+              ? 'Camera follows each live batted ball, then returns to the pre-play angle'
+              : 'Keep the current camera angle during plays'}
+            style={{
+              width: '100%',
+              marginTop: 8,
+              padding: '5px 8px',
+              background: followBattedBall ? 'rgba(123,180,255,0.14)' : 'rgba(255,255,255,0.06)',
+              border: followBattedBall ? '1px solid rgba(123,180,255,0.55)' : '1px solid rgba(255,255,255,0.25)',
+              color: followBattedBall ? '#9fd0ff' : '#9aa3ad',
+              borderRadius: 4,
+              fontSize: 11,
+              fontFamily: 'monospace',
+              fontWeight: 'bold',
+              letterSpacing: '0.06em',
+              cursor: 'pointer',
+            }}
+          >
+            {followBattedBall ? '🎥 Follow Batted Ball: ON' : '🎥 Follow Batted Ball: OFF'}
+          </button>
+          <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+            <button
+              onClick={() => setShowColoredTails((v) => !v)}
+              title={showColoredTails
+                ? 'Hide the speed-graded colored tail behind the pitch'
+                : 'Show the speed-graded colored tail behind the pitch'}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                padding: '5px 4px',
+                background: showColoredTails ? 'rgba(255,209,102,0.12)' : 'rgba(255,255,255,0.06)',
+                border: showColoredTails ? '1px solid rgba(255,209,102,0.55)' : '1px solid rgba(255,255,255,0.25)',
+                color: showColoredTails ? '#ffd166' : '#9aa3ad',
+                borderRadius: 4,
+                fontSize: 10,
+                fontFamily: 'monospace',
+                fontWeight: 'bold',
+                letterSpacing: '0.03em',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {showColoredTails ? '🌈 Tails: ON' : '🌈 Tails: OFF'}
+            </button>
+            <button
+              onClick={() => setShowBillowParticles((v) => !v)}
+              title={showBillowParticles
+                ? 'Hide the billow/spark particles kicked up behind the pitch'
+                : 'Show the billow/spark particles kicked up behind the pitch'}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                padding: '5px 4px',
+                background: showBillowParticles ? 'rgba(197,120,255,0.12)' : 'rgba(255,255,255,0.06)',
+                border: showBillowParticles ? '1px solid rgba(197,120,255,0.55)' : '1px solid rgba(255,255,255,0.25)',
+                color: showBillowParticles ? '#d9a8ff' : '#9aa3ad',
+                borderRadius: 4,
+                fontSize: 10,
+                fontFamily: 'monospace',
+                fontWeight: 'bold',
+                letterSpacing: '0.03em',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {showBillowParticles ? '✨ Billows: ON' : '✨ Billows: OFF'}
+            </button>
+          </div>
+          <div
+            id="playback-speed-slider"
+            title="Scales the whole simulation (pitch, swing, and batted ball) together"
+            style={{ width: '100%', marginTop: 8 }}
+          >
+            <label
+              htmlFor="playback-speed-range"
+              style={{
+                display: 'block', marginBottom: 4, fontWeight: 'bold', fontSize: 11,
+                letterSpacing: '0.03em',
+                color: playbackSpeed === 1 ? '#ccc' : '#ffd166',
+              }}
+            >
+              {playbackSpeed === 1
+                ? 'Playback: 1× Real Time'
+                : `Playback: ${Number(playbackSpeed.toFixed(2))}× Slow-Mo`}
+            </label>
+            <input
+              id="playback-speed-range"
+              type="range"
+              min={SLOWEST_SPEED}
+              max={1}
+              step={0.01}
+              value={playbackSpeed}
+              onChange={(e) => {
+                const next = parseFloat(e.target.value);
+                setPlaybackSpeed(next);
+                setTimeScale(next);
+              }}
+              style={{ width: '100%', cursor: 'pointer', accentColor: '#ffd166' }}
+            />
+          </div>
+        </div>
+
         {/* ── DEBUG OVERLAYS DRAWER (collapsible) ── */}
         {(crossings || (pitchData && pitchData.statcast_px != null && pitchData.statcast_pz != null) || battedBallData) && (
-        <div style={{
+        <div ref={overlaysRef} style={{
           background: 'rgba(0,0,0,0.75)',
           color: 'white',
           padding: '10px 14px',
@@ -1806,6 +2503,29 @@ function AppContent() {
             <summary style={{ cursor: 'pointer', fontWeight: 'bold', fontSize: '12px', opacity: 0.9, outline: 'none', userSelect: 'none' }}>
               🛠 Overlays
             </summary>
+
+            {/* ── Play completion source (normal vs watchdog-forced) ── */}
+            <div style={{ marginTop: '8px', paddingBottom: 6, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ opacity: 0.7 }}>🎬 Completion</span>
+                <span style={{
+                  fontWeight: 'bold',
+                  color: completionDebug.source === 'watchdog'
+                    ? '#ff6b6b'
+                    : completionDebug.source === 'normal' ? '#7ee0a0' : '#999',
+                }}>
+                  {completionDebug.source === 'watchdog'
+                    ? '⚠ watchdog (forced)'
+                    : completionDebug.source === 'normal' ? 'normal' : '—'}
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+                <span style={{ opacity: 0.7 }}>Forced count</span>
+                <span style={{ color: completionDebug.forced > 0 ? '#ff6b6b' : '#999', fontWeight: 'bold' }}>
+                  {completionDebug.forced}
+                </span>
+              </div>
+            </div>
 
             {/* ── Crossings ── */}
             {crossings && (
@@ -1875,7 +2595,7 @@ function AppContent() {
       </div>
 
 
-      <Scene pitchData={pitchData} battedBall={battedBallData} snapTrigger={snapTrigger} onCrossings={setCrossings} onArrival={handlePitchArrival} onPlayResult={handlePlayResult} onComplete={handlePlayComplete} comparisonActive={compareMode === 'active'} comparisonPlays={comparisonPlays} />
+      <Scene pitchData={pitchData} battedBall={battedBallData} snapTrigger={snapTrigger} onCrossings={setCrossings} onArrival={handlePitchArrival} onPlayResult={handlePlayResult} onComplete={handlePlayComplete} comparisonActive={compareMode === 'active'} comparisonPlays={comparisonPlays} replayKey={comparisonReplayKey} showColoredTails={showColoredTails} showBillowParticles={showBillowParticles} showComparisonRingLabels={showComparisonRingLabels} followEnabled={followBattedBall && compareMode !== 'active' && !replay.active} />
       <Scorebug
         refreshKey={hudRefresh}
         outcomeRefresh={scorebugOutcomeRefresh}
@@ -1896,7 +2616,7 @@ function AppContent() {
         gap: 10,
       }}>
         {pitchData && (
-          <div style={{
+          <div ref={pitchPanelRef} style={{
             position: 'relative',
             background: 'linear-gradient(180deg, rgba(10,14,20,0.92), rgba(6,9,14,0.92))',
             color: 'white',
@@ -1904,15 +2624,20 @@ function AppContent() {
             borderRadius: '10px',
             fontFamily: 'monospace',
             fontSize: '11px',
-            minWidth: '280px',
+            minWidth: atBatOpen && !atBatData
+              ? (atBatSnapshotWidth ? `${atBatSnapshotWidth}px` : '280px')
+              : '280px',
+            minHeight: atBatSnapshotHeight ? `${atBatSnapshotHeight}px` : undefined,
             backdropFilter: 'blur(6px)',
             border: '1px solid rgba(255,255,255,0.18)',
             boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
+            transition: 'min-width 0.3s ease, min-height 0.3s ease',
           }}>
             {/* A live poll can discover a newer play without interrupting the
-                selected replay. The existing Back-to-Live control remains the
-                deliberate way to switch to it. */}
-            {replay.active && newLivePlayAvailable && (
+                selected replay, an in-progress pitch selection, or an active
+                tunneling comparison. Back-to-Live (replay) or leaving the
+                comparison flow remain the deliberate ways to switch to it. */}
+            {(replay.active || compareMode === 'selecting' || compareMode === 'active') && newLivePlayAvailable && (
               <div
                 role="status"
                 aria-live="polite"
@@ -1955,7 +2680,7 @@ function AppContent() {
                 it instead of cycling through views from one button. */}
             <div style={{
               minHeight: 24,
-              display: 'flex', justifyContent: 'flex-end', alignItems: 'center',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               marginBottom: 8, userSelect: 'none',
             }}>
               <span
@@ -1999,12 +2724,99 @@ function AppContent() {
                       opacity: pitchData ? 1 : 0.4,
                       boxShadow: tab.active ? '0 -2px 8px rgba(0,0,0,0.35)' : 'none',
                       lineHeight: '16px',
+                      transition: 'background 0.25s ease, color 0.25s ease, box-shadow 0.25s ease, z-index 0s',
                     }}
                   >
                     {tab.label}
                   </button>
                 ))}
               </span>
+              {/* Comparison controls share the header row (left) with the
+                  Hide toggle so they don't take a full-width row out of the
+                  at-bat body. The empty slot keeps Hide right-aligned in the
+                  pitch view. */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {atBatOpen && atBatData && (
+                  compareMode === 'active' ? (
+                    <>
+                      <button
+                        onClick={exitComparison}
+                        title="End the comparison and restore normal playback"
+                        style={{
+                          padding: '2px 8px', background: '#7a3a00', color: '#ffd166',
+                          border: '1px solid #ff9933', borderRadius: 4,
+                          fontSize: 11, fontFamily: 'monospace', fontWeight: 'bold',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        ✕ Exit comparison
+                      </button>
+                      <button
+                        onClick={() => setComparisonReplayKey((k) => k + 1)}
+                        title="Restart the comparison from the beginning (skip the current flight)"
+                        style={{
+                          padding: '2px 8px', background: '#1a4a7a', color: '#9be7a0',
+                          border: '1px solid #4a9eff', borderRadius: 4,
+                          fontSize: 11, fontFamily: 'monospace', fontWeight: 'bold',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        ↺ Replay
+                      </button>
+                      <button
+                        onClick={() => setShowComparisonRingLabels((v) => !v)}
+                        title={showComparisonRingLabels
+                          ? 'Hide the pitch-type labels under each ring'
+                          : 'Show the pitch-type label under each ring'}
+                        style={{
+                          padding: '2px 8px',
+                          background: showComparisonRingLabels ? 'rgba(123,180,255,0.14)' : 'rgba(255,255,255,0.06)',
+                          color: showComparisonRingLabels ? '#9fd0ff' : '#9aa3ad',
+                          border: showComparisonRingLabels ? '1px solid rgba(123,180,255,0.55)' : '1px solid rgba(255,255,255,0.25)',
+                          borderRadius: 4,
+                          fontSize: 11, fontFamily: 'monospace', fontWeight: 'bold',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {showComparisonRingLabels ? '🏷 Labels: ON' : '🏷 Labels: OFF'}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {compareMode === 'selecting' && (
+                        <button
+                          onClick={cancelCompareSelecting}
+                          title="Cancel and clear the selection"
+                          style={{
+                            padding: '2px 8px', background: '#5c2b2b', color: '#ffb0b0',
+                            border: '1px solid #b34a4a', borderRadius: 4,
+                            fontSize: 11, fontFamily: 'monospace', fontWeight: 'bold',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          ✕ Cancel
+                        </button>
+                      )}
+                      <button
+                        onClick={compareMode === 'selecting' ? startComparison : startCompareSelecting}
+                        disabled={compareMode === 'selecting' && compareSelectedIds.length < 2}
+                        title={compareMode === 'selecting' ? 'Simulate the selected pitches together' : 'Compare the pitches in this at-bat'}
+                        style={{
+                          padding: '2px 8px', background: '#1a4a7a', color: '#9be7a0',
+                          border: '1px solid #4a9eff', borderRadius: 4,
+                          fontSize: 11, fontFamily: 'monospace', fontWeight: 'bold',
+                          cursor: compareMode === 'selecting' && compareSelectedIds.length < 2 ? 'not-allowed' : 'pointer',
+                          opacity: compareMode === 'selecting' && compareSelectedIds.length < 2 ? 0.55 : 1,
+                        }}
+                      >
+                        {compareMode === 'selecting'
+                          ? `▶ Simulate${compareSelectedIds.length > 0 ? ` (${compareSelectedIds.length})` : ''}`
+                          : '⇉ Compare'}
+                      </button>
+                    </>
+                  )
+                )}
+              </div>
               <button
                 onClick={() => setPitchPanelOpen((open) => !open)}
                 disabled={!toggleUnlocked}
@@ -2034,10 +2846,17 @@ function AppContent() {
               <div style={{ minHeight: 0, overflow: 'hidden' }}>
                 {atBatOpen ? (
                   <div>
-                    {atBatLoading && !atBatData && <div style={{ opacity: 0.7, padding: '8px 0' }}>Loading at-bat…</div>}
+                    {/* Show the skeleton any time the at-bat tab is open but
+                        the data hasn't arrived yet (covers both the brief
+                        gap before fetchAtBat sets atBatLoading and the
+                        actual fetch window). */}
+                    {!atBatData && !atBatError && <AtBatLoadingPlaceholder />}
                     {atBatError && !atBatData && <div style={{ color: '#ff6b6b', padding: '8px 0' }}>{atBatError}</div>}
                     {atBatData && (
-                      <>
+                      <div
+                        className="at-bat-fade-in"
+                        key={atBatData.at_bat_index ?? 'loaded'}
+                      >
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 11 }}>
                           <span style={{ opacity: 0.8 }}>{atBatData.batter ?? '—'}</span>
                           <span style={{ opacity: 0.7 }}>{atBatData.pitches?.length ?? 0} pitches</span>
@@ -2060,56 +2879,27 @@ function AppContent() {
                           <span><span style={{ color: '#4da6ff' }}>●</span> In play</span>
                           <span><span style={{ color: '#c15cff' }}>●</span> In play · out</span>
                         </div>
-                        {/* ── Tunneling comparison controls ── */}
-                        {compareMode === 'active' ? (
-                          <button
-                            onClick={exitComparison}
-                            style={{
-                              width: '100%', marginTop: 8, padding: '5px 8px',
-                              background: '#7a3a00', color: '#ffd166',
-                              border: '1px solid #ff9933', borderRadius: 4,
-                              fontSize: 11, fontFamily: 'monospace', fontWeight: 'bold',
-                              cursor: 'pointer',
-                            }}
-                          >
-                            ✕ Exit comparison
-                          </button>
-                        ) : (
-                          <>
-                            <button
-                              onClick={compareMode === 'selecting' ? startComparison : startCompareSelecting}
-                              disabled={compareMode === 'selecting' && compareSelectedIds.length < 2}
-                              title={compareMode === 'selecting' ? 'Simulate the selected pitches together' : 'Compare the pitches in this at-bat'}
-                              style={{
-                                width: '100%', marginTop: 8, padding: '5px 8px',
-                                background: '#1a4a7a', color: '#9be7a0',
-                                border: '1px solid #4a9eff', borderRadius: 4,
-                                fontSize: 11, fontFamily: 'monospace', fontWeight: 'bold',
-                                cursor: compareMode === 'selecting' && compareSelectedIds.length < 2 ? 'not-allowed' : 'pointer',
-                                opacity: compareMode === 'selecting' && compareSelectedIds.length < 2 ? 0.55 : 1,
-                              }}
-                            >
-                              {compareMode === 'selecting'
-                                ? `▶ Simulate${compareSelectedIds.length > 0 ? ` (${compareSelectedIds.length})` : ''}`
-                                : '⇉ Compare'}
-                            </button>
-                            {compareMode === 'selecting' && (
-                              <div style={{ marginTop: 6, fontSize: 10, color: '#9be7a0', opacity: 0.9 }}>
-                                Select pitches to compare{compareSelectedIds.length > 0 ? ` — ${compareSelectedIds.length} selected` : ''}.
-                              </div>
-                            )}
-                          </>
+                        {/* Selection feedback while picking pitches to compare;
+                            the Compare/Simulate/Cancel buttons themselves live
+                            in the header row above. */}
+                        {compareMode === 'selecting' && (
+                          <div style={{ marginTop: 6, fontSize: 10, color: '#9be7a0', opacity: 0.9 }}>
+                            Select pitches to compare{compareSelectedIds.length > 0 ? ` — ${compareSelectedIds.length} selected` : ''}.
+                          </div>
                         )}
                         <div style={{ marginTop: 6, fontSize: 10, opacity: 0.6 }}>
                           {compareMode === 'selecting'
                             ? 'Click pitches to select them for comparison.'
                             : 'Click a pitch to replay it.'}
                         </div>
-                      </>
+                      </div>
                     )}
                   </div>
                 ) : (
-                  <>
+                  <div
+                    className="at-bat-fade-in"
+                    key={pitchContentKey}
+                  >
                     {/* Spinning ball with the spin axis drawn as an arrow */}
                     <SpinAxisViz spinAxis={pitchData.spin_axis} spinRate={pitchData.spin_rate} />
 
@@ -2171,7 +2961,33 @@ function AppContent() {
                         ) : '—'}
                       </span>
                     </div>
-                  </>
+                    {/* Batted-ball metrics, present only on contact plays: Statcast
+                        exit velocity + launch angle plus the projected distance. */}
+                    {battedBallData && (
+                      <>
+                        <div style={{
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                          padding: '3px 0 0', borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: 2,
+                        }}>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ opacity: 0.7 }}>Exit Velocity</span>
+                            <span style={{ opacity: 0.95 }}>{battedBallData.launchSpeed != null ? `${battedBallData.launchSpeed.toFixed(1)} mph` : '—'}</span>
+                          </span>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ opacity: 0.7 }}>Launch Angle</span>
+                            <span style={{ opacity: 0.95 }}>{battedBallData.launchAngle != null ? `${battedBallData.launchAngle.toFixed(0)}°` : '—'}</span>
+                          </span>
+                        </div>
+                        <div style={{
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                          padding: '3px 0',
+                        }}>
+                          <span style={{ opacity: 0.7 }}>Projected Distance</span>
+                          <span style={{ opacity: 0.95 }}>{battedBallData.totalDistance != null ? `${battedBallData.totalDistance.toFixed(0)} ft` : '—'}</span>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
             </div>

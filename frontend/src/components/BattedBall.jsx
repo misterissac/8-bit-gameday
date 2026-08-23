@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import {
@@ -14,9 +14,9 @@ import {
   plateCrossing,
   statcastHitToWorld,
 } from '../util/MathUtil'
-import { isHitFieldingReady, hitMatchesAtBat, isBattedBallLaunchable } from '../util/battedBall'
+import { isHitFieldingReady, hitMatchesAtBat, isBattedBallLaunchable, shouldCycleWrapWatchdogFire } from '../util/battedBall'
 import { FIELD, MAX_RUN_SPEED } from '../constants/field'
-import { setCycleDuration, getCycleDuration, getTimeScale, CYCLE_PAUSE, setBattedBallPosition } from '../constants/playback'
+import { setCycleDuration, getCycleDuration, getTimeScale, CYCLE_PAUSE, setBattedBallPosition, setFielderPosition, setFielderHomePosition } from '../constants/playback'
 import { BALL_RELEASE_TIME } from './Pitcher'
 import { ConfettiBurst } from './ConfettiBurst'
 
@@ -103,14 +103,19 @@ const YELLOW_TRACE_SCALE = 0.024
 const YELLOW_TRACE_OPACITY = 0.5
 const YELLOW_TRACE_MIN_OPACITY = 0.2
 const YELLOW_TRACE_FADE_TIME = 0.5 // s to dim after the ball lands
-// Persistent yellow trace under the tail, using the app's yellow (the same
-// yellow as the pitch billow's slow color) so it harmonizes with the
-// yellowish-white tail.
-const YELLOW_TRACE_COLOR = [1, 0.85, 0.2]
-// Constant yellowish-white tail (the pitch's slow-speed trail color,
-// TRAIL_SPEED_SLOW): the batted ball's tail is always this color, never
-// speed-graded.
+// Persistent dim-yellow trace under the tail. Kept clearly dimmer than the
+// golden 100 mph elite-fastball ring so the two read as distinct.
+const YELLOW_TRACE_COLOR = [0.7, 0.6, 0.16]
+// Constant yellowish-white tail (the pitch's slow-speed trail color): the
+// batted ball's tail is always this color, never speed-graded.
 const TRAIL_COLOR_YELLOWISH_WHITE = [1, 0.95, 0.65]
+
+// A contacted pitch whose batted ball never becomes launchable (live hit data
+// still missing, or present without a fielding point) is given this long to
+// arrive before the watchdog force-completes the play so the live queue can
+// advance. The hit normally lands a poll or two after the pitch event, so a
+// few seconds is plenty of grace without letting a stuck pitch block playback.
+const NO_LAUNCH_GRACE_MS = 6000
 
 // Tunneling comparison: batted balls dim more than the overlaid pitches so the
 // trajectories stay distinguishable, and their tail/trace fade back too.
@@ -507,6 +512,9 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
   const recordedOuts = useRef(0)
   const resultEmitted = useRef(false)
   const completeEmitted = useRef(false)
+  // Wall-clock time the current pitch first reached the plate while contacted
+  // but not yet launched; drives the never-launched completion watchdog.
+  const noLaunchSinceRef = useRef(null)
   // Home-run confetti: fires once per cycle at the wall-crossing spot.
   const confettiFiredRef = useRef(false)
   // Pitch object that owned the current cycle duration. A live hit can arrive
@@ -566,6 +574,13 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     if (!contact) return null
     return buildPlan(activeHit, contact.launch)
   }, [activeHit, contact])
+
+  // Publish the chaser's home position once per plan so the fielder camera
+  // knows where the chaser starts. Only fires for live plays (not comparison).
+  useLayoutEffect(() => {
+    if (!plan || comparison) return
+    setFielderHomePosition(plan.chaserHome, plan.chaser)
+  }, [plan, comparison])
 
   // Tail + yellow trace (same animation as the pitch, no billow particles).
   const tailMeshRef = useRef()
@@ -678,7 +693,14 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
   // later than its pitch, and resetting the clock then would decouple the
   // batted ball from the pitch reaching the plate. The demo hit index likewise
   // changes mid-cycle (at the cycle wrap) without resetting the shared clock.
-  useEffect(() => {
+  //
+  // useLayoutEffect (not useEffect): runs synchronously after render, before
+  // the next useFrame. A non-contact pitch (ball / take / whiff) must have its
+  // refs cleared before the cycle wraps, otherwise a stale launched=true from
+  // the previous contact pitch survives one frame and the cycle-wrap watchdog
+  // spuriously fires onComplete for a non-contact pitch — surfacing an OUT and
+  // wedging the queue.
+  useLayoutEffect(() => {
     playback.current = 0
     firedThisCycle.current = false
     launched.current = false
@@ -686,10 +708,22 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     recordedOuts.current = 0
     resultEmitted.current = false
     completeEmitted.current = false
+    noLaunchSinceRef.current = null
     confettiFiredRef.current = false
     setConfetti(null)
     setBattedBallPosition(null)
   }, [pitchData])
+
+  // Clear the shared batted-ball position when this component unmounts (e.g.
+  // entering/exiting comparison mode, where the whole live branch is swapped
+  // out). Between normal pitches the same instance stays mounted and keeps
+  // publishing null while the ball isn't airborne — but an unmount leaves the
+  // last published position lingering in the module global, which would make
+  // the follow camera lock onto a vanished ball and capture a wrong "original"
+  // view for the first animation after returning to live.
+  useEffect(() => {
+    return () => setBattedBallPosition(null)
+  }, [])
 
   useFrame((_, delta) => {
     if (!battedGroupRef.current || !ballRef.current) return
@@ -720,6 +754,31 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     // Reset the batted ball to its pre-launch state and, in demo mode, advance
     // to the next sample hit so the *next* cycle plays it — never mid-cycle.
     if (playback.current < prevPlayback) {
+      // Safety net: a launched play that never reached its completion time
+      // before the cycle wrapped (a degenerate/non-finite endTime, or a cycle
+      // that was too short) would otherwise loop forever and wedge the live
+      // queue. Force-complete it so the next play can animate.
+      //
+      // Guard on contact.swing: a non-contact pitch (ball / take / whiff)
+      // never launches the batted ball, so launched.current should be false.
+      // But the reset effect (useEffect) runs AFTER the first useFrame with the
+      // new pitchData, so a stale launched=true from the previous contact pitch
+      // could survive one cycle wrap and spuriously fire onComplete for a
+      // non-contact pitch — surfacing an OUT and wedging the queue.
+      if (shouldCycleWrapWatchdogFire({
+        contactSwing: contact.swing,
+        launched: launched.current,
+        completeEmitted: completeEmitted.current,
+        comparison,
+      })) {
+        completeEmitted.current = true
+        const reason = Number.isFinite(plan.endTime) ? 'cycle too short' : 'non-finite endTime'
+        if (onComplete) onComplete('watchdog', {
+          playId: pitchData?.play_id ?? null,
+          reason,
+          endTime: plan.endTime,
+        })
+      }
       launched.current = false
       flightClock.current = 0
       confettiFiredRef.current = false
@@ -766,6 +825,26 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
       // lengthening never jumps the pitch/batter/pitcher animations mid-play.
       const needed = playback.current + plan.endTime + CYCLE_PAUSE + BALL_RELEASE_TIME
       if (needed > getCycleDuration()) setCycleDuration(needed)
+      noLaunchSinceRef.current = null
+    }
+
+    // A contacted pitch whose batted ball never became launchable (its live
+    // hit data is still missing, or is present but lacks a fielding point)
+    // would otherwise loop forever and wedge the live queue — the pitch's own
+    // arrival handler defers completion to BattedBall, but a ball that never
+    // launches never fires onComplete. Give the feed a short grace, then
+    // force-complete so the queue can advance to the next play.
+    if (!comparison && contact.swing && !launched.current && !completeEmitted.current && playback.current >= contactWallTime) {
+      if (noLaunchSinceRef.current == null) {
+        noLaunchSinceRef.current = performance.now()
+      } else if (performance.now() - noLaunchSinceRef.current >= NO_LAUNCH_GRACE_MS) {
+        completeEmitted.current = true
+        if (onComplete) onComplete('watchdog', {
+          playId: pitchData?.play_id ?? null,
+          reason: hit == null ? 'hit never arrived' : 'hit not launchable',
+          endTime: null,
+        })
+      }
     }
 
     if (!launched.current) {
@@ -785,6 +864,12 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     }
 
     // ── Tail + yellow trace (same reveal/fade as the pitch, no particles) ──
+    // The batted-ball trail and its persistent yellow trace vanish at the same
+    // moment the pitch's white trajectory trace clears — the instant the
+    // pitcher restarts his windup — so the tail of the play is gone the moment
+    // the windup begins, never lingering into the cycle wrap.
+    const windupStart = Math.max(contactWallTime, loopDuration - BALL_RELEASE_TIME)
+    const trailFade = playback.current >= windupStart ? 0 : 1
     if (tailMeshRef.current || traceMeshRef.current) {
       const tailAlphaAttr = trailGeometry.getAttribute('aAlpha')
       const yellowAlphaAttr = traceGeometry.getAttribute('aAlpha')
@@ -805,8 +890,8 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
           tailAlpha = TRAIL_MAX_OPACITY * trailFactor * (1 - age * fadeRate)
           if (tailAlpha < 0) tailAlpha = 0
         }
-        tailAlphas[i] = tailAlpha
-        yellowAlphas[i] = age >= 0 ? yellowAlphaNow : 0
+        tailAlphas[i] = tailAlpha * trailFade
+        yellowAlphas[i] = (age >= 0 ? yellowAlphaNow : 0) * trailFade
       }
       tailAlphaAttr.needsUpdate = true
       yellowAlphaAttr.needsUpdate = true
@@ -873,7 +958,7 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     // if the ball then rests on the ground or is carried/thrown by a fielder.
     // (ballCatch.t — the fielder's intercept — can be far later than ballAirTime
     // for ground balls, and the ball must not be tracked while it sits there.)
-    setBattedBallPosition(t <= plan.ballAirTime ? ballRef.current.position : null)
+    setBattedBallPosition(t <= plan.ballAirTime ? ballRef.current.position : null, pitchData?.play_id ?? null)
 
 
     // ── Chaser: sprint from their defensive spot to the fielding point, then
@@ -883,6 +968,9 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
       const pos = evalSegments(plan.chaserSegments, t)
       if (pos) {
         chaserRefs.group.position.copy(pos)
+        // Publish the fielder's live position so the fielder camera can
+        // position itself relative to the chaser.
+        setFielderPosition(pos, plan.chaser, pitchData?.play_id ?? null)
         // ``activeSeg`` is only defined while the chaser is actually running
         // (t inside [start, start+duration)), so the lean + facing drop as soon
         // as they stop — e.g. waiting under a fly ball at the fielding point.
@@ -892,6 +980,12 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
         }
         if (chaserRefs.lean) chaserRefs.lean.rotation.x = activeSeg ? 0.22 : 0
       }
+    } else {
+      // The chaser isn't rendered (e.g. the catcher), so no position is
+      // published by the group ref; still publish the segment-math position so
+      // the fielder camera has something to orbit.
+      const pos = evalSegments(plan.chaserSegments, t)
+      if (pos) setFielderPosition(pos, plan.chaser, pitchData?.play_id ?? null)
     }
 
     // ── Putout fielders sprint to their out base while the ball is in flight ──
@@ -919,7 +1013,7 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
       }
       if (!completeEmitted.current && t >= plan.endTime) {
         completeEmitted.current = true
-        if (onComplete) onComplete()
+        if (onComplete) onComplete('normal')
       }
     }
   })

@@ -14,7 +14,116 @@ const statusSnapshot = (data) => ({
   isLive: data?.isLive ?? null,
   pitcher: data?.pitcher ?? null,
   pitcherId: data?.pitcherId ?? null,
+  inningNumber: data?.inningNumber ?? null,
+  isTopInning: data?.isTopInning ?? null,
+  inningState: data?.inningState ?? null,
+  moundVisit: data?.moundVisit ?? false,
+  pitchingChange: data?.pitchingChange ?? false,
+  pitchingChangePitcher: data?.pitchingChangePitcher ?? null,
+  pitchingChangeOldPitcher: data?.pitchingChangeOldPitcher ?? null,
+  offensiveSub: data?.offensiveSub ?? false,
+  offensiveSubRole: data?.offensiveSubRole ?? null,
+  offensiveSubNew: data?.offensiveSubNew ?? null,
+  offensiveSubOld: data?.offensiveSubOld ?? null,
+  defensiveSub: data?.defensiveSub ?? false,
+  defensiveSubNew: data?.defensiveSubNew ?? null,
+  defensiveSubOld: data?.defensiveSubOld ?? null,
 });
+
+// Status-change tab animation (Scorebug): when the game status changes, a tab
+// slides UP from the scoreboard's top edge into view with the new status,
+// holds for a couple of seconds, then slides back DOWN out of view. Only after
+// the tab is fully hidden does the parent write the status into the bottom-left
+// row of the scoreboard.
+// Status labels that should stay sticky in the bottom-left row after their
+// tab animation finishes, persisting until the next pitch is thrown rather
+// than vanishing the moment the feed's action event clears.
+const STICKY_STATUS_PATTERN = /Mound Visit|Pitching Change|Pinch Hitter|Pinch Runner|Defensive Sub/i;
+
+const STATUS_TAB_IN_MS = 350;
+const STATUS_TAB_HOLD_MS = 3200;
+const STATUS_TAB_OUT_MS = 350;
+
+// Split a long status label into two display lines so it fits the tab.
+// Labels like "Pinch Runner: Leo Rivas replaces Taylor Ward" or
+// "Pitching Change: Colin Rea replaces Daniel Palencia" are too long for
+// one row; split at "replaces" or at the colon so the role is on line 1.
+const splitStatusLabel = (label) => {
+  if (!label || label.length <= 34) return null;
+  if (label.includes(' replaces ')) {
+    const idx = label.indexOf(' replaces ');
+    return [label.slice(0, idx), label.slice(idx + 1)];
+  }
+  if (label.includes(': ')) {
+    const idx = label.indexOf(': ');
+    return [label.slice(0, idx + 1), label.slice(idx + 2)];
+  }
+  return null;
+};
+
+function StatusTab({ id, label, onHidden }) {
+  const [hiding, setHiding] = useState(false);
+
+  useEffect(() => {
+    const t = setTimeout(() => setHiding(true), STATUS_TAB_HOLD_MS);
+    return () => clearTimeout(t);
+  }, [id]);
+
+  const finishHide = () => {
+    if (hiding) onHidden(label);
+  };
+
+  const lines = splitStatusLabel(label);
+  const isMulti = !!lines;
+  const tabHeight = isMulti ? 44 : 24;
+
+  return (
+    <div style={{
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      right: 0,
+      height: tabHeight,
+      zIndex: 16,
+      overflow: 'hidden',
+      borderRadius: '10px 10px 0 0',
+      pointerEvents: 'none',
+    }}>
+      <div
+        onAnimationEnd={finishHide}
+        style={{
+          height: '100%',
+          display: 'flex',
+          flexDirection: isMulti ? 'column' : 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'linear-gradient(180deg, rgba(16,20,28,0.98), rgba(8,11,17,0.98))',
+          borderBottom: '1px solid rgba(255,209,102,0.45)',
+          color: '#ffd166',
+          fontWeight: 'bold',
+          fontSize: isMulti ? 11 : 12,
+          letterSpacing: '0.08em',
+          fontFamily: 'monospace',
+          textTransform: 'uppercase',
+          whiteSpace: 'nowrap',
+          padding: isMulti ? '4px 14px' : '0 14px',
+          lineHeight: 1.4,
+          transform: 'translateY(100%)',
+          animation: hiding
+            ? `status-tab-out ${STATUS_TAB_OUT_MS}ms ease-in forwards`
+            : `status-tab-in ${STATUS_TAB_IN_MS}ms ease-out forwards`,
+        }}
+      >
+        {isMulti ? (
+          <>
+            <div>{lines[0]}</div>
+            <div>{lines[1]}</div>
+          </>
+        ) : label}
+      </div>
+    </div>
+  );
+}
 
 // Hover popover: renders a small season-stats card above the wrapped name.
 // Defined at module level (not inside Scorebug) so its component identity is
@@ -45,6 +154,87 @@ function HoverStat({ children, rows }) {
           ))}
         </span>
       )}
+    </span>
+  );
+}
+
+// Slot-flip value for the scoreboard: whenever ``value`` changes — a team's
+// score, the inning arrow + number, the ball–strike count, the pitch count, or
+// the bottom-left game status — the glyph flips in with a quick rotateX
+// animation (each new value is a fresh keyed element, so the animation always
+// re-triggers on change). If ``value`` is removed (null/''), it flips back out
+// first — an animated disappearance instead of an instant unmount. Defined at
+// module level (like HoverStat) so its identity is stable across the scorebug's
+// 1s polling re-renders.
+function FlipValue({ value, style, renderSplit }) {
+  // The value currently on screen, kept while a flip-out finishes.
+  const [shownValue, setShownValue] = useState(value);
+  // Mirror of the on-screen value read from the change effect, so it can
+  // decide whether there's something to flip out without depending on state
+  // that is itself mid-animation.
+  const shownValueRef = useRef(value);
+  const [leaving, setLeaving] = useState(false);
+
+  useEffect(() => {
+    if (value == null || value === '') {
+      // The parent removed the value: flip the old glyph out before vanishing.
+      if (shownValueRef.current != null) setLeaving(true);
+    } else {
+      // A new value always wins, even if one is still flipping out.
+      shownValueRef.current = value;
+      setShownValue(value);
+      setLeaving(false);
+    }
+  }, [value]);
+
+  if (shownValue == null) return null;
+
+  // When renderSplit is provided (a [line1, line2] array for long
+  // substitution labels), render each line as its own div so the label
+  // wraps to two rows instead of overflowing the scorebug width.
+  const content = renderSplit ? (
+    <>
+      <div>{renderSplit[0]}</div>
+      <div>{renderSplit[1]}</div>
+    </>
+  ) : shownValue;
+
+  return (
+    <span
+      key={shownValue}
+      onAnimationEnd={() => {
+        if (leaving) {
+          shownValueRef.current = null;
+          setShownValue(null);
+          setLeaving(false);
+        }
+      }}
+      style={{
+        display: 'inline-block',
+        transformStyle: 'preserve-3d',
+        ...style,
+        animation: leaving
+          ? 'flip-value-out 0.9s ease forwards'
+          : 'flip-value-in 1.1s ease',
+      }}
+    >
+      {content}
+    </span>
+  );
+}
+
+// Per-digit version of FlipValue for numbers (scores, pitch count): each
+// digit is its own FlipValue, so a change like 12 → 13 flips only the trailing
+// digit while the leading one stays put. Position-keyed so React keeps each
+// digit's identity across the change; FlipValue itself re-keys on the digit,
+// which is what re-triggers the animation.
+function FlipDigits({ value, style }) {
+  const digits = String(value).split('');
+  return (
+    <span style={{ display: 'inline-flex', ...style }}>
+      {digits.map((d, i) => (
+        <FlipValue key={i} value={d} />
+      ))}
     </span>
   );
 }
@@ -201,11 +391,45 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   const [boxError, setBoxError] = useState(null);
   const [boxSide, setBoxSide] = useState('away');
   const [panelMaxH, setPanelMaxH] = useState(0);
+  // Status-change tab: non-null while a status tab is sliding in/holding/
+  // sliding out. The bottom-left status row shows `writtenStatus` instead, and
+  // only after the tab finishes hiding does the tab write it there.
+  const [statusTab, setStatusTab] = useState(null);
+  const [writtenStatus, setWrittenStatus] = useState(null);
+  const prevStatusRef = useRef(null);
+  const statusTabSeq = useRef(0);
+  // A sticky status label (mound visit, pitching change, pinch/defensive sub)
+  // that persists in the bottom-left row after its tab animation, until the
+  // next pitch is thrown (outcomeRefresh) or a different status appears.
+  const stickyStatusRef = useRef(null);
+  // Tracks the game_pk the status pollers are answering for, so a stale
+  // response from a previously-selected game can't overwrite the new game.
+  const gamePkRef = useRef(gamePk);
+  // True until the current game's first real status has been observed. Used to
+  // write that initial status directly (no tab animation) so a delay/final
+  // that was already active when the game was entered shows immediately.
+  const pendingGameInitRef = useRef(true);
+
+  // Computed early (before any early return) so the status-change effect below
+  // can key on the label. The frozen snapshot's own fields are used while
+  // frozen; liveStatus always reflects the freshest status poll.
+  const displayState = frozen && stateOverride ? stateOverride : state;
+  const statusLabel = displayState?.success
+    ? scorebugStatusLabel({
+        gameState: displayState.gameState,
+        liveStatus,
+        pitcher: displayState.pitcher,
+        pitcherId: displayState.pitcherId,
+        frozen,
+        inning: displayState.inning,
+      })
+    : null;
 
   const fetchState = useCallback(async () => {
     try {
       const url = gamePk ? `${GAME_STATE_URL}?game_pk=${gamePk}` : GAME_STATE_URL;
       const res = await axios.get(url);
+      if (gamePkRef.current !== gamePk) return;
       setState(res.data);
       setLiveStatus(statusSnapshot(res.data));
     } catch (err) {
@@ -220,6 +444,7 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
     try {
       const url = gamePk ? `${GAME_STATUS_URL}?game_pk=${gamePk}` : GAME_STATUS_URL;
       const res = await axios.get(url);
+      if (gamePkRef.current !== gamePk) return;
       setLiveStatus(statusSnapshot(res.data));
     } catch (err) {
       console.error('Failed to fetch live game status', err);
@@ -239,7 +464,17 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   }, [fetchStatus, frozen, gameTerminal]);
 
   useEffect(() => {
+    // Entering a different game: drop the previous game's scoreboard and status
+    // so stale state can't leak into (or swallow) the new game's first status —
+    // e.g. a delay that was already underway before the game was selected.
+    gamePkRef.current = gamePk;
+    setState(null);
     setLiveStatus(null);
+    setWrittenStatus(null);
+    setStatusTab(null);
+    prevStatusRef.current = null;
+    stickyStatusRef.current = null;
+    pendingGameInitRef.current = true;
   }, [gamePk]);
 
   useEffect(() => {
@@ -269,6 +504,80 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
     // the endpoint as the fallback.
     if (outcomeRefresh > 0 && (!frozen || !stateOverride)) fetchState();
   }, [outcomeRefresh, fetchState, frozen, stateOverride]);
+
+  // A changed game status slides up from the scoreboard's top edge as a tab,
+  // holds, slides back down, and only then gets written to the bottom-left
+  // row. The first status observed for a game (e.g. a delay that was already
+  // underway before the game was entered) is written directly — no tab — so it
+  // isn't swallowed by the previous game's stale status.
+  //
+  // Sticky labels (mound visit, pitching change, pinch/defensive sub) persist
+  // in the bottom-left row even after the feed's action event clears and
+  // statusLabel returns to null — they stay until the next pitch is thrown
+  // (outcomeRefresh) or a different status appears.
+  useEffect(() => {
+    if (pendingGameInitRef.current) {
+      // Still waiting for this game's first real status. A null during the
+      // fetch transition isn't final; keep waiting until a label arrives.
+      if (statusLabel == null) {
+        prevStatusRef.current = null;
+        setWrittenStatus(null);
+        return;
+      }
+      pendingGameInitRef.current = false;
+      prevStatusRef.current = statusLabel;
+      // Track stickiness for the initial status too.
+      stickyStatusRef.current = STICKY_STATUS_PATTERN.test(statusLabel)
+        ? statusLabel : null;
+      setWrittenStatus(statusLabel);
+      return;
+    }
+
+    if (statusLabel === prevStatusRef.current) return;
+    prevStatusRef.current = statusLabel;
+    if (statusLabel) {
+      // A new status label appeared. Track whether it's sticky.
+      stickyStatusRef.current = STICKY_STATUS_PATTERN.test(statusLabel)
+        ? statusLabel : null;
+      // Hide the old bottom-left status while the new tab plays.
+      setWrittenStatus(null);
+      statusTabSeq.current += 1;
+      setStatusTab({ id: statusTabSeq.current, label: statusLabel });
+    } else {
+      // statusLabel went back to null (the action event cleared). If the
+      // previous label was sticky, keep it visible in the bottom-left row
+      // until the next pitch is thrown — the substitution is still the
+      // relevant game state even though the feed moved past the action event.
+      if (stickyStatusRef.current) {
+        setStatusTab(null);
+        setWrittenStatus(stickyStatusRef.current);
+      } else {
+        // Non-sticky (delay/review/final): drop the tab and clear.
+        setStatusTab(null);
+        setWrittenStatus(null);
+      }
+    }
+  }, [statusLabel]);
+
+  // A new pitch was thrown (or the user refreshed): clear any sticky status
+  // so the mound visit / pitching change / substitution notice goes away.
+  useEffect(() => {
+    if (outcomeRefresh > 0 && stickyStatusRef.current) {
+      stickyStatusRef.current = null;
+      // Only clear the written status if it was the sticky label — a delay
+      // or final that appeared in the meantime should stay.
+      setWrittenStatus((prev) =>
+        prev && STICKY_STATUS_PATTERN.test(prev) ? null : prev,
+      );
+    }
+  }, [outcomeRefresh]);
+
+  // Once the new game's data has actually arrived, its initial status has been
+  // observed (even when it's an 'In Progress' null label), so subsequent
+  // changes animate via the tab again.
+  useEffect(() => {
+    if (state || liveStatus) pendingGameInitRef.current = false;
+  }, [state, liveStatus]);
 
   // Keep the box-score panel within the window: cap its height to the space
   // between the top of the viewport and the scorebug, so it's fully visible.
@@ -304,29 +613,32 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
     }
   }, [boxOpen, gamePk, state]);
 
-  const displayState = frozen && stateOverride ? stateOverride : state;
+  // The status tab finished its slide-out: write the status into the
+  // bottom-left row and unmount the tab.
+  const handleStatusTabHidden = useCallback((label) => {
+    setStatusTab(null);
+    setWrittenStatus(label);
+  }, []);
+
   if (!displayState || !displayState.success) return null;
 
   const {
-    teams, score, inning, outs, count, bases, pitcher, pitcherId, batter, batterLine,
-    batterSeason, pitcherSeason, pitchesThrown, gameState, isLive, venue,
+    teams, score, inning, outs, count, bases, pitcher, batter, batterLine,
+    batterSeason, pitcherSeason, pitchesThrown, isLive, venue,
   } = displayState;
   const awayScore = score?.away?.runs ?? '—';
   const homeScore = score?.home?.runs ?? '—';
   const baseSet = new Set(bases || []);
   const outsVal = outs ?? 0;
-  // Bottom-left game status: show it whenever it's meaningful (delay, review,
-  // pitching change, final, ...) and hide it during normal in-progress play,
-  // so the row collapses back to just the ballpark when the game resumes.
-  const statusLabel = scorebugStatusLabel({ gameState, liveStatus, pitcher, pitcherId, frozen });
+  // Bottom-left game status is written only after the status tab has finished
+  // its slide-out (see the status-change effect above), so a change isn't
+  // spoiled by the old row while the new tab plays.
   const isStatusNotice =
-    /Delay|Review|Change/i.test(statusLabel || '');
+    /Delay|Review|Change|Pinch|Mound|Defensive/i.test(writtenStatus || '');
   // The red LIVE marker shows while the feed reports the game as live and
   // clears on its own once the game ends (abstractGameState flips to Final).
   const liveIsLive = liveStatus?.isLive ?? isLive;
-  const countLabel = count?.balls != null && count?.strikes != null
-    ? `${count.balls}–${count.strikes}`
-    : '—';
+  const hasCount = count?.balls != null && count?.strikes != null;
 
   // "▼ 10th" / "▲ 7th" (down = bottom of the inning, up = top); "Mid 7th" /
   // "End 7th" between innings; plain ordinal when game over.
@@ -375,7 +687,20 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
       backdropFilter: 'blur(6px)',
       boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
       userSelect: 'none',
+      minWidth: 320,
     }}>
+      {/* ── Status-change tab: slides up from the top edge, holds a few
+          seconds, then slides back down; the bottom-left row is written only
+          after it hides ── */}
+      {statusTab && (
+        <StatusTab
+          key={statusTab.id}
+          id={statusTab.id}
+          label={statusTab.label}
+          onHidden={handleStatusTabHidden}
+        />
+      )}
+
       {/* ── Box score button (top right, on the inning/count row) ── */}
       <button
         onClick={toggleBox}
@@ -428,14 +753,25 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
           <span style={{ fontSize: 18, fontWeight: 'bold', letterSpacing: '0.08em' }}>
             {teams?.away?.abbreviation ?? 'AWAY'}
           </span>
-          <span style={{ fontSize: 26, fontWeight: 'bold', lineHeight: 1 }}>{awayScore}</span>
+          <FlipDigits value={awayScore} style={{ fontSize: 26, fontWeight: 'bold', lineHeight: 1 }} />
         </div>
 
         {/* Center: inning + count, bases diamond, outs */}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '0 10px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 13, fontWeight: 'bold', color: '#ffd166' }}>{inningLabel}</span>
-            <span style={{ fontSize: 13, color: '#aaa' }}>{countLabel}</span>
+            <FlipValue value={inningLabel} style={{ fontSize: 13, fontWeight: 'bold', color: '#ffd166' }} />
+            {/* The ball–strike count renders as two independent FlipValues so a
+                count change flips only the digit that actually changed (e.g. a
+                ball makes 1–2 → 2–2 flip just the left digit). */}
+            {hasCount ? (
+              <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 4, fontSize: 13, color: '#aaa' }}>
+                <FlipValue value={count?.balls} />
+                <span>–</span>
+                <FlipValue value={count?.strikes} />
+              </span>
+            ) : (
+              <span style={{ fontSize: 13, color: '#aaa' }}>—</span>
+            )}
           </div>
           <div style={{ position: 'relative', width: 54, height: 32 }}>
             <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', ...dot(baseSet.has('2B')) }} title="2B" />
@@ -452,7 +788,7 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
 
         {/* Home */}
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flex: 1, justifyContent: 'flex-end' }}>
-          <span style={{ fontSize: 26, fontWeight: 'bold', lineHeight: 1 }}>{homeScore}</span>
+          <FlipDigits value={homeScore} style={{ fontSize: 26, fontWeight: 'bold', lineHeight: 1 }} />
           <span style={{ fontSize: 18, fontWeight: 'bold', letterSpacing: '0.08em' }}>
             {teams?.home?.abbreviation ?? 'HOME'}
           </span>
@@ -475,7 +811,7 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
           </div>
         </div>
         <div style={{ textAlign: 'right', fontSize: 11, color: '#bbb', lineHeight: 1.5 }}>
-          <div>Pitches {pitchesThrown ?? '—'}</div>
+          <div>Pitches <FlipDigits value={pitchesThrown ?? '—'} /></div>
           {batterLine?.atBats != null && (
             <div style={{ marginTop: 2, color: '#aaa' }}>{batterLine.hits}–{batterLine.atBats}</div>
           )}
@@ -483,19 +819,20 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
       </div>
 
       {/* ── Bottom row: current game status (left, e.g. injury delay / final)
-          + ballpark (right) ── */}
+          + ballpark (right). Long substitution labels wrap to two lines. ── */}
       <div style={{
         display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#aaa',
-        marginTop: 6, letterSpacing: '0.04em',
+        marginTop: 6, letterSpacing: '0.04em', alignItems: 'flex-start',
       }}>
-        {statusLabel && (
-          <span style={{
-            ...(isStatusNotice && { color: '#ffd166', fontWeight: 'bold' }),
-          }}>
-            {statusLabel}
-          </span>
-        )}
-        <span style={statusLabel ? undefined : { marginLeft: 'auto' }}>{venue || '—'}</span>
+        <FlipValue
+          value={writtenStatus}
+          style={{
+            maxWidth: 220,
+            ...(isStatusNotice && (writtenStatus ? { color: '#ffd166', fontWeight: 'bold' } : {})),
+          }}
+          renderSplit={splitStatusLabel(writtenStatus)}
+        />
+        <span style={writtenStatus ? undefined : { marginLeft: 'auto' }}>{venue || '—'}</span>
       </div>
 
       {/* ── Box score panel ── */}

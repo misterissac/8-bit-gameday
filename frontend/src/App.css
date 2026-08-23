@@ -240,3 +240,108 @@
       drop-shadow(0 0 32px rgba(255, 159, 28, 0.55));
   }
 }
+
+/* ── Waiting-for-play-to-resolve banner ──────────────────────────────────
+   Drops down from above the viewport when a contact pitch is still waiting
+   on its Statcast fielding point, then slides back up and out when the data
+   arrives. `forwards` keeps the end state during the component's exit. */
+@keyframes waiting-banner-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-140px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes waiting-banner-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-140px);
+  }
+}
+
+/* ── Scorebug status-change tab ──────────────────────────────────────────
+   Slides UP from the scoreboard's top edge into view (from hidden below the
+   top edge, translateY(100%) -> 0), holds, then slides back DOWN out of view
+   (0 -> 100%). The parent writes the status into the bottom-left row only
+   after the out animation finishes. */
+@keyframes status-tab-in {
+  0% {
+    transform: translateY(100%);
+  }
+  100% {
+    transform: translateY(0);
+  }
+}
+
+@keyframes status-tab-out {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(100%);
+  }
+}
+
+/* Slot-style flip for scoreboard values: a rotateX flip whenever a
+   score / inning / count / pitch-count (or the bottom-left game status)
+   changes, and the reverse flip when a value disappears. Deliberately slow
+   (roughly 0.7s in) with a brief overshoot so the change is clearly visible, */
+@keyframes flip-value-in {
+  0% {
+    transform: perspective(280px) rotateX(-100deg);
+    opacity: 0;
+  }
+  45% {
+    transform: perspective(280px) rotateX(24deg);
+    opacity: 1;
+  }
+  70% {
+    transform: perspective(280px) rotateX(-8deg);
+  }
+  100% {
+    transform: perspective(280px) rotateX(0deg);
+  }
+}
+
+@keyframes flip-value-out {
+  0% {
+    transform: perspective(280px) rotateX(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: perspective(280px) rotateX(100deg);
+    opacity: 0;
+  }
+}
+
+/* Forced-completion diagnostic toast: a brief fade/slide in, a short hold,
+   then a fade/slide back out. */
+@keyframes forced-toast-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes forced-toast-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}

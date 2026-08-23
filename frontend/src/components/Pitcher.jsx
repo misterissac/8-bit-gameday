@@ -31,6 +31,9 @@ export const BALL_RELEASE_TIME = 1.32; // s into the clip when the ball releases
 const PITCH_CLIP_DURATION = 2.08; // RightHandPitch / LeftHandPitch length
 const NEUTRAL_CLIP_DURATION = 0.83; // StandingNeutral length
 const FADE_TIME = 0.2; // s — animation crossfade (the reference's fadeIn/Out)
+// Tunneling comparison overlay: the whole pitcher model dims so overlaid
+// pitchers (e.g. after a mid-at-bat pitching change) stay readable together.
+const OVERLAY_OPACITY = 0.55;
 
 // Hand-release offset in this app's world frame, converted from the
 // reference's BALL_RIGHT/LEFT_HAND_RELEASE_POSITION ([-0.2205, -1.4052,
@@ -50,7 +53,7 @@ const AWAY_TEXTURE_URL = '/textures/AwayPlayer_BaseColor.png';
 // Warm the GLTF cache so the first pitch doesn't suspend for long.
 useGLTF.preload(PLAYER_MODEL_URL);
 
-export const Pitcher = ({ pitchData }) => {
+export const Pitcher = ({ pitchData, overlay = false }) => {
     const gltf = useGLTF(PLAYER_MODEL_URL);
     // Deep clone (skeleton re-bound) so the shared useGLTF cache isn't mutated
     // by the per-pitch materials/visibility — the same SkeletonUtils.clone the
@@ -131,6 +134,22 @@ export const Pitcher = ({ pitchData }) => {
             handL.visible = true;
         }
     }, [model, isRHP]);
+
+    // Tunneling overlay: dim every mesh so several overlaid pitchers (after a
+    // pitching change) can be seen through one another. depthWrite is disabled
+    // while translucent so a front pitcher doesn't hide the one behind it.
+    useEffect(() => {
+        model.traverse((child) => {
+            if (!child.isMesh) return;
+            const materials = Array.isArray(child.material) ? child.material : [child.material];
+            for (const mat of materials) {
+                if (!mat) continue;
+                mat.transparent = overlay;
+                mat.opacity = overlay ? OVERLAY_OPACITY : 1;
+                mat.depthWrite = !overlay;
+            }
+        });
+    }, [model, overlay]);
 
     // Animation mixer: the throw clip (RightHandPitch / LeftHandPitch) and the
     // between-pitches idle (StandingNeutral), both loop-once + clamped. Their

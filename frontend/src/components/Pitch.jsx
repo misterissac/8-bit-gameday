@@ -1,6 +1,6 @@
 import React, { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Line, useGLTF } from '@react-three/drei';
+import { Billboard, Line, Text, useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { getCycleDuration, getTimeScale } from '../constants/playback';
 import { BALL_RELEASE_TIME } from './Pitcher';
@@ -55,12 +55,67 @@ const OVERLAY_TRAIL_FACTOR = 0.55;
 const OVERLAY_TRACE_FACTOR = 0.55;
 // Speed-graded tail color: the whole tail is a single constant color per
 // pitch (no gradient along the flight), picked from a ramp that shifts with
-// the pitch's release speed — yellowish-white at TRAIL_SPEED_MIN_MPH easing
-// to orange-red at TRAIL_SPEED_MAX_MPH, clamped beyond.
-const TRAIL_SPEED_SLOW = [1, 0.95, 0.65]; // yellowish-white
-const TRAIL_SPEED_FAST = [1, 0.4, 0.08]; // orange-red
+// the pitch's release speed — yellowish-white below TRAIL_SPEED_MIN_MPH, then
+// dim yellow at TRAIL_SPEED_MIN_MPH (70 mph) stepping through yellowish-orange
+// and orange-red to crimson red at TRAIL_SPEED_MAX_MPH (99 mph), clamped
+// beyond. The slow end stays dim so it reads clearly distinct from the golden
+// 100 mph elite-fastball ring.
 const TRAIL_SPEED_MIN_MPH = 70;
-const TRAIL_SPEED_MAX_MPH = 90;
+const TRAIL_SPEED_MAX_MPH = 99;
+// The speed → color ramp anchors: each stop pins a named color at a release
+// speed (mph), and speeds between stops lerp linearly to the next one.
+const TRAIL_SPEED_STOPS = [
+    { mph: TRAIL_SPEED_MIN_MPH, rgb: [0.7, 0.6, 0.16] },  // dim yellow (distinct from the golden 100 mph ring)
+    { mph: 78, rgb: [1, 0.7, 0.12] },                     // yellowish-orange
+    { mph: 86, rgb: [1, 0.35, 0.05] },                    // orange-red
+    { mph: TRAIL_SPEED_MAX_MPH, rgb: [0.86, 0.08, 0.24] }, // crimson red
+];
+// Any pitch slower than 70 mph clamps to the ramp's pale start (yellowish-
+// white), so offspeed offerings still read as the cool end of the gradient.
+const TRAIL_COLOR_YELLOWISH_WHITE = [1, 0.95, 0.65];
+
+// Shared speed → tail-color ramp: lerps across the TRAIL_SPEED_STOPS anchors
+// by release speed, clamping below the first and above the last stop. Used by
+// both the pitch's trailing tail and the hawk-eye crossing ring, so the ring
+// left at the strike zone always matches the tail's color for the same
+// velocity.
+function speedTrailColor(speed) {
+    const stops = TRAIL_SPEED_STOPS;
+    const last = stops[stops.length - 1];
+    // Below 70 mph clamp to yellowish-white; at/above 70 the ramp starts at
+    // the dim yellow stop (so exactly 70 mph yields dim yellow, per the spec).
+    if (speed < stops[0].mph) return TRAIL_COLOR_YELLOWISH_WHITE.slice();
+    if (speed >= last.mph) return last.rgb.slice();
+    for (let i = 1; i < stops.length; i++) {
+        const lo = stops[i - 1];
+        const hi = stops[i];
+        if (speed <= hi.mph) {
+            const frac = (speed - lo.mph) / (hi.mph - lo.mph);
+            return [
+                THREE.MathUtils.lerp(lo.rgb[0], hi.rgb[0], frac),
+                THREE.MathUtils.lerp(lo.rgb[1], hi.rgb[1], frac),
+                THREE.MathUtils.lerp(lo.rgb[2], hi.rgb[2], frac),
+            ];
+        }
+    }
+    return last.rgb.slice();
+}
+
+// Comparison overlay: each overlaid pitch's hawk-eye ring gets its pitch type
+// anchored just below the crossing spot, so ribbons, rings, and labels read as
+// one pitch. The label sits right under the ring (a thin gap below its bottom
+// edge), slightly toward the camera so it stays in front of the zone lines.
+// Its height is half the ring's outer diameter — i.e. the ring's outer radius
+// — scaled down a touch, broadcast-style: plain solid white with no border so
+// it reads like a velocity label (e.g. "94 mph") rather than a badge.
+const RING_LABEL_GAP = 0.008; // m — gap between the ring's bottom edge and the label
+const RING_LABEL_OFFSET_Z = 0.05; // toward the camera
+const RING_LABEL_FONT_SCALE = 0.85; // label cap height = this × the ring's outer radius (half its diameter)
+// A faint grey border around the glyphs (thin, relative to fontSize) plus bold
+// weight keeps the solid white label legible against bright stadium/zone
+// backgrounds without the heavy black badge look.
+const RING_LABEL_OUTLINE = 0.014; // outline width relative to fontSize
+const RING_LABEL_OUTLINE_COLOR = '#9aa3ad'; // muted grey
 
 // A second, thinner white trace the pitch leaves behind it: a round, soft
 // ribbon under the colored tail. It fades gradually once the pitch reaches the
@@ -107,21 +162,28 @@ const BILLOW_WHITE_MIN_MULT = 0.1;     // white-layer alpha below 85 mph
 const BILLOW_WHITE_MAX_MULT = 1;       // white-layer alpha at 105 mph
 const BILLOW_WHITE_JITTER_MIN = 0.95;  // white particles render near full alpha (vs 0.7 base)
 
-// Electric-blue spark layer: emitted only by triple-digit pitches (over
-// BLUE_SPARK_THRESHOLD_MPH), layered on top of the usual white/yellow-red
-// billows, so a very fast pitch reads as a distinct blue wake. Below the
-// threshold the layer is written with alpha 0, so no stale sparks linger.
-const BLUE_SPARK_THRESHOLD_MPH = 100;
-const BLUE_SPARK_COUNT = 10; // replaces this many yellow→red billows at 100+ mph
-const BLUE_SPARK_COLOR = [0.3, 0.85, 1]; // electric cyan — brighter than the old muted blue
-const BLUE_SPARK_BASE_SCALE = 0.03; // slightly larger than the old sparks so the glow reads
-const BLUE_SPARK_SCALE_GROWTH = 3.0; // stays small as it ages
-const BLUE_SPARK_OPACITY = 1.0; // full-strength sparks
-// Twinkle: each spark flickers on its own per-particle phase, like an electric
-// discharge, instead of the steady billow fade.
-const BLUE_SPARK_TWINKLE_SPEED = 26; // rad/s — fast sparkle
-const BLUE_SPARK_TWINKLE_DEPTH = 0.45; // alpha swing around the base
-const BLUE_SPARK_TWINKLE_PHASE = 2.4; // per-particle phase spread
+// Golden spark layer: emitted only by the fastest pitches (at/over
+// GOLD_SPARK_THRESHOLD_MPH, i.e. >= 99 mph), layered on top of the usual
+// white/yellow-red billows, so a 99+ mph pitch reads as a distinct golden
+// wake. Below the threshold the layer is written with alpha 0, so no stale
+// sparks linger.
+const GOLD_SPARK_THRESHOLD_MPH = 99; // golden sparks start appearing at/above this release speed
+const GOLD_SPARK_COUNT = 16; // takes over the white wake at/above 99 mph (golden:white ratio up)
+// The hawk-eye ring at the strike zone and its sparkle halo are golden only
+// for pitches strictly above this speed (100+ mph club). Below it the ring
+// shares the trail's yellow→red color, so only the billows read golden at
+// 99–100 mph.
+const GOLD_RING_THRESHOLD_MPH = 100; // golden ring/sparkles only for pitches > 100 mph
+const GOLD_SPARK_COLOR = [1, 0.8, 0.18]; // bright warm gold
+const GOLD_SPARK_BASE_SCALE = 0.034; // slightly larger so the glow reads
+const GOLD_SPARK_SCALE_GROWTH = 3.0; // stays small as it ages
+const GOLD_SPARK_OPACITY = 1.15; // boosted past full-strength (additive = shine)
+const GOLD_SPARK_JITTER_MIN = 1; // lift the dimmest sparks to full alpha
+// Twinkle: each spark flickers on its own per-particle phase. Depth is lower
+// than the old blue sparks so the golden stays bright instead of dipping dark.
+const GOLD_SPARK_TWINKLE_SPEED = 30; // rad/s — fast sparkle
+const GOLD_SPARK_TWINKLE_DEPTH = 0.28; // alpha swing around the base
+const GOLD_SPARK_TWINKLE_PHASE = 2.4; // per-particle phase spread
 
 // Billow color is graded by the pitch's release speed: yellow at SPEED_MIN_MPH
 // lerping to red at SPEED_MAX_MPH.
@@ -225,7 +287,7 @@ function makeBillowSpawns(trajectoryData, seeds) {
 // current sim time. `alphaMultiplier` hides the layer (0) without leaving
 // stale particles on screen (used for the white layer on slow pitches). `opts`
 // overrides the shared billow look (size/growth/opacity/spread) for layers
-// like the blue 100+ mph sparks that want a finer, quicker sparkle.
+// like the golden 100+ mph sparks that want a finer, quicker sparkle.
 function writeBillowLayer(mesh, geometry, seeds, spawns, simTime, color, dummy, alphaMultiplier = 1, opts = {}) {
     const {
         baseScale = BILLOW_BASE_SCALE,
@@ -234,7 +296,7 @@ function writeBillowLayer(mesh, geometry, seeds, spawns, simTime, color, dummy, 
         spread = BILLOW_SPREAD,
         limit = spawns.length,
         alphaJitterMin = 0.7,
-        // Per-particle flicker for layers like the blue sparks: each instance
+        // Per-particle flicker for layers like the golden sparks: each instance
         // pulses on its own sine phase so the layer sparkles instead of
         // holding steady. depth 0..1 scales the swing; 0 disables it.
         twinkle = null,
@@ -245,10 +307,9 @@ function writeBillowLayer(mesh, geometry, seeds, spawns, simTime, color, dummy, 
     const alphas = alphaAttr.array;
 
     // `limit` lets a layer emit fewer particles than its capacity (the rest
-    // stay hidden at alpha 0) — used so 100+ mph pitches swap some of the
-    // yellow→red billows for the blue spark layer instead of stacking them,
-    // and to scale the emitted count with pitch speed (see
-    // getSpeedDensityFrac).
+    // stay hidden at alpha 0) — used to scale the emitted count with pitch
+    // speed (see getSpeedDensityFrac) and to let the golden spark layer take
+    // over the white wake above 99 mph instead of stacking them.
     const active = Math.min(limit, spawns.length);
 
     for (let i = 0; i < spawns.length; i++) {
@@ -397,8 +458,31 @@ const RING_FADE_TIME = 0.3; // s — fade out on replay reset
 const RING_PULSE_OVERSHOOT = 0.8; // scale overshoot: 1.8x -> 1x
 const RING_MAX_OPACITY = 0.95; // impact flash peak
 const RING_SETTLED_OPACITY = 0.3; // held after the fade-down (clearly above the white trace's 0.05)
+// Subtle sparkle halo the golden 100 mph ring gives off at the strike zone.
+// Styled deliberately differently from the trail's golden sparks — soft round
+// glints (low-poly spheres, not octahedra) in a warm white-gold, with a slow
+// gentle twinkle — so the ring's glow reads as its own effect. Gated by the
+// same particles toggle (showBillows) as the trail billows.
+const RING_SPARKLE_COUNT = 12;
+// The ring band width — sparkles can veer ~1 band width inward and outward
+// from the base radius so their formation reads as organic, not a perfect
+// ring.
+const RING_BAND_WIDTH = RING_OUTER_RADIUS - RING_INNER_RADIUS;
+const RING_SPARKLE_RADIUS = (RING_INNER_RADIUS + RING_OUTER_RADIUS) * 0.5; // ring center
+const RING_SPARKLE_BURST_DISTANCE = RING_OUTER_RADIUS * 0.9; // m — bigger one-shot outward burst on impact
+const RING_SPARKLE_COLOR = [1, 0.95, 0.7]; // warm white-gold glint
+const RING_SPARKLE_BASE_SCALE = 0.018; // small round glints
+const RING_SPARKLE_OPACITY = 0.5; // subtle
+const RING_SPARKLE_TWINKLE_SPEED = 6; // rad/s — slow, gentle twinkle
+const RING_SPARKLE_RADIAL_JITTER = RING_BAND_WIDTH; // m — veer ~1 band width inward/outward
+const RING_SPARKLE_Z_JITTER = 0.02; // m — slight depth scatter
+// After the impact burst, the sparkles drift upward and fade out like
+// lingering smoke instead of settling back onto the ring.
+const RING_SPARKLE_DRIFT_SPEED = 0.06; // m/s — upward drift velocity
+const RING_SPARKLE_DRIFT_START = 0.08; // s — delay after pulse before drift begins
+const RING_SPARKLE_DRIFT_FADE = 1.4; // s — time over which a drifting sparkle fades to zero
 
-export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCrossings, onArrival, overlay = false }) => {
+export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCrossings, onArrival, overlay = false, showRingLabel = true, showColoredTail = true, showBillows = true }) => {
     const ballRef = useRef();
     const simClock = useRef(0);
     // Tracks whether the physics ball has reached the plate in the current
@@ -419,12 +503,21 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
     // the plate and cleared when the play replays (cycle wraps).
     const trailMeshRef = useRef();
     const whiteTraceMeshRef = useRef();
+    // Comparison ring label group: its visibility mirrors the ring (hidden
+    // until the pitch reaches the strike zone, cleared when the windup starts)
+    // so the label toggles with the trajectory overlays in comparison mode.
+    const ringLabelGroupRef = useRef();
     // True once the pitcher has restarted his windup this cycle, so the
     // persistent white trace clears then instead of lingering to the wrap.
     const whiteTraceClearedRef = useRef(false);
+    // True once the pitcher has restarted his windup this cycle, so the
+    // hawk-eye crossing ring fades out then instead of lingering through the
+    // windup to the wrap.
+    const ringClearedRef = useRef(false);
     const billowMeshRef = useRef();
     const whiteBillowMeshRef = useRef();
-    const blueSparkMeshRef = useRef();
+    const goldSparkMeshRef = useRef();
+    const ringSparkleMeshRef = useRef();
 
     // Each geometry carries its own per-instance color/alpha attributes; the
     // custom ShaderMaterial renders each instance with its own color and
@@ -445,21 +538,32 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
         return material;
     }, []);
     const whiteBillowDummy = useMemo(() => new THREE.Object3D(), []);
-    // The blue sparks are octahedra (sharp diamond shards) instead of the
+    // The golden sparks are octahedra (sharp diamond shards) instead of the
     // square billow boxes, and render additively so overlapping sparks bloom
-    // into a vibrant electric glow.
-    const blueSparkGeometry = useMemo(() => createTrailGeometry(() => new THREE.OctahedronGeometry(0.5, 0)), []);
-    const blueSparkMaterial = useMemo(() => {
+    // into a bright golden glow.
+    const goldSparkGeometry = useMemo(() => createTrailGeometry(() => new THREE.OctahedronGeometry(0.5, 0)), []);
+    const goldSparkMaterial = useMemo(() => {
         const material = createTrailMaterial();
         material.blending = THREE.AdditiveBlending;
         return material;
     }, []);
-    const blueSparkDummy = useMemo(() => new THREE.Object3D(), []);
+    const goldSparkDummy = useMemo(() => new THREE.Object3D(), []);
+    // Ring sparkles are low-poly spheres (round glints) rather than the golden
+    // trail's octahedral shards, and additive so overlapping glints bloom.
+    const ringSparkleGeometry = useMemo(() => createTrailGeometry(() => new THREE.SphereGeometry(0.5, 5, 5)), []);
+    const ringSparkleMaterial = useMemo(() => {
+        const material = createTrailMaterial();
+        material.blending = THREE.AdditiveBlending;
+        return material;
+    }, []);
+    const ringSparkleDummy = useMemo(() => new THREE.Object3D(), []);
     // The hawk-eye ring: a flat RingGeometry donut (2.0–2.8 in, matching the
     // solomon-gumball StrikeZone indicator) with one unlit DoubleSide material,
     // so it reads as a continuous object, fades uniformly, and stays visible
-    // from either side. Drawn on top (depthTest off) and always pure white.
-    // RingGeometry lies in the x–y plane by default, which is the ring's plane.
+    // from either side. Drawn on top (depthTest off). Its color is set per
+    // pitch from the same speed ramp as the tail (see speedTrailColor), so the
+    // ring left at the strike zone matches the pitch's tail color. RingGeometry
+    // lies in the x–y plane by default, which is the ring's plane.
     const ringGeometry = useMemo(
         () => new THREE.RingGeometry(RING_INNER_RADIUS, RING_OUTER_RADIUS, 48),
         [],
@@ -491,10 +595,28 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
     const whiteBillowSeeds = useMemo(() => makeBillowSeeds(BILLOW_WHITE_COUNT_MAX, flightDuration), [pitchData, flightDuration]);
     const whiteBillowSpawns = useMemo(() => makeBillowSpawns(pitchData?.trajectory, whiteBillowSeeds), [pitchData, whiteBillowSeeds]);
 
-    // Blue spark layer, emitted only by 100+ mph pitches (see
-    // BLUE_SPARK_THRESHOLD_MPH). Same billow mechanics, finer look.
-    const blueSparkSeeds = useMemo(() => makeBillowSeeds(BLUE_SPARK_COUNT, flightDuration), [pitchData, flightDuration]);
-    const blueSparkSpawns = useMemo(() => makeBillowSpawns(pitchData?.trajectory, blueSparkSeeds), [pitchData, blueSparkSeeds]);
+    // Golden spark layer, emitted only by 99+ mph pitches (see
+    // GOLD_SPARK_THRESHOLD_MPH). Same billow mechanics, finer look.
+    const goldSparkSeeds = useMemo(() => makeBillowSeeds(GOLD_SPARK_COUNT, flightDuration), [pitchData, flightDuration]);
+    const goldSparkSpawns = useMemo(() => makeBillowSpawns(pitchData?.trajectory, goldSparkSeeds), [pitchData, goldSparkSeeds]);
+
+    // Per-pitch ring-sparkle seeds: evenly spaced around the ring with a little
+    // radius/depth/phase jitter so the halo shimmers organically. The angle is
+    // rotated by a per-pitch offset (from the release speed) so each pitch gets
+    // its own deterministic pattern.
+    const ringSparkleSeeds = useMemo(() => {
+        const speedOffset = ((pitchData?.speed_mph ?? 90) % 360) * (Math.PI / 180);
+        return Array.from({ length: RING_SPARKLE_COUNT }, (_, i) => ({
+            angle: speedOffset + (i / RING_SPARKLE_COUNT) * Math.PI * 2,
+            // Each sparkle gets its own per-pitch random offset within ±1 band
+            // width so the formation looks scattered, not a perfect ring.
+            radiusOffset: (Math.random() - 0.5) * 2 * RING_BAND_WIDTH,
+            z: (Math.random() - 0.5) * RING_SPARKLE_Z_JITTER,
+            phase: Math.random() * Math.PI * 2,
+            speed: RING_SPARKLE_TWINKLE_SPEED * (0.7 + Math.random() * 0.6),
+            scale: RING_SPARKLE_BASE_SCALE * (0.7 + Math.random() * 0.6),
+        }));
+    }, [pitchData]);
 
     // Start each new pitch back at the release point, with both trail layers
     // cleared so they can grow behind the ball as it flies.
@@ -503,6 +625,7 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
         arrivedRef.current = false;
         arrivedAtRef.current = -1;
         whiteTraceClearedRef.current = false;
+        ringClearedRef.current = false;
         ringAnim.current.phase = 'idle';
         ringAnim.current.t = 0;
         // A new pitch starts fresh at the release point: undo the previous
@@ -530,15 +653,22 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
             alphaAttr.array.fill(0);
             alphaAttr.needsUpdate = true;
         }
-        if (blueSparkMeshRef.current) {
-            const alphaAttr = blueSparkGeometry.getAttribute('aAlpha');
+        if (goldSparkMeshRef.current) {
+            const alphaAttr = goldSparkGeometry.getAttribute('aAlpha');
             alphaAttr.array.fill(0);
             alphaAttr.needsUpdate = true;
         }
-        // Hide the hawk-eye ring until the arrival pulse eases it in.
+        if (ringSparkleMeshRef.current) {
+            const alphaAttr = ringSparkleGeometry.getAttribute('aAlpha');
+            alphaAttr.array.fill(0);
+            alphaAttr.needsUpdate = true;
+        }
+        // Hide the hawk-eye ring until the arrival pulse eases it in, and the
+        // comparison label with it.
         ringMaterial.opacity = 0;
         if (ringMeshRef.current) ringMeshRef.current.visible = false;
-    }, [pitchData, trailGeometry, whiteTraceGeometry, billowGeometry, whiteBillowGeometry, blueSparkGeometry, ringMaterial]);
+        if (ringLabelGroupRef.current) ringLabelGroupRef.current.visible = false;
+    }, [pitchData, trailGeometry, whiteTraceGeometry, billowGeometry, whiteBillowGeometry, goldSparkGeometry, ringSparkleGeometry, ringMaterial]);
     
     // Memoize the line points so we don't recreate them every render
     const linePoints = useMemo(() => {
@@ -581,16 +711,19 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
         const dummy = new THREE.Object3D();
 
         // Tail color is constant along the whole flight, picked from a speed
-        // ramp: yellowish-white at 70 mph → orange-red at 90 mph.
+        // ramp: yellowish-white at 70 mph → crimson red at 99 mph. The hawk-eye
+        // ring at the strike zone shares this exact color below 100 mph, then
+        // flips to the golden spark color only for pitches strictly above
+        // 100 mph (GOLD_RING_THRESHOLD_MPH). The tail's
+        // custom shader writes its color raw, so pass the same values as sRGB
+        // on the ring's MeshBasicMaterial (which converts linear→sRGB at
+        // output) to keep the two visually identical.
         const speed = pitchData?.speed_mph ?? 90;
-        const speedFrac = THREE.MathUtils.clamp(
-            (speed - TRAIL_SPEED_MIN_MPH) / (TRAIL_SPEED_MAX_MPH - TRAIL_SPEED_MIN_MPH), 0, 1,
-        );
-        const trailColor = [
-            THREE.MathUtils.lerp(TRAIL_SPEED_SLOW[0], TRAIL_SPEED_FAST[0], speedFrac),
-            THREE.MathUtils.lerp(TRAIL_SPEED_SLOW[1], TRAIL_SPEED_FAST[1], speedFrac),
-            THREE.MathUtils.lerp(TRAIL_SPEED_SLOW[2], TRAIL_SPEED_FAST[2], speedFrac),
-        ];
+        const trailColor = speedTrailColor(speed);
+        const ringColor = speed > GOLD_RING_THRESHOLD_MPH ? GOLD_SPARK_COLOR : trailColor;
+        if (ringMaterial) {
+            ringMaterial.color.setRGB(ringColor[0], ringColor[1], ringColor[2], THREE.SRGBColorSpace);
+        }
 
         const writeLayer = (mesh, colorAttr, alphaAttr, isWhite) => {
             if (!mesh) return;
@@ -641,7 +774,7 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
             whiteTraceGeometry.getAttribute('aAlpha'),
             true,
         );
-    }, [particlePoints, pitchData, trailGeometry, whiteTraceGeometry]);
+    }, [particlePoints, pitchData, trailGeometry, whiteTraceGeometry, ringMaterial]);
 
     // Ghost trajectory: default (neutral) environment, shown in purple when in compare mode
     const ghostLinePoints = useMemo(() => {
@@ -691,6 +824,21 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
         if (!wrapped && !whiteTraceClearedRef.current && currentSimTime >= windupStart) {
             whiteTraceClearedRef.current = true;
         }
+        // The pitcher restarts his windup here (before the wrap): yank the
+        // hawk-eye crossing ring at the same instant the persistent white
+        // trace clears above, so the strike zone is left clean the moment the
+        // windup begins instead of lingering until the cycle wraps.
+        if (!wrapped && !ringClearedRef.current && currentSimTime >= windupStart) {
+            ringClearedRef.current = true;
+            ringAnim.current.phase = 'idle';
+            ringAnim.current.t = 0;
+            ringMaterial.opacity = 0;
+            if (ringMeshRef.current) ringMeshRef.current.visible = false;
+            if (ringGroupRef.current) ringGroupRef.current.scale.setScalar(1);
+            // Hide the comparison ring label with the ring as the trajectories
+            // clear for the windup.
+            if (ringLabelGroupRef.current) ringLabelGroupRef.current.visible = false;
+        }
         const position = sampleTrajectoryAtTime(trajectoryData, currentSimTime);
         if (position) {
             ballRef.current.position.copy(position);
@@ -719,11 +867,15 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                 arrivedRef.current = false;
                 arrivedAtRef.current = -1;
                 whiteTraceClearedRef.current = false;
+                ringClearedRef.current = false;
                 ballRef.current.visible = true;
                 if (ringAnim.current.phase !== 'idle') {
                     ringAnim.current.phase = 'fadeout';
                     ringAnim.current.t = 0;
                 }
+                // Safety: never let the label survive a cycle wrap even if the
+                // windup-clearing path above was skipped (very short cycles).
+                if (ringLabelGroupRef.current) ringLabelGroupRef.current.visible = false;
             } else if (!arrivedRef.current && position.z >= FRONT_OF_PLATE_Z) {
                 // The pitch has reached the plate: flash in the crossing ring
                 // with an impact pulse. The full particle trail is already
@@ -733,6 +885,9 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                 arrivedAtRef.current = currentSimTime;
                 ringAnim.current.phase = 'pulse';
                 ringAnim.current.t = 0;
+                // The pitch has reached the strike zone: pop the comparison
+                // label in with the ring.
+                if (ringLabelGroupRef.current) ringLabelGroupRef.current.visible = true;
                 // Notify the app so it can reveal the ball/strike outcome (or,
                 // for contact, leave the hit/run/out reveal to the batted-ball
                 // choreography). Fires once per arrival (reset on the wrap).
@@ -806,12 +961,11 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                 ];
                 // The yellow→red billow count scales with pitch speed on the
                 // same ramp as the trail (30% at 70 mph → 100% at 90+ mph).
-                // At 100+ mph the blue spark layer also replaces this many of
-                // the yellow→red billows (total wake stays the same density).
+                // The golden spark layer now swaps in for the white wake above
+                // 99 mph (see the white limit below), so the yellow→red billows
+                // stay at their full speed-graded count.
                 const billowDensityFrac = getSpeedDensityFrac(speed);
-                const billowLimit = speed > BLUE_SPARK_THRESHOLD_MPH
-                    ? Math.max(0, Math.round(BILLOW_COUNT * billowDensityFrac) - BLUE_SPARK_COUNT)
-                    : Math.round(BILLOW_COUNT * billowDensityFrac);
+                const billowLimit = Math.round(BILLOW_COUNT * billowDensityFrac);
                 writeBillowLayer(
                     billowMeshRef.current, billowGeometry, billowSeeds, billowSpawns,
                     currentSimTime, color, billowDummy,
@@ -830,9 +984,16 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                     );
                     // Above 85 mph the emitted count ramps up too (4 → 16 by
                     // 105 mph), so fast pitches throw more white particles.
-                    const whiteLimit = Math.round(THREE.MathUtils.lerp(
+                    let whiteLimit = Math.round(THREE.MathUtils.lerp(
                         BILLOW_WHITE_COUNT, BILLOW_WHITE_COUNT_MAX, whiteSpeedFrac,
                     ));
+                    // At/above 99 mph the golden spark layer takes over this
+                    // many white particles, so a 99+ mph wake reads golden
+                    // instead of white while the total particle density stays
+                    // the same.
+                    if (speed >= GOLD_SPARK_THRESHOLD_MPH) {
+                        whiteLimit = Math.max(0, whiteLimit - GOLD_SPARK_COUNT);
+                    }
                     writeBillowLayer(
                         whiteBillowMeshRef.current, whiteBillowGeometry, whiteBillowSeeds, whiteBillowSpawns,
                         currentSimTime, [1, 1, 1], whiteBillowDummy,
@@ -845,22 +1006,24 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                         },
                     );
                 }
-                // Blue sparks: only pitches over 100 mph emit them; below the
-                // threshold the alpha multiplier keeps the layer invisible.
-                if (blueSparkMeshRef.current && blueSparkSpawns.length > 0) {
-                    const blueMult = speed > BLUE_SPARK_THRESHOLD_MPH ? 1 : 0;
+                // Golden sparks: only pitches at/over 99 mph emit them; below
+                // the threshold the alpha multiplier keeps the layer
+                // invisible.
+                if (goldSparkMeshRef.current && goldSparkSpawns.length > 0) {
+                    const goldMult = speed >= GOLD_SPARK_THRESHOLD_MPH ? 1 : 0;
                     writeBillowLayer(
-                        blueSparkMeshRef.current, blueSparkGeometry, blueSparkSeeds, blueSparkSpawns,
-                        currentSimTime, BLUE_SPARK_COLOR, blueSparkDummy,
-                        blueMult,
+                        goldSparkMeshRef.current, goldSparkGeometry, goldSparkSeeds, goldSparkSpawns,
+                        currentSimTime, GOLD_SPARK_COLOR, goldSparkDummy,
+                        goldMult,
                         {
-                            baseScale: BLUE_SPARK_BASE_SCALE,
-                            scaleGrowth: BLUE_SPARK_SCALE_GROWTH,
-                            opacity: BLUE_SPARK_OPACITY,
+                            baseScale: GOLD_SPARK_BASE_SCALE,
+                            scaleGrowth: GOLD_SPARK_SCALE_GROWTH,
+                            opacity: GOLD_SPARK_OPACITY,
+                            alphaJitterMin: GOLD_SPARK_JITTER_MIN,
                             twinkle: {
-                                speed: BLUE_SPARK_TWINKLE_SPEED,
-                                depth: BLUE_SPARK_TWINKLE_DEPTH,
-                                phase: BLUE_SPARK_TWINKLE_PHASE,
+                                speed: GOLD_SPARK_TWINKLE_SPEED,
+                                depth: GOLD_SPARK_TWINKLE_DEPTH,
+                                phase: GOLD_SPARK_TWINKLE_PHASE,
                             },
                         },
                     );
@@ -912,6 +1075,52 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                 }
                 if (ringGroupRef.current) ringGroupRef.current.scale.setScalar(scale);
             }
+            // Golden ring sparkles: subtle glints the >100 mph ring gives off
+            // at the strike zone. They burst outward once on the impact pulse,
+            // then settle to a gentle twinkle while the ring is on screen.
+            if (ringSparkleMeshRef.current) {
+                const ringVisible = anim.phase === 'pulse' || anim.phase === 'settle' || anim.phase === 'steady';
+                const elite = (pitchData?.speed_mph ?? 90) > GOLD_RING_THRESHOLD_MPH;
+                const ringFactor = anim.phase === 'fadeout'
+                    ? Math.max(0, 1 - anim.t / RING_FADE_TIME)
+                    : 1;
+                // One-shot outward burst across the ring's impact pulse: the
+                // sparkles pop just outside the ring and fall back onto it.
+                const burst = anim.phase === 'pulse'
+                    ? Math.sin(Math.min(anim.t / RING_PULSE_TIME, 1) * Math.PI)
+                    : 0;
+                const sparkleColorAttr = ringSparkleGeometry.getAttribute('aColor');
+                const sparkleAlphaAttr = ringSparkleGeometry.getAttribute('aAlpha');
+                const sparkleColors = sparkleColorAttr.array;
+                const sparkleAlphas = sparkleAlphaAttr.array;
+                for (let i = 0; i < RING_SPARKLE_COUNT; i++) {
+                    const seed = ringSparkleSeeds[i];
+                    const twinkle = 0.5 + 0.5 * Math.sin(currentSimTime * seed.speed + seed.phase);
+                    const alpha = elite && ringVisible
+                        ? RING_SPARKLE_OPACITY * twinkle * ringFactor
+                        : 0;
+                    sparkleAlphas[i] = alpha;
+                    const radius = RING_SPARKLE_RADIUS
+                        + seed.radiusOffset
+                        + RING_SPARKLE_BURST_DISTANCE * burst
+                        + Math.sin(currentSimTime * seed.speed * 0.5 + seed.phase) * RING_SPARKLE_RADIAL_JITTER;
+                    ringSparkleDummy.position.set(
+                        Math.cos(seed.angle) * radius,
+                        Math.sin(seed.angle) * radius,
+                        seed.z,
+                    );
+                    ringSparkleDummy.scale.setScalar(seed.scale);
+                    ringSparkleDummy.rotation.set(0, 0, 0);
+                    ringSparkleDummy.updateMatrix();
+                    ringSparkleMeshRef.current.setMatrixAt(i, ringSparkleDummy.matrix);
+                    sparkleColors[i * 3] = RING_SPARKLE_COLOR[0];
+                    sparkleColors[i * 3 + 1] = RING_SPARKLE_COLOR[1];
+                    sparkleColors[i * 3 + 2] = RING_SPARKLE_COLOR[2];
+                }
+                sparkleColorAttr.needsUpdate = true;
+                sparkleAlphaAttr.needsUpdate = true;
+                ringSparkleMeshRef.current.instanceMatrix.needsUpdate = true;
+            }
         }
     });
 
@@ -944,6 +1153,13 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
         if (px == null || pz == null) return null;
         return [px * 0.3048, pz * 0.3048, FRONT_OF_PLATE_Z];
     }, [pitchData]);
+
+    // Comparison overlay: the pitch-type label under this pitch's ring (e.g.
+    // FF / SL / CU), drawn plain white. Computed only for overlays so normal
+    // playback keeps the strike zone clean.
+    const pitchTypeLabel = overlay
+        ? (pitchData?.pitch_type || pitchData?.pitch_type_description || null)
+        : null;
 
     // Physics simulation crossing marker — evaluated at targetZ to match the selected plane
     let simCrossingM = null;
@@ -1004,7 +1220,7 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                 flies to the plate, stay visible through the batted-ball flight,
                 and clear when the play replays. Pixelated billow particles are
                 kicked up behind the ball, colored yellow→red by pitch speed,
-                plus a fine electric-blue spark layer on 100+ mph pitches. */}
+                plus a fine golden spark layer on 100+ mph pitches. */}
             {particlePoints.length > 0 && (
                 <>
                     <instancedMesh
@@ -1013,15 +1229,18 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                         renderOrder={1}
                         frustumCulled={false}
                     />
-                    <instancedMesh
-                        ref={trailMeshRef}
-                        args={[trailGeometry, trailMaterial, TRAIL_MAX_PARTICLES]}
-                        renderOrder={2}
-                        frustumCulled={false}
-                    />
+                    {showColoredTail && (
+                        <instancedMesh
+                            ref={trailMeshRef}
+                            args={[trailGeometry, trailMaterial, TRAIL_MAX_PARTICLES]}
+                            renderOrder={2}
+                            frustumCulled={false}
+                        />
+                    )}
                     {/* Billow particles are skipped for tunneling overlays so
-                        the overlaid trajectories read clearly. */}
-                    {!overlay && (
+                        the overlaid trajectories read clearly, and can be
+                        disabled entirely from the playback panel. */}
+                    {!overlay && showBillows && (
                         <>
                             <instancedMesh
                                 ref={billowMeshRef}
@@ -1036,8 +1255,8 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                                 frustumCulled={false}
                             />
                             <instancedMesh
-                                ref={blueSparkMeshRef}
-                                args={[blueSparkGeometry, blueSparkMaterial, BLUE_SPARK_COUNT]}
+                                ref={goldSparkMeshRef}
+                                args={[goldSparkGeometry, goldSparkMaterial, GOLD_SPARK_COUNT]}
                                 renderOrder={5}
                                 frustumCulled={false}
                             />
@@ -1105,6 +1324,45 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
                     />
                 </group>
             )}
+            {hawkeyeCrossingM && !overlay && showBillows && (
+                <instancedMesh
+                    ref={ringSparkleMeshRef}
+                    args={[ringSparkleGeometry, ringSparkleMaterial, RING_SPARKLE_COUNT]}
+                    position={[hawkeyeCrossingM[0], hawkeyeCrossingM[1], FRONT_OF_PLATE_Z]}
+                    renderOrder={7}
+                    frustumCulled={false}
+                />
+            )}
+
+            {/* Comparison overlay: pitch-type label under the hawk-eye ring,
+                so each overlaid pitch's ring is identified at a glance. It
+                billboards to face the camera, is plain solid white with no
+                border (broadcast velocity-label look), sits snugly under each
+                ring, and its visibility tracks the ring (hidden until the
+                pitch reaches the strike zone, cleared when the windup starts). */}
+            <group ref={ringLabelGroupRef} visible={false}>
+                {overlay && showRingLabel && hawkeyeCrossingM && pitchTypeLabel && (
+                    <Billboard
+                        position={[
+                            hawkeyeCrossingM[0],
+                            hawkeyeCrossingM[1] - (RING_OUTER_RADIUS + RING_LABEL_GAP),
+                            FRONT_OF_PLATE_Z + RING_LABEL_OFFSET_Z,
+                        ]}
+                    >
+                        <Text
+                            fontSize={RING_OUTER_RADIUS * RING_LABEL_FONT_SCALE}
+                            color="#ffffff"
+                            fontWeight="bold"
+                            outlineWidth={RING_LABEL_OUTLINE}
+                            outlineColor={RING_LABEL_OUTLINE_COLOR}
+                            anchorX="center"
+                            anchorY="top"
+                        >
+                            {pitchTypeLabel}
+                        </Text>
+                    </Billboard>
+                )}
+            </group>
         </group>
     );
 };

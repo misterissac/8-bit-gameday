@@ -1,8 +1,9 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Sky, Environment } from '@react-three/drei';
 import { Spherical } from 'three';
 import { feetToM } from '../util/MathUtil';
+import { getBattedBallPosition } from '../constants/playback';
 import { Pitch } from './Pitch';
 import { Ballpark } from './Ballpark';
 import { Batter } from './Batter';
@@ -202,11 +203,14 @@ const WASDMovement = ({ controlsRef }) => {
 // write per second, plus a final write on page unload). The camera never
 // moves without WASDMovement/OrbitControls updating the target alongside it,
 // so these two vectors always describe the current view.
-const CameraPersistence = ({ controlsRef }) => {
+const CameraPersistence = ({ controlsRef, followActiveRef }) => {
     const camera = useThree((s) => s.camera);
     const lastSaveRef = useRef(0);
 
     useFrame(() => {
+        // Don't persist the transient follow view; the restored pre-play angle
+        // is the one that should survive reloads.
+        if (followActiveRef.current) return;
         const controls = controlsRef.current;
         if (!controls) return;
         const now = performance.now();
@@ -217,12 +221,13 @@ const CameraPersistence = ({ controlsRef }) => {
 
     useEffect(() => {
         const save = () => {
+            if (followActiveRef.current) return;
             const controls = controlsRef.current;
             if (controls) saveCameraState(camera.position, controls.target);
         };
         window.addEventListener('beforeunload', save);
         return () => window.removeEventListener('beforeunload', save);
-    }, [camera, controlsRef]);
+    }, [camera, controlsRef, followActiveRef]);
 
     return null;
 };
@@ -252,19 +257,191 @@ const CameraController = ({ snapTrigger, controlsRef }) => {
     return null;
 };
 
-export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, crossingPlane, onCrossings, onArrival, onPlayResult, onComplete, comparisonActive = false, comparisonPlays = [] }) => {
+// How long the follow camera glides back to the pre-play view after a batted
+// ball lands. An ease-out curve (not an instant snap) makes the restore read
+// as a smooth broadcast-style move instead of a jarring cut.
+const FOLLOW_RESTORE_DURATION = 0.6;
+
+// While enabled, follows the first batted-ball flight of each live pitch by
+// keeping the camera aimed at the ball, then eases back to the pre-play view
+// once that first animation finishes. Reads the ball position / completion
+// signal published by BattedBall (a frame later at most), so it uses the
+// default render priority — a positive priority would hand the render loop to
+// this component and leave the scene blank.
+const FollowBattedBall = ({ controlsRef, pitchData, enabled, completeSignalRef, followActiveRef }) => {
+    const camera = useThree((s) => s.camera);
+    // idle -> following -> restoring -> restored (restored ignores the same
+    // play's looped re-animations until a new play id arrives and re-arms the
+    // follower).
+    const modeRef = useRef('idle');
+    const followedPlayIdRef = useRef(null);
+    const completionHandledRef = useRef(false);
+    const lastCompleteSignalRef = useRef(0);
+    const originalPositionRef = useRef(null);
+    const originalTargetRef = useRef(null);
+    // Start pose + elapsed time for the eased restore, so each frame can
+    // interpolate the camera/target back toward the pre-play view.
+    const restoreStartRef = useRef(null);
+    const restoreElapsedRef = useRef(0);
+
+    const snapRestore = () => {
+        const controls = controlsRef.current;
+        if (!controls || !originalPositionRef.current || !originalTargetRef.current) return;
+        camera.position.copy(originalPositionRef.current);
+        controls.target.copy(originalTargetRef.current);
+        camera.lookAt(originalTargetRef.current);
+        controls.update();
+        controls.enabled = true;
+    };
+
+    const beginRestore = () => {
+        const controls = controlsRef.current;
+        if (!controls || !originalPositionRef.current || !originalTargetRef.current) {
+            // Nothing to restore from; treat the play as already settled so the
+            // follower never hangs in 'following' waiting on a pose it can't
+            // reconstruct.
+            modeRef.current = 'restored';
+            followActiveRef.current = false;
+            return;
+        }
+        restoreStartRef.current = {
+            position: camera.position.clone(),
+            target: controls.target.clone(),
+        };
+        restoreElapsedRef.current = 0;
+        modeRef.current = 'restoring';
+        followActiveRef.current = false;
+    };
+
+    useFrame((_, delta) => {
+        const controls = controlsRef.current;
+        const playId = pitchData?.play_id ?? null;
+
+        // A new pitch arms the follower for its first batted-ball flight. If a
+        // previous play's restore ease is still running (or it was still being
+        // followed), finish it instantly so the next play captures the true
+        // pre-play view — never a mid-ease pose or a stale ball aim.
+        if (playId !== followedPlayIdRef.current) {
+            if (modeRef.current === 'following' || modeRef.current === 'restoring') snapRestore();
+            followedPlayIdRef.current = playId;
+            completionHandledRef.current = false;
+            lastCompleteSignalRef.current = completeSignalRef.current;
+            modeRef.current = 'idle';
+            followActiveRef.current = false;
+            restoreStartRef.current = null;
+            restoreElapsedRef.current = 0;
+        }
+
+        if (!enabled) {
+            if (modeRef.current === 'following' || modeRef.current === 'restoring') snapRestore();
+            modeRef.current = 'idle';
+            followActiveRef.current = false;
+            return;
+        }
+
+        if (modeRef.current === 'restoring') {
+            if (!controls || !restoreStartRef.current || !originalPositionRef.current || !originalTargetRef.current) {
+                modeRef.current = 'restored';
+                followActiveRef.current = false;
+                return;
+            }
+            restoreElapsedRef.current += Math.min(delta, 0.1);
+            const t = Math.min(restoreElapsedRef.current / FOLLOW_RESTORE_DURATION, 1);
+            // Ease-out cubic: fast initial recovery that settles softly.
+            const ease = 1 - Math.pow(1 - t, 3);
+            camera.position.lerpVectors(restoreStartRef.current.position, originalPositionRef.current, ease);
+            controls.target.lerpVectors(restoreStartRef.current.target, originalTargetRef.current, ease);
+            camera.lookAt(controls.target);
+            controls.update();
+            controls.enabled = false;
+            if (t >= 1) {
+                snapRestore();
+                modeRef.current = 'restored';
+                restoreStartRef.current = null;
+            }
+            return;
+        }
+
+        if (modeRef.current === 'idle') {
+            const ball = getBattedBallPosition();
+            // Only engage once the batted ball genuinely belongs to THIS pitch:
+            // the shared position is published with its owning play id, so a
+            // stale position left behind by a previous play can never trick the
+            // camera into following a vanished ball. A live contact pitch whose
+            // Statcast hit hasn't arrived yet publishes no position at all, so
+            // the follower simply waits for the pitch's own launch instead of
+            // grabbing anything that happens to be in flight.
+            if (ball && controls && playId && ball.playId === playId) {
+                originalPositionRef.current = camera.position.clone();
+                originalTargetRef.current = controls.target.clone();
+                controls.enabled = false;
+                modeRef.current = 'following';
+                followActiveRef.current = true;
+            } else {
+                return;
+            }
+        }
+
+        if (modeRef.current !== 'following') return;
+
+        // Keep the camera aimed at the ball while it is airborne. Once the ball
+        // is down but the play is still animating (fielder run / throw), hold
+        // the last aimed view until the play completes.
+        const ball = getBattedBallPosition();
+        if (ball && ball.playId === playId && controls) {
+            controls.target.set(ball.x, ball.y, ball.z);
+            camera.lookAt(ball.x, ball.y, ball.z);
+            controls.enabled = false;
+        }
+
+        // First completion of this play: ease back to the pre-play view.
+        if (!completionHandledRef.current && completeSignalRef.current !== lastCompleteSignalRef.current) {
+            completionHandledRef.current = true;
+            lastCompleteSignalRef.current = completeSignalRef.current;
+            beginRestore();
+        }
+    });
+
+    return null;
+};
+
+export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, crossingPlane, onCrossings, onArrival, onPlayResult, onComplete, comparisonActive = false, comparisonPlays = [], replayKey = 0, showColoredTails = true, showBillowParticles = true, showComparisonRingLabels = true, followEnabled = true }) => {
     const controlsRef = useRef();
+    // True while the follow camera is actively tracking a batted ball; camera
+    // persistence skips saving so a transient follow angle never survives a
+    // reload in place of the restored pre-play angle.
+    const followActiveRef = useRef(false);
+    // Bumped every time BattedBall finishes a play so the follow camera knows
+    // when the first animation of a live play has completed.
+    const completeSignalRef = useRef(0);
+    const handleBattedComplete = useCallback((source, details) => {
+        completeSignalRef.current += 1;
+        if (onComplete) onComplete(source, details);
+    }, [onComplete]);
     // Restore the last saved view on mount (read once, localStorage).
     const initialCam = useMemo(() => loadCameraState(), []);
     // Stable identity so OrbitControls doesn't re-apply the target on every render.
     const controlsTarget = useMemo(() => initialCam?.target ?? [0, 0, -25], [initialCam]);
+    // In comparison mode render one pitcher per distinct mound man so a
+    // mid-selection pitching change overlays both. Group by the payload's
+    // pitcher name (the trajectory payload's only stable pitcher identifier).
+    const comparisonPitchers = useMemo(() => {
+        const byPitcher = new Map();
+        for (const play of comparisonPlays) {
+            const pitch = play?.pitch;
+            if (!pitch) continue;
+            const key = pitch.pitcher ?? pitch.pitcher_id ?? 'pitcher';
+            if (!byPitcher.has(key)) byPitcher.set(key, pitch);
+        }
+        return [...byPitcher.entries()];
+    }, [comparisonPlays]);
 
     return (
         <Canvas camera={{ position: initialCam?.position ?? [0, 42, 82], fov: 60 }}>
             <CameraController snapTrigger={snapTrigger} controlsRef={controlsRef} />
 
             {/* Persists the view to localStorage so it survives page reloads */}
-            <CameraPersistence controlsRef={controlsRef} />
+            <CameraPersistence controlsRef={controlsRef} followActiveRef={followActiveRef} />
 
             {/* WASD free movement across the diamond (Shift to sprint) */}
             <WASDMovement controlsRef={controlsRef} />
@@ -283,19 +460,25 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
             <Ballpark />
             
             {/* Pitch Visualization Component. In comparison mode the single
-                live pitch/batter/pitcher are replaced by every selected pitch
-                overlaid together, plus each contact pitch's batted ball (flight
-                only, no fielding). */}
+                live pitch/batter is replaced by every selected pitch overlaid
+                together (plus the overlaid pitcher(s) above and each contact
+                pitch's batted ball — flight only, no fielding). */}
             {comparisonActive ? (
                 <>
+                    {/* Pitcher(s) at the mound, overlaid and dimmed so a
+                        pitching change between the selected pitches is still
+                        legible. Each winds up on the shared cycle. */}
+                    {comparisonPitchers.map(([key, pitch]) => (
+                        <Pitcher key={`compare-pitcher-${replayKey}-${key}`} pitchData={pitch} overlay />
+                    ))}
                     {comparisonPlays.map((play, i) => (
-                        <Pitch key={`compare-pitch-${i}`} pitchData={play.pitch} overlay />
+                        <Pitch key={`compare-pitch-${replayKey}-${i}`} pitchData={play.pitch} overlay showRingLabel={showComparisonRingLabels} showColoredTail={showColoredTails} showBillows={showBillowParticles} />
                     ))}
                     {comparisonPlays
                         .filter((play) => play.pitch?.is_contact === true)
                         .map((play, i) => (
                             <BattedBall
-                                key={`compare-hit-${i}`}
+                                key={`compare-hit-${replayKey}-${i}`}
                                 pitchData={play.pitch}
                                 hit={play.hit}
                                 comparison
@@ -304,7 +487,7 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
                 </>
             ) : (
                 <>
-                    <Pitch pitchData={pitchData} defaultPitchData={defaultPitchData} crossingPlane={crossingPlane} onCrossings={onCrossings} onArrival={onArrival} />
+                    <Pitch pitchData={pitchData} defaultPitchData={defaultPitchData} crossingPlane={crossingPlane} onCrossings={onCrossings} onArrival={onArrival} showColoredTail={showColoredTails} showBillows={showBillowParticles} />
 
                     {/* Batter at the plate, swinging with the live at-bat data */}
                     <Batter pitchData={pitchData} />
@@ -316,7 +499,7 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
 
                     {/* Batted-ball + fielder trajectory (driven by Statcast hit data),
                         launched when the pitch reaches the spot it is hit */}
-                    <BattedBall pitchData={pitchData} hit={battedBall} onPlayResult={onPlayResult} onComplete={onComplete} />
+                    <BattedBall pitchData={pitchData} hit={battedBall} onPlayResult={onPlayResult} onComplete={handleBattedComplete} />
                 </>
             )}
 
@@ -326,6 +509,16 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
             
             {/* Camera Controls */}
             <OrbitControls makeDefault ref={controlsRef} target={controlsTarget} />
+
+            {/* Follows the batted-ball trajectory when enabled (default on),
+                then restores the pre-play view after the play's first run. */}
+            <FollowBattedBall
+                controlsRef={controlsRef}
+                pitchData={pitchData}
+                enabled={followEnabled}
+                completeSignalRef={completeSignalRef}
+                followActiveRef={followActiveRef}
+            />
         </Canvas>
     );
 };

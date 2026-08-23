@@ -46,13 +46,41 @@ export const CYCLE_PAUSE = 0.6
 // Live world position of the batted ball while it is in flight, published by
 // BattedBall every frame so the batter can track it with its head after
 // contact. Null when the ball is not airborne (pre-launch, landed, caught,
-// or the cycle reset).
+// or the cycle reset). Carries the owning pitch's play id so the follow camera
+// can ignore a stale position left over from a previous play (or a contact
+// pitch whose own Statcast hit hasn't arrived yet).
 let battedBallPosition = null
 
-export function setBattedBallPosition(pos) {
-  battedBallPosition = pos ? { x: pos.x, y: pos.y, z: pos.z } : null
+export function setBattedBallPosition(pos, playId = null) {
+  battedBallPosition = pos ? { x: pos.x, y: pos.y, z: pos.z, playId: playId ?? null } : null
 }
 
 export function getBattedBallPosition() {
   return battedBallPosition
+}
+
+// Live world position + identity of the fielder who is chasing the ball,
+// published by BattedBall every frame so the fielder camera can position
+// itself near the chaser and track the ball from the fielder's perspective.
+// Null when no fielder is actively chasing (pre-launch, after the play).
+let fielderWorldPosition = null // { x, y, z, chaser: string, playId: string }
+
+// Standard defensive home position of the currently-active chaser, published
+// once per plan so the fielder camera can compute an offset.
+let fielderHomePosition = null // { x, y, z, chaser: string }
+
+export function setFielderPosition(pos, chaser = null, playId = null) {
+  fielderWorldPosition = pos ? { x: pos.x, y: pos.y ?? 0, z: pos.z, chaser, playId } : null
+}
+
+export function getFielderPosition() {
+  return fielderWorldPosition
+}
+
+export function setFielderHomePosition(pos, chaser = null) {
+  fielderHomePosition = pos ? { x: pos.x, y: pos.y ?? 0, z: pos.z, chaser } : null
+}
+
+export function getFielderHomePosition() {
+  return fielderHomePosition
 }

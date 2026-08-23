@@ -9,19 +9,19 @@ import * as THREE from 'three'
 // that object changes, and the burst self-hides once every piece has expired.
 
 const CONFETTI_COLORS = ['#ff4d4d', '#ffd166', '#4dff88', '#4da6ff', '#ff9f1c', '#e14dff']
-const CONFETTI_COUNT = 90
-const CONFETTI_LIFE = 2.4 // s — full lifetime of the longest-lived piece
+const CONFETTI_COUNT = 120
+const CONFETTI_LIFE = 3.2 // s — full lifetime of the longest-lived piece
 const CONFETTI_FADE_TIME = 0.45 // s — fade to transparent at the end of life
 const CONFETTI_GRAVITY = 9.8 // m/s^2
 
 function seedPiece(origin) {
   const angle = Math.random() * Math.PI * 2
-  const outSpeed = 2 + Math.random() * 4
+  const outSpeed = 3 + Math.random() * 6
   return {
     position: origin.clone(),
     velocity: new THREE.Vector3(
       Math.cos(angle) * outSpeed,
-      1 + Math.random() * 4,
+      4 + Math.random() * 8, // strong upward burst so it clears the wall and reads from home plate
       Math.sin(angle) * outSpeed,
     ),
     rotation: new THREE.Euler(
@@ -35,7 +35,7 @@ function seedPiece(origin) {
       (Math.random() - 0.5) * 14,
     ),
     life: CONFETTI_LIFE * (0.55 + Math.random() * 0.65),
-    size: 0.02 + Math.random() * 0.04,
+    size: 0.05 + Math.random() * 0.09, // bigger pieces so the burst reads from home plate
   }
 }
 

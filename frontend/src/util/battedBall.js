@@ -31,3 +31,27 @@ export const isBattedBallLaunchable = ({ hit = null, atBatIndex = null, isFoul =
     isHitFieldingReady(hit)
   )
 )
+
+// Whether the cycle-wrap watchdog should force-complete the current play.
+//
+// A launched play that never reached its completion time before the cycle
+// wrapped (degenerate endTime, too-short cycle) would otherwise loop forever
+// and wedge the live queue. But the watchdog must ONLY fire for contact
+// pitches: a non-contact pitch (ball / take / whiff) never launches the
+// batted ball, so launched.current should be false.  However, the reset
+// effect (useEffect → now useLayoutEffect) runs AFTER the first useFrame
+// with the new pitchData, so a stale launched=true from the previous
+// contact pitch can survive one cycle wrap.  Without the contact.swing
+// guard the watchdog would spuriously fire onComplete for a non-contact
+// pitch — surfacing an OUT and wedging the queue.
+export const shouldCycleWrapWatchdogFire = ({
+  contactSwing,
+  launched,
+  completeEmitted,
+  comparison,
+} = {}) => (
+  contactSwing === true &&
+  launched === true &&
+  completeEmitted !== true &&
+  comparison !== true
+)

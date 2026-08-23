@@ -97,6 +97,16 @@ export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchN
         const clickable = !!p.replayable;
         const isActive = activePitchNumber != null && p.pitch_number === activePitchNumber;
         const isSelected = selectionMode && selectedPlayIds?.has(p.play_id);
+        // Hover pop-up meta from the pitch payload (null when not replayable):
+        // speed, pitch type, and the ball–strike count in effect when thrown.
+        const pmeta = p.pitch || {};
+        const metaLines = [
+          pmeta.speed_mph != null ? `${Number(pmeta.speed_mph.toFixed(1))} mph` : null,
+          pmeta.pitch_type_description || pmeta.pitch_type || null,
+          pmeta.game_state?.count?.balls != null && pmeta.game_state?.count?.strikes != null
+            ? `Count ${pmeta.game_state.count.balls}–${pmeta.game_state.count.strikes}`
+            : null,
+        ].filter(Boolean);
         const handleClick = () => {
           if (!clickable) return;
           if (selectionMode) {
@@ -113,10 +123,11 @@ export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchN
           >
             <title>
               {`Pitch ${p.pitch_number} — ${OUTCOME_LABELS[p.outcome] || 'Other'}`}
-              {p.description ? ` · ${p.description}` : ''}
-              {p.outs > 0 ? ` · ${p.outs} out${p.outs === 1 ? '' : 's'}` : ''}
-              {!clickable ? ' · (no replay data)' : ''}
-              {selectionMode ? (isSelected ? ' · selected for compare' : ' · click to select for compare') : ''}
+              {metaLines.map((l) => `\n${l}`)}
+              {p.description ? `\n${p.description}` : ''}
+              {p.outs > 0 ? `\n${p.outs} out${p.outs === 1 ? '' : 's'}` : ''}
+              {!clickable ? '\n(no replay data)' : ''}
+              {selectionMode ? (isSelected ? '\nselected for compare' : '\nclick to select for compare') : ''}
             </title>
             {isActive && (
               <circle cx={p.x} cy={p.y} r={14} fill="none" stroke="#ffd166" strokeWidth={2} />
@@ -142,6 +153,80 @@ export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchN
           </g>
         );
       })}
+    </svg>
+  );
+}
+
+/**
+ * Skeleton placeholder shown while the at-bat pitch list is loading.
+ * Mirrors the AtBatZone layout (same dimensions, strike-zone box, and
+ * thirds lines) so the panel stays visibly expanded instead of collapsing
+ * to a one-line loading message during back-to-live and game-switch fetches.
+ */
+export function AtBatLoadingPlaceholder({ szTop = 3.5, szBot = 1.5 }) {
+  const W = 200;
+  const H = 250;
+  const plateWidthFt = 17 / 12;
+  const zoneH_ft = szTop - szBot;
+  const zoneW_ft = plateWidthFt;
+  const padding = 0.8;
+  const viewW_ft = zoneW_ft + 2 * padding;
+  const viewH_ft = zoneH_ft + 2 * padding;
+
+  const scale = Math.min(W / viewW_ft, H / viewH_ft);
+  const offsetX = (W - viewW_ft * scale) / 2;
+  const offsetY = (H - viewH_ft * scale) / 2;
+
+  const ftX = (ft) => offsetX + (ft + viewW_ft / 2) * scale;
+  const ftY = (ft) => offsetY + (-(ft - (szTop + szBot) / 2) + viewH_ft / 2) * scale;
+
+  const zoneLeft = ftX(-plateWidthFt / 2);
+  const zoneRight = ftX(plateWidthFt / 2);
+  const zoneTop = ftY(szTop);
+  const zoneBottom = ftY(szBot);
+  const zoneW = zoneRight - zoneLeft;
+  const zoneH = zoneBottom - zoneTop;
+
+  return (
+    <svg
+      width={W}
+      height={H}
+      viewBox={`0 0 ${W} ${H}`}
+      className="at-bat-skeleton"
+      style={{
+        display: 'block',
+        margin: '2px auto',
+        background: 'rgba(16,20,28,0.92)',
+        borderRadius: 6,
+        border: '1px solid rgba(255,255,255,0.14)',
+      }}
+    >
+      {/* Strike zone box */}
+      <rect
+        x={zoneLeft}
+        y={zoneTop}
+        width={zoneW}
+        height={zoneH}
+        fill="none"
+        stroke="rgba(255,255,255,0.35)"
+        strokeWidth={2}
+      />
+      {/* Thirds */}
+      <line x1={zoneLeft + zoneW / 3} y1={zoneTop} x2={zoneLeft + zoneW / 3} y2={zoneBottom} stroke="rgba(255,255,255,0.15)" strokeWidth={1} />
+      <line x1={zoneLeft + (2 * zoneW) / 3} y1={zoneTop} x2={zoneLeft + (2 * zoneW) / 3} y2={zoneBottom} stroke="rgba(255,255,255,0.15)" strokeWidth={1} />
+      <line x1={zoneLeft} y1={zoneTop + zoneH / 3} x2={zoneRight} y2={zoneTop + zoneH / 3} stroke="rgba(255,255,255,0.15)" strokeWidth={1} />
+      <line x1={zoneLeft} y1={zoneTop + (2 * zoneH) / 3} x2={zoneRight} y2={zoneTop + (2 * zoneH) / 3} stroke="rgba(255,255,255,0.15)" strokeWidth={1} />
+      {/* Loading label */}
+      <text
+        x={W / 2}
+        y={H / 2 + 3}
+        textAnchor="middle"
+        fontSize={12}
+        fill="rgba(255,255,255,0.45)"
+        fontFamily="monospace"
+      >
+        Loading…
+      </text>
     </svg>
   );
 }

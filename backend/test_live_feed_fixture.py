@@ -196,6 +196,45 @@ class LiveFeedFixtureTests(unittest.TestCase):
         self.assertEqual(snapshot["score"]["away"]["runs"], 1)
         self.assertEqual(snapshot["count"], {"balls": 0, "strikes": 0})
 
+    def test_scoreboard_snapshot_reports_outs_recorded_by_a_completed_play(self):
+        feed = copy.deepcopy(self.feed)
+        plays = feed["liveData"]["plays"]["allPlays"]
+        target_play = plays[1]  # AB42 single, complete in the feed
+        target_pitch = target_play["playEvents"][1]  # its final pitch
+        # The pitch's count records the outs BEFORE the at-bat (0). Put a
+        # runner out on the play so the resolved snapshot must show 1 out —
+        # the state the scorebug commits after this play finishes animating.
+        target_play["runners"].append({
+            "details": {"runner": {"id": 401}},
+            "movement": {"start": "2B", "end": "3B", "isOut": True, "outNumber": 1},
+            "credits": [],
+        })
+
+        snapshot = main._game_state_snapshot(
+            feed, target_play, target_pitch, pitch_index=1
+        )
+
+        self.assertEqual(snapshot["outs"], 1)
+
+    def test_scoreboard_snapshot_keeps_pre_play_outs_for_queued_mid_atbat_pitch(self):
+        feed = copy.deepcopy(self.feed)
+        plays = feed["liveData"]["plays"]["allPlays"]
+        target_play = plays[1]  # AB42, complete in the feed but two pitches long
+        target_pitch = target_play["playEvents"][0]  # the earlier pitch
+        target_play["runners"].append({
+            "details": {"runner": {"id": 401}},
+            "movement": {"start": "2B", "end": "3B", "isOut": True, "outNumber": 1},
+            "credits": [],
+        })
+
+        # A queued mid-at-bat pitch is snapshotted as of that pitch, before the
+        # play resolved — the play's recorded out must not leak into it.
+        snapshot = main._game_state_snapshot(
+            feed, target_play, target_pitch, pitch_index=0
+        )
+
+        self.assertEqual(snapshot["outs"], 0)
+
     def test_batted_ball_endpoint_builds_the_fixture_hit_payload(self):
         response = _FixtureResponse(self.feed)
         with mock.patch.object(main.requests, "get", return_value=response), \
@@ -251,6 +290,31 @@ class LiveFeedFixtureTests(unittest.TestCase):
         self.assertEqual(second["result_event"], "Single")
         self.assertIsNotNone(second["hit"])
         self.assertEqual(second["hit"]["play_id"], "AB42-EV1")
+
+    def test_trajectory_queued_payloads_mark_the_at_bat_final_pitch(self):
+        # Catching up through the queue returns the intervening mid-at-bat pitch
+        # (AB42-P1). It must carry ``is_at_bat_final=False`` so the frontend
+        # falls back to that pitch's own called-strike outcome instead of
+        # surfacing the at-bat's final "Single" result early.
+        response = _FixtureResponse(self.feed)
+        with mock.patch.object(main.requests, "get", return_value=response), \
+             mock.patch.object(
+                 main, "_bat_tracking_for_pitch",
+                 return_value={"swing_path_tilt": None, "attack_angle": None},
+             ), \
+             mock.patch.object(main, "_sprint_speed_for_batter", return_value=None):
+            payload = main.get_trajectory(
+                env="default", game_pk="fixture-game", after_play_id="AB41-P1"
+            )
+
+        # The newest play (AB42-P2) is the at-bat's final pitch.
+        self.assertEqual(payload["play_id"], "AB42-P2")
+        self.assertTrue(payload["is_at_bat_final"])
+
+        queued = payload["queued_trajectories"]
+        self.assertEqual([q["play_id"] for q in queued], ["AB42-P1"])
+        self.assertFalse(queued[0]["is_at_bat_final"])
+        self.assertEqual(queued[0]["result_event"], "Single")
 
     def test_game_state_endpoint_replays_fixture_score_count_and_bases(self):
         response = _FixtureResponse(self.feed)

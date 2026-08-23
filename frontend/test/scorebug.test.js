@@ -54,19 +54,49 @@ test('scorebugStatusLabel falls back to the snapshot gameState when live status 
   )
 })
 
-test('scorebugStatusLabel surfaces a pitching change only while frozen', () => {
-  const relief = liveStatus({ pitcher: 'Relief Arm', pitcherId: 2 })
+test('scorebugStatusLabel surfaces a pitching change from the feed action-event flag', () => {
+  // The backend surfaces pitching changes as an explicit flag (detected from
+  // the feed's pitching_substitution action event), which is more reliable
+  // than inferring from pitcher-identity comparison.
+  const relief = liveStatus({
+    pitcher: 'Relief Arm',
+    pitcherId: 2,
+    pitchingChange: true,
+    pitchingChangePitcher: 'Relief Arm',
+  })
 
   assert.equal(
     scorebugStatusLabel({ ...frozenBase, liveStatus: relief }),
-    'Pitching Change',
+    'Pitching Change: Relief Arm',
   )
 
-  // Unfrozen, the full state fetch is authoritative and the pitcher already
-  // reflects the change, so no override label is needed.
+  // Without the flag, a different pitcher alone must not read as a change
+  // (the defensive team swaps at inning breaks without a substitution).
+  const noFlag = liveStatus({ pitcher: 'Relief Arm', pitcherId: 2 })
   assert.equal(
-    scorebugStatusLabel({ ...frozenBase, frozen: false, liveStatus: relief }),
+    scorebugStatusLabel({ ...frozenBase, liveStatus: noFlag }),
     null,
+  )
+})
+
+test('scorebugStatusLabel surfaces a mound visit', () => {
+  const mound = liveStatus({ moundVisit: true })
+  assert.equal(
+    scorebugStatusLabel({ ...frozenBase, liveStatus: mound }),
+    'Mound Visit',
+  )
+})
+
+test('scorebugStatusLabel surfaces a pinch hitter/runner substitution', () => {
+  const pinch = liveStatus({
+    offensiveSub: true,
+    offensiveSubRole: 'Pinch Runner',
+    offensiveSubNew: 'Leo Rivas',
+    offensiveSubOld: 'Taylor Ward',
+  })
+  assert.equal(
+    scorebugStatusLabel({ ...frozenBase, liveStatus: pinch }),
+    'Pinch Runner: Leo Rivas replaces Taylor Ward',
   )
 })
 
