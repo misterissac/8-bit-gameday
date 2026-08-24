@@ -10,6 +10,13 @@ import { Scorebug } from './components/Scorebug';
 import { AtBatZone, AtBatLoadingPlaceholder } from './components/AtBatZone';
 import { setTimeScale, setCycleDuration, CYCLE_PAUSE, SLOWEST_SPEED } from './constants/playback';
 import { BALL_RELEASE_TIME } from './components/Pitcher';
+import {
+  BroadcastDelayBuffer,
+  BROADCAST_DELAY_OPTIONS,
+  MAX_BROADCAST_DELAY_SECONDS,
+  normalizeBroadcastDelaySeconds,
+  serializeBroadcastDelayValue,
+} from './util/broadcastDelay';
 import './App.css';
 
 // How often the app polls the backend for the newest play (ms). Silent polls
@@ -44,6 +51,21 @@ const MAX_QUEUED_PLAYS = 5;
 // Pause between draining queued plays so the just-finished play's outcome
 // indicator stays visible (in order) before the next play clears it.
 const QUEUE_PLAY_GAP_MS = 700;
+// Broadcast delay is applied at the client boundary: raw live-feed responses
+// are held before they can enter the play queue or any HUD/status surface.
+const BROADCAST_DELAY_STORAGE_KEY = 'freebuff-broadcast-delay-seconds';
+const DEFAULT_BROADCAST_DELAY_SECONDS = 0;
+
+const initialBroadcastDelaySeconds = () => {
+  if (typeof window === 'undefined') return DEFAULT_BROADCAST_DELAY_SECONDS;
+  try {
+    return normalizeBroadcastDelaySeconds(
+      window.localStorage.getItem(BROADCAST_DELAY_STORAGE_KEY),
+    );
+  } catch {
+    return DEFAULT_BROADCAST_DELAY_SECONDS;
+  }
+};
 
 
 // Fallback league-average induced break (inches, Statcast pfx convention:
@@ -157,6 +179,24 @@ const trajectoryResolutionKey = (d) => JSON.stringify({
   resultEvent: d?.result_event ?? null,
   actionEvent: d?.action_event ?? null,
   battedBall: battedBallResolutionKey(d?.batted_ball),
+});
+
+// Version of a trajectory response used by the broadcast-delay buffer. The
+// full trajectory arrays are intentionally excluded: they are immutable for a
+// pitch, while these fields describe everything that can change between polls
+// (a newer play, a late result, waiting metadata, or a scoreboard snapshot).
+const trajectoryDeliveryVersion = (d) => serializeBroadcastDelayValue({
+  playId: d?.play_id ?? null,
+  resolution: trajectoryResolutionKey(d),
+  waiting: d?.waiting_for_pitch_data === true,
+  pendingPitchId: d?.pending_pitch_id ?? null,
+  pendingPlayEvent: d?.pending_play_event ?? null,
+  gameState: d?.game_state ?? null,
+  queued: (d?.queued_trajectories ?? []).map((queued) => ({
+    playId: queued?.play_id ?? null,
+    resolution: trajectoryResolutionKey(queued),
+    gameState: queued?.game_state ?? null,
+  })),
 });
 
 // Play-result events whose outcome is final the moment the pitch reaches the
@@ -801,6 +841,13 @@ function AppContent() {
   const [pitchData, setPitchData] = useState(null);
   const [battedBallData, setBattedBallData] = useState(null);
   const [playbackSpeed, setPlaybackSpeed] = useState(1); // shared simulation time scale
+  // Live-feed responses stay behind this wall-clock delay before they can
+  // affect playback, scorebug data, status notices, or read-only pitch views.
+  // It is persisted locally so a broadcast setup survives a reload.
+  const [broadcastDelaySeconds, setBroadcastDelaySeconds] = useState(initialBroadcastDelaySeconds);
+  const broadcastDelayMs = broadcastDelaySeconds * 1000;
+  const broadcastDelayMsRef = useRef(broadcastDelayMs);
+  broadcastDelayMsRef.current = broadcastDelayMs;
   // Defaults ON: the camera follows each live batted ball's trajectory once,
   // then returns to the pre-play angle. Disabled automatically in comparison
   // and historical-replay modes.
@@ -967,6 +1014,14 @@ function AppContent() {
   // Transient toast shown when the BattedBall watchdog force-completes a play.
   const [forcedToast, setForcedToast] = useState(null);
   const [activeGamePk, setActiveGamePk] = useState(null); // null = backend's default game
+  const activeGamePkRef = useRef(activeGamePk);
+  activeGamePkRef.current = activeGamePk;
+  // Delay buffers are intentionally separate by stream: a trajectory response
+  // can be coalesced while a play is enriched, whereas successive scoreboard,
+  // status, and panel snapshots each retain the delay from their own receipt.
+  const delayedTrajectoryBufferRef = useRef(null);
+  const delayedBattedBallBufferRef = useRef(null);
+  const delayedUiBufferRef = useRef(null);
   // Once the feed reports the game as finished (Final / Game Over / Completed
   // Early) there is nothing new to poll, so the app-level trajectory and
   // batted-ball pollers stop until a different game is selected.
@@ -1182,6 +1237,77 @@ function AppContent() {
     return query ? `${path}?${query}` : path;
   };
 
+  const ensureDelayBuffers = () => {
+    if (!delayedTrajectoryBufferRef.current) {
+      delayedTrajectoryBufferRef.current = new BroadcastDelayBuffer((item) => {
+        if (activeGamePkRef.current !== item.gamePk) return;
+        item.process();
+      }, { delayMs: broadcastDelayMsRef.current });
+    }
+    if (!delayedBattedBallBufferRef.current) {
+      delayedBattedBallBufferRef.current = new BroadcastDelayBuffer((item) => {
+        if (activeGamePkRef.current !== item.gamePk) return;
+        item.process();
+      }, { delayMs: broadcastDelayMsRef.current });
+    }
+    if (!delayedUiBufferRef.current) {
+      delayedUiBufferRef.current = new BroadcastDelayBuffer((item) => {
+        if (item.scope === 'game' && activeGamePkRef.current !== item.gamePk) return;
+        item.apply();
+      }, { delayMs: broadcastDelayMsRef.current });
+    }
+  };
+
+  const scheduleDelayedTrajectoryResponse = (d, gamePk, process) => {
+    ensureDelayBuffers();
+    const gameKey = gamePk ?? 'default';
+    delayedTrajectoryBufferRef.current.enqueue(
+      `${gameKey}:${d?.play_id ?? 'no-play'}`,
+      { gamePk, process },
+      { version: trajectoryDeliveryVersion(d), coalesce: true },
+    );
+  };
+
+  const scheduleDelayedBattedBallPayload = (d, gamePk, process) => {
+    if (d?.play_id == null) return;
+    ensureDelayBuffers();
+    const gameKey = gamePk ?? 'default';
+    delayedBattedBallBufferRef.current.enqueue(
+      `${gameKey}:${d.play_id}`,
+      { gamePk, process },
+      { version: serializeBroadcastDelayValue(d), coalesce: true },
+    );
+  };
+
+  const scheduleDelayedUiUpdate = (id, value, apply, {
+    gamePk = activeGamePk,
+    scope = 'game',
+    coalesce = false,
+  } = {}) => {
+    ensureDelayBuffers();
+    delayedUiBufferRef.current.enqueue(
+      id,
+      { gamePk, scope, apply },
+      { version: serializeBroadcastDelayValue(value), coalesce },
+    );
+  };
+
+  useEffect(() => {
+    const delayMs = broadcastDelaySeconds * 1000;
+    broadcastDelayMsRef.current = delayMs;
+    delayedTrajectoryBufferRef.current?.setDelay(delayMs);
+    delayedBattedBallBufferRef.current?.setDelay(delayMs);
+    delayedUiBufferRef.current?.setDelay(delayMs);
+    try {
+      window.localStorage.setItem(
+        BROADCAST_DELAY_STORAGE_KEY,
+        String(broadcastDelaySeconds),
+      );
+    } catch {
+      // localStorage can be unavailable; the in-memory setting still works.
+    }
+  }, [broadcastDelaySeconds]);
+
   const fetchTrajectory = async (gamePk = activeGamePk, { silent = false } = {}) => {
     const seq = ++trajectoryReqSeq.current;
     trajectoryRequestsInFlight.current += 1;
@@ -1206,6 +1332,11 @@ function AppContent() {
       if (seq < lastTrajectoryAppliedSeq.current) return;
       lastTrajectoryAppliedSeq.current = seq;
 
+      // Keep response processing behind the broadcast-delay wall. The function
+      // closes over this response so a delayed callback processes exactly the
+      // payload that was received, while the buffer may still coalesce an
+      // enriched replacement for the same play.
+      const processTrajectoryPayload = () => {
       // A finished game has nothing left to poll. The trajectory payload
       // carries the feed's current game status, so detect a terminal result
       // here and stop the app-level pollers. This also fires while replaying
@@ -1385,6 +1516,13 @@ function AppContent() {
       }
 
       applyTrajectoryPayload(d);
+      };
+
+      if (broadcastDelayMsRef.current > 0 || delayedTrajectoryBufferRef.current?.size > 0) {
+        scheduleDelayedTrajectoryResponse(d, gamePk, processTrajectoryPayload);
+        return;
+      }
+      processTrajectoryPayload();
     } catch (err) {
       const detail = err.response?.data?.detail;
       const isWaiting = detail === NO_SIMULATABLE_PITCH_DETAIL;
@@ -1654,11 +1792,25 @@ function AppContent() {
 
       // Apply recovered hits in feed order. A hit whose owning trajectory has
       // not started is held by pitch_play_id; the top-level newest hit is then
-      // safe to process without overwriting an earlier animation.
-      const recovered = Array.isArray(d?.queued_batted_balls)
-        ? d.queued_batted_balls
-        : [];
-      for (const hit of [...recovered, d]) applyBattedBallPayload(hit);
+      // safe to process without overwriting an earlier animation. The whole
+      // response is held first when broadcast delay is enabled, so a hit cannot
+      // arrive in the scene before its delayed owning pitch.
+      const processBattedBallResponse = () => {
+        const recovered = Array.isArray(d?.queued_batted_balls)
+          ? d.queued_batted_balls
+          : [];
+        for (const hit of [...recovered, d]) applyBattedBallPayload(hit);
+      };
+      if (broadcastDelayMsRef.current > 0 || delayedBattedBallBufferRef.current?.size > 0) {
+        for (const hit of [
+          ...(Array.isArray(d?.queued_batted_balls) ? d.queued_batted_balls : []),
+          d,
+        ]) {
+          scheduleDelayedBattedBallPayload(hit, gamePk, () => applyBattedBallPayload(hit));
+        }
+      } else {
+        processBattedBallResponse();
+      }
     } catch (err) {
       if (!silent && seq === battedReqSeq.current) console.error("Failed to fetch batted ball", err);
       // Keep the bundled demo samples running when no live hit is available.
@@ -1671,8 +1823,18 @@ function AppContent() {
     try {
       if (!silent) setLiveGamesLoading(true);
       const response = await axios.get(`${API_BASE}/api/live-games`);
-      setLiveGames(response.data?.games ?? []);
-      setUpcomingGames(response.data?.upcoming ?? []);
+      const publish = () => {
+        setLiveGames(response.data?.games ?? []);
+        setUpcomingGames(response.data?.upcoming ?? []);
+      };
+      if (broadcastDelayMsRef.current > 0 || delayedUiBufferRef.current?.size > 0) {
+        scheduleDelayedUiUpdate('live-games', response.data, publish, {
+          scope: 'global',
+          gamePk: null,
+        });
+      } else {
+        publish();
+      }
     } catch (err) {
       console.error("Failed to fetch live games", err);
     } finally {
@@ -1714,6 +1876,9 @@ function AppContent() {
     cancelQueuedStart();
     knownTrajectoryPlayIdsRef.current.clear();
     pendingBattedBallsRef.current.clear();
+    delayedTrajectoryBufferRef.current?.clear({ resetDelivered: true });
+    delayedBattedBallBufferRef.current?.clear({ resetDelivered: true });
+    delayedUiBufferRef.current?.clear({ resetDelivered: true });
     setNewLivePlayAvailable(false);
     appliedBattedPlayIdsRef.current.clear();
     pitchDataRef.current = null;
@@ -1799,7 +1964,16 @@ function AppContent() {
       // Drop stale responses (e.g. a batter change while an older fetch was
       // still in flight) so the zone never shows the previous batter's pitches.
       if (atBatIndex != null && response.data?.at_bat_index !== atBatIndex) return;
-      setBatterGameData(response.data);
+      const publish = () => setBatterGameData(response.data);
+      if (broadcastDelayMsRef.current > 0 || delayedUiBufferRef.current?.size > 0) {
+        scheduleDelayedUiUpdate(
+          `batter-game:${activeGamePk ?? 'default'}:${atBatIndex ?? 'current'}`,
+          response.data,
+          publish,
+        );
+      } else {
+        publish();
+      }
     } catch (err) {
       console.error("Failed to fetch batter game pitches", err);
       setBatterGameError(err.response?.data?.detail || "Failed to load the batter's game pitches.");
@@ -1823,7 +1997,16 @@ function AppContent() {
       // Drop stale responses (e.g. a batter change while an older fetch was
       // still in flight) so the zone never shows the previous batter's pitches.
       if (atBatIndex != null && response.data?.at_bat_index !== atBatIndex) return;
-      setAtBatData(response.data);
+      const publish = () => setAtBatData(response.data);
+      if (broadcastDelayMsRef.current > 0 || delayedUiBufferRef.current?.size > 0) {
+        scheduleDelayedUiUpdate(
+          `at-bat:${activeGamePk ?? 'default'}:${atBatIndex ?? 'current'}`,
+          response.data,
+          publish,
+        );
+      } else {
+        publish();
+      }
     } catch (err) {
       console.error("Failed to fetch at-bat", err);
       // Surface the backend's reason (e.g. "Game hasn't started yet!" or
@@ -2295,6 +2478,9 @@ const playSequence = useMemo(() => {
     // Clear any pending queue-advance timer if the app unmounts.
     return () => {
       if (queueStartTimerRef.current) clearTimeout(queueStartTimerRef.current);
+      delayedTrajectoryBufferRef.current?.clear({ resetDelivered: true });
+      delayedBattedBallBufferRef.current?.clear({ resetDelivered: true });
+      delayedUiBufferRef.current?.clear({ resetDelivered: true });
     };
   }, []);
 
@@ -2400,12 +2586,13 @@ const playSequence = useMemo(() => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playCompletion]);
 
-  // Scoreboard spoiler guard: freeze the scorebug for the entire time a pitch
-  // is loaded (including its looping replay) so it can't poll ahead and spoil
-  // the next pitch. It re-fetches once per pitch via scorebugOutcomeRefresh.
-  // During a user-initiated historical replay the scorebug is deliberately
-  // un-frozen so it keeps showing the newest live score/count.
-  const scoreboardFrozen = !!pitchData && !replay.active;
+  // Scoreboard spoiler guard: freeze the scorebug for the normal live pitch
+  // animation so it can't poll ahead and spoil the next pitch. Historical
+  // replay and tunneling comparison are independent viewing modes, so their
+  // scorebug follows the delayed live state instead of staying pinned to the
+  // selected historical pitch. The Scorebug component applies the configured
+  // broadcast delay in every mode.
+  const scoreboardFrozen = !!pitchData && !replay.active && compareMode === 'idle';
 
   // A contact pitch has no batted ball to show until its Statcast fielding
   // point (hc_x/hc_y) arrives. While that data is pending, hold the batted
@@ -2942,6 +3129,51 @@ const playSequence = useMemo(() => {
             />
           </div>
 
+          {/* ── Broadcast delay ──────────────────────────────────────────
+              Responses are fetched normally but are not allowed to enter
+              playback, the scorebug, or status/pitch panels until this many
+              seconds have elapsed. This keeps the whole app behind a TV
+              broadcast when its feed is ahead of the viewer. ── */}
+          <div
+            id="broadcast-delay-control"
+            title="Hold live plays, score, and game-status notices behind the broadcast"
+            style={{ width: '100%', marginTop: 10 }}
+          >
+            <label
+              htmlFor="broadcast-delay-range"
+              style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                marginBottom: 4, fontWeight: 'bold', fontSize: 11,
+                letterSpacing: '0.03em', color: broadcastDelaySeconds > 0 ? '#ffd166' : '#ccc',
+              }}
+            >
+              <span>Broadcast Delay</span>
+              <span>{broadcastDelaySeconds > 0 ? `${broadcastDelaySeconds}s` : 'OFF'}</span>
+            </label>
+            <input
+              id="broadcast-delay-range"
+              type="range"
+              min={0}
+              max={MAX_BROADCAST_DELAY_SECONDS}
+              step={5}
+              list="broadcast-delay-options"
+              value={broadcastDelaySeconds}
+              onChange={(e) => setBroadcastDelaySeconds(
+                normalizeBroadcastDelaySeconds(e.target.value),
+              )}
+              aria-label="Broadcast delay in seconds"
+              style={{ width: '100%', cursor: 'pointer', accentColor: '#ffd166' }}
+            />
+            <datalist id="broadcast-delay-options">
+              {BROADCAST_DELAY_OPTIONS.map((seconds) => (
+                <option key={seconds} value={seconds} label={`${seconds}s`} />
+              ))}
+            </datalist>
+            <div style={{ marginTop: 2, fontSize: 9, color: '#8b949e', lineHeight: 1.35 }}>
+              New plays and HUD updates wait before appearing.
+            </div>
+          </div>
+
           {/* ── Auto Fielder Cam toggle: when ON the camera automatically
               switches to a fielder's angle after the first play-through.
               When OFF the replay button appears immediately instead. ── */}
@@ -3116,6 +3348,7 @@ const playSequence = useMemo(() => {
         gamePk={activeGamePk}
         frozen={scoreboardFrozen}
         stateOverride={scorebugStateOverride}
+        delaySeconds={broadcastDelaySeconds}
         onDefenseUpdate={setDefenseData}
       />
 

@@ -1,6 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { scorebugStatusLabel, isGameTerminal } from '../util/scorebug';
+import {
+  BroadcastDelayBuffer,
+  normalizeBroadcastDelaySeconds,
+  serializeBroadcastDelayValue,
+} from '../util/broadcastDelay';
 
 const GAME_STATE_URL = 'http://localhost:8000/api/game-state';
 const GAME_STATUS_URL = 'http://localhost:8000/api/game-status';
@@ -494,12 +499,14 @@ function TeamBox({ team, color }) {
  * BALL/STRIKE/HIT/RUN/OUT indicator is revealed, and on demand via
  * `refreshKey` (the Refresh button / game switch). A frozen `stateOverride`
  * can commit the state captured for the pitch that just finished, preventing
- * a later feed update from revealing multiple queued plays at once.
+ * a later feed update from revealing multiple queued plays at once. When
+ * `delaySeconds` is set, state/status/box-score responses are buffered before
+ * they reach any visible HUD surface, including while replaying or comparing.
  *
  * A "BOX SCORE" button fetches /api/box-score on demand and shows both teams'
  * full batting and pitching lines in a panel anchored above the scorebug.
  */
-export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, frozen = false, stateOverride = null, onDefenseUpdate = null }) {
+export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, frozen = false, stateOverride = null, delaySeconds = 0, onDefenseUpdate = null }) {
   const rootRef = useRef(null);
   const [state, setState] = useState(null);
   // Status is intentionally separate from the frozen numeric scoreboard. It
@@ -530,6 +537,32 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   // Tracks the game_pk the status pollers are answering for, so a stale
   // response from a previously-selected game can't overwrite the new game.
   const gamePkRef = useRef(gamePk);
+  const delayMs = normalizeBroadcastDelaySeconds(delaySeconds) * 1000;
+  // Score, status, and box-score responses use their own delay buffers so a
+  // raw feed update cannot bypass the broadcast-delay setting through the HUD.
+  const delayedStateBufferRef = useRef(null);
+  const delayedStatusBufferRef = useRef(null);
+  const delayedBoxBufferRef = useRef(null);
+  if (!delayedStateBufferRef.current) {
+    delayedStateBufferRef.current = new BroadcastDelayBuffer((item) => {
+      if (gamePkRef.current !== item.gamePk) return;
+      setState(item.data);
+      setLiveStatus(statusSnapshot(item.data));
+    }, { delayMs });
+  }
+  if (!delayedStatusBufferRef.current) {
+    delayedStatusBufferRef.current = new BroadcastDelayBuffer((item) => {
+      if (gamePkRef.current !== item.gamePk) return;
+      setLiveStatus(item.data);
+    }, { delayMs });
+  }
+  if (!delayedBoxBufferRef.current) {
+    delayedBoxBufferRef.current = new BroadcastDelayBuffer((item) => {
+      if (gamePkRef.current !== item.gamePk) return;
+      setBoxData(item.data);
+      setBoxLoading(false);
+    }, { delayMs });
+  }
   // True until the current game's first real status has been observed. Used to
   // write that initial status directly (no tab animation) so a delay/final
   // that was already active when the game was entered shows immediately.
@@ -555,12 +588,26 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
       const url = gamePk ? `${GAME_STATE_URL}?game_pk=${gamePk}` : GAME_STATE_URL;
       const res = await axios.get(url);
       if (gamePkRef.current !== gamePk) return;
-      setState(res.data);
-      setLiveStatus(statusSnapshot(res.data));
+      const publish = () => {
+        setState(res.data);
+        setLiveStatus(statusSnapshot(res.data));
+      };
+      if (delayMs > 0 || delayedStateBufferRef.current.size > 0) {
+        delayedStateBufferRef.current.enqueue(
+          `${gamePk ?? 'default'}:state`,
+          { gamePk, data: res.data },
+          {
+            version: serializeBroadcastDelayValue(res.data),
+            coalesce: false,
+          },
+        );
+      } else {
+        publish();
+      }
     } catch (err) {
       console.error('Failed to fetch game state', err);
     }
-  }, [gamePk]);
+  }, [gamePk, delayMs]);
 
   // While the pitch/count snapshot is frozen, keep polling only the status
   // fields. The response is never assigned to `state`, so score/count/bases
@@ -570,11 +617,24 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
       const url = gamePk ? `${GAME_STATUS_URL}?game_pk=${gamePk}` : GAME_STATUS_URL;
       const res = await axios.get(url);
       if (gamePkRef.current !== gamePk) return;
-      setLiveStatus(statusSnapshot(res.data));
+      const snapshot = statusSnapshot(res.data);
+      const publish = () => setLiveStatus(snapshot);
+      if (delayMs > 0 || delayedStatusBufferRef.current.size > 0) {
+        delayedStatusBufferRef.current.enqueue(
+          `${gamePk ?? 'default'}:status`,
+          { gamePk, data: snapshot },
+          {
+            version: serializeBroadcastDelayValue(snapshot),
+            coalesce: false,
+          },
+        );
+      } else {
+        publish();
+      }
     } catch (err) {
       console.error('Failed to fetch live game status', err);
     }
-  }, [gamePk]);
+  }, [gamePk, delayMs]);
 
   // A finished game has nothing left to update, so stop the recurring polls.
   // liveStatus is reset on game switch, which flips this back to false and
@@ -601,18 +661,36 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   }, [fetchStatus, frozen, gameTerminal]);
 
   useEffect(() => {
+    delayedStateBufferRef.current?.setDelay(delayMs);
+    delayedStatusBufferRef.current?.setDelay(delayMs);
+    delayedBoxBufferRef.current?.setDelay(delayMs);
+  }, [delayMs]);
+
+  useEffect(() => {
     // Entering a different game: drop the previous game's scoreboard and status
     // so stale state can't leak into (or swallow) the new game's first status —
     // e.g. a delay that was already underway before the game was selected.
+    delayedStateBufferRef.current?.clear({ resetDelivered: true });
+    delayedStatusBufferRef.current?.clear({ resetDelivered: true });
+    delayedBoxBufferRef.current?.clear({ resetDelivered: true });
     gamePkRef.current = gamePk;
     setState(null);
     setLiveStatus(null);
     setWrittenStatus(null);
     setStatusTab(null);
+    setBoxData(null);
+    setBoxLoading(false);
     prevStatusRef.current = null;
     stickyStatusRef.current = null;
+    compactLabelRef.current = null;
     pendingGameInitRef.current = true;
   }, [gamePk]);
+
+  useEffect(() => () => {
+    delayedStateBufferRef.current?.clear({ resetDelivered: true });
+    delayedStatusBufferRef.current?.clear({ resetDelivered: true });
+    delayedBoxBufferRef.current?.clear({ resetDelivered: true });
+  }, []);
 
   useEffect(() => {
     if (!frozen && !gameTerminal) {
@@ -745,17 +823,34 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
     setBoxSide(state?.inning?.isTop ? 'away' : 'home');
     setBoxLoading(true);
     setBoxError(null);
+    let waitingForDelay = false;
     try {
       const url = gamePk ? `${BOX_SCORE_URL}?game_pk=${gamePk}` : BOX_SCORE_URL;
       const res = await axios.get(url);
-      setBoxData(res.data);
+      const publish = () => {
+        setBoxData(res.data);
+        setBoxLoading(false);
+      };
+      if (delayMs > 0 || delayedBoxBufferRef.current.size > 0) {
+        waitingForDelay = true;
+        delayedBoxBufferRef.current.enqueue(
+          `${gamePk ?? 'default'}:box-score`,
+          { gamePk, data: res.data },
+          {
+            version: serializeBroadcastDelayValue(res.data),
+            coalesce: true,
+          },
+        );
+      } else {
+        publish();
+      }
     } catch (err) {
       console.error('Failed to fetch box score', err);
       setBoxError('Failed to load box score');
     } finally {
-      setBoxLoading(false);
+      if (!waitingForDelay) setBoxLoading(false);
     }
-  }, [boxOpen, gamePk, state]);
+  }, [boxOpen, delayMs, gamePk, state]);
 
   // The status tab finished its slide-out: write the compact status into the
   // bottom-left row and unmount the tab. Uses compactLabelRef (the
