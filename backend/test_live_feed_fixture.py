@@ -336,6 +336,119 @@ class LiveFeedFixtureTests(unittest.TestCase):
         self.assertEqual(payload["gameState"], "In Progress")
         self.assertTrue(payload["isLive"])
 
+    def test_batter_pitches_endpoint_groups_all_at_bats_by_pitcher(self):
+        # The fixture only has one at-bat for batter 101, so extend it with a
+        # second at-bat facing a different pitcher to exercise the whole-game
+        # aggregation and per-pitcher grouping.
+        feed = copy.deepcopy(self.feed)
+        second_at_bat = {
+            "about": {
+                "atBatIndex": 43,
+                "inning": 7,
+                "halfInning": "top",
+                "isComplete": True,
+            },
+            "matchup": {
+                "pitcher": {"id": 999, "fullName": "Relief Pitcher"},
+                "batter": {"id": 101, "fullName": "Fixture Batter"},
+            },
+            "result": {"type": "atBat", "event": "Strikeout", "eventType": "strikeout"},
+            "runners": [],
+            "playEvents": [
+                {
+                    "isPitch": True,
+                    "pitchNumber": 1,
+                    "details": {
+                        "type": {"code": "SL", "description": "Slider"},
+                        "call": {"code": "S"},
+                    },
+                    "pitchData": {
+                        "startSpeed": 85.1,
+                        "strikeZoneTop": 3.45,
+                        "strikeZoneBottom": 1.55,
+                        "coordinates": {"pX": -0.4, "pZ": 3.1},
+                    },
+                },
+                {
+                    "isPitch": True,
+                    "pitchNumber": 2,
+                    "details": {
+                        "type": {"code": "SL", "description": "Slider"},
+                        "call": {"code": "S"},
+                    },
+                    "pitchData": {
+                        "startSpeed": 84.8,
+                        "strikeZoneTop": 3.45,
+                        "strikeZoneBottom": 1.55,
+                        "coordinates": {"pX": 0.1, "pZ": 2.3},
+                    },
+                },
+                {
+                    "isPitch": True,
+                    "pitchNumber": 3,
+                    "details": {
+                        "type": {"code": "CU", "description": "Curveball"},
+                        "call": {"code": "S"},
+                    },
+                    "pitchData": {
+                        "startSpeed": 77.0,
+                        "strikeZoneTop": 3.45,
+                        "strikeZoneBottom": 1.55,
+                        "coordinates": {"pX": 0.6, "pZ": 1.7},
+                    },
+                },
+            ],
+        }
+        feed["liveData"]["plays"]["allPlays"].append(second_at_bat)
+        response = _FixtureResponse(feed)
+
+        with mock.patch.object(main.requests, "get", return_value=response):
+            payload = main.get_batter_pitches(at_bat_index=42, game_pk="fixture-game")
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["batter"], "Fixture Batter")
+        self.assertEqual(payload["batter_id"], 101)
+        self.assertEqual(payload["strike_zone_top"], 3.45)
+        self.assertEqual(payload["strike_zone_bottom"], 1.55)
+
+        # All five pitches thrown to batter 101 across both at-bats, in order.
+        self.assertEqual(len(payload["pitches"]), 5)
+        self.assertEqual(payload["pitches"][0]["at_bat_index"], 42)
+        # The fixture's first pitch has no details.type; later ones do.
+        self.assertIsNone(payload["pitches"][0]["pitch_type"])
+        self.assertEqual(payload["pitches"][1]["pitch_type"], "FF")
+        self.assertEqual(payload["pitches"][0]["pitcher"], "Fixture Pitcher")
+        self.assertEqual(payload["pitches"][0]["speed_mph"], 94.2)
+        self.assertEqual(payload["pitches"][3]["at_bat_index"], 43)
+        self.assertEqual(payload["pitches"][3]["pitch_type"], "SL")
+        self.assertEqual(payload["pitches"][3]["speed_mph"], 84.8)
+        self.assertEqual(payload["pitches"][4]["at_bat_index"], 43)
+        self.assertEqual(payload["pitches"][4]["pitch_type"], "CU")
+        self.assertTrue(payload["pitches"][4]["is_at_bat_final"])
+
+        # Pitchers are listed in first-appearance order with pitch counts, and
+        # the earlier batter's at-bat (AB41) is excluded.
+        self.assertEqual(
+            [p["pitcher"] for p in payload["pitchers"]],
+            ["Fixture Pitcher", "Relief Pitcher"],
+        )
+        self.assertEqual(payload["pitchers"][0]["pitches"], 2)
+        self.assertEqual(payload["pitchers"][1]["pitches"], 3)
+        self.assertNotIn(41, {p["at_bat_index"] for p in payload["pitches"]})
+
+        # A pitch without full simulation data is still listed (game view only
+        # needs location/type), just not replayable.
+        self.assertTrue(payload["pitches"][0]["replayable"])
+        self.assertFalse(payload["pitches"][3]["replayable"])
+
+    def test_batter_pitches_endpoint_404s_for_unknown_at_bat(self):
+        response = _FixtureResponse(self.feed)
+        with mock.patch.object(main.requests, "get", return_value=response):
+            with self.assertRaises(Exception) as ctx:
+                main.get_batter_pitches(at_bat_index=999, game_pk="fixture-game")
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertIn("not found", str(ctx.exception.detail))
+
 
 if __name__ == "__main__":
     unittest.main()

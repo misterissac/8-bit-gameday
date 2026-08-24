@@ -83,16 +83,21 @@ const SET_FACE_BIAS = 0.35
 
 // The lower body (hips/legs) rotates with the swing, opening nearly as far as
 // the shoulders so the legs visibly turn with the body (a real swing keeps the
-// hips just short of the shoulders' rotation).
-const LOWER_BODY_OPEN_FACTOR = 0.8
+// hips just short of the shoulders' rotation — the separation that reads as
+// the hips driving the turn).
+const LOWER_BODY_OPEN_FACTOR = 0.9
 
-// The hips fire ahead of the shoulders (the kinetic chain of a real swing):
-// the lower body's opening progress is phase-advanced by this factor, so the
-// legs start turning before the upper body and reach their full (lesser) open
-// angle while the torso is still rotating — reading as the legs driving the
-// swing. The clamp also makes the hips hold their open angle through the
-// follow-through and settle back after the shoulders on recovery.
-const HIPS_LEAD = 1.8
+// The hips fire well ahead of the shoulders (the kinetic chain of a real
+// swing): the lower body's opening progress is phase-advanced by this factor,
+// so the legs start turning and the back leg starts driving while the upper
+// body is still barely moving — the hips are most of the way open before the
+// torso is halfway — reading unmistakably as the legs driving the swing. The
+// same factor phase-advances the follow-through: after contact the hips keep
+// rotating and finish their continued turn while the torso is still unwinding
+// into the fully-open pose, so the legs drive through contact too. The clamp
+// makes the hips reach their full (lesser) open angle early, hold it, and
+// settle back after the shoulders on recovery.
+const HIPS_LEAD = 2.6
 // The upper body's turn leads the hands/bat by this factor during the pre-
 // contact window, so the chest opens before the barrel arrives — part of the
 // same kinetic chain as HIPS_LEAD (legs -> torso -> hands).
@@ -909,7 +914,11 @@ export const Batter = ({ pitchData }) => {
     // follow-through until the chest fully faces the pitcher (FULL_OPEN_YAW),
     // then unwinds back to the set stance during recovery. The hips ride the
     // same arc at a fraction of the rotation (LOWER_BODY_OPEN_FACTOR),
-    // phase-advanced to lead the shoulders into the swing.
+    // phase-advanced to lead the shoulders into the swing. The lead carries
+    // into the follow-through: the hips finish their continued rotation
+    // (lowerOpenYaw -> hipFullOpenYaw) while the torso is still unwinding
+    // into the fully-open pose, so the legs keep driving through contact and
+    // the torso completes the turn after them.
     const hipFullOpenYaw = setYaw + (FULL_OPEN_YAW - setYaw) * LOWER_BODY_OPEN_FACTOR
     let bodyYaw = setYaw
     let lowerYaw = setYaw
@@ -919,7 +928,11 @@ export const Batter = ({ pitchData }) => {
         lowerYaw = THREE.MathUtils.lerp(setYaw, lowerOpenYaw, lowerOpen)
       } else if (currentSimTime < followEnd) {
         bodyYaw = THREE.MathUtils.lerp(bodyOpen, FULL_OPEN_YAW, f)
-        lowerYaw = THREE.MathUtils.lerp(lowerOpenYaw, hipFullOpenYaw, f)
+        lowerYaw = THREE.MathUtils.lerp(
+          lowerOpenYaw,
+          hipFullOpenYaw,
+          THREE.MathUtils.clamp(f * HIPS_LEAD, 0, 1),
+        )
       } else if (currentSimTime < recoverEnd) {
         bodyYaw = THREE.MathUtils.lerp(FULL_OPEN_YAW, setYaw, r)
         lowerYaw = THREE.MathUtils.lerp(hipFullOpenYaw, setYaw, r)

@@ -16,9 +16,10 @@ import {
 } from '../util/MathUtil'
 import { isHitFieldingReady, hitMatchesAtBat, isBattedBallLaunchable, shouldCycleWrapWatchdogFire } from '../util/battedBall'
 import { FIELD, MAX_RUN_SPEED } from '../constants/field'
-import { setCycleDuration, getCycleDuration, getTimeScale, CYCLE_PAUSE, setBattedBallPosition, setFielderPosition, setFielderHomePosition } from '../constants/playback'
+import { setCycleDuration, getCycleDuration, getTimeScale, CYCLE_PAUSE, setBattedBallPosition, setChaserPosition, setPlayBallPosition, getFielderCamActive } from '../constants/playback'
 import { BALL_RELEASE_TIME } from './Pitcher'
 import { ConfettiBurst } from './ConfettiBurst'
+import { Html } from '@react-three/drei'
 
 // ---------------------------------------------------------------------------
 // Batted-ball + fielder choreography, ported from
@@ -479,26 +480,48 @@ function buildPlan(hit, launchPoint) {
 
 // A fielder sprite (body + head). ``ref`` lets the frame loop move it; the
 // inner ``leanRef`` group tilts forward while the fielder is sprinting.
-const Fielder = React.forwardRef(({ position, leanRef }, ref) => (
-  <group ref={ref} position={position}>
-    <group ref={leanRef}>
-      <mesh position={[0, 0.9, 0]} castShadow>
-        <capsuleGeometry args={[0.35, 1.1, 4, 8]} />
-        <meshStandardMaterial color="#e63946" roughness={0.8} />
-      </mesh>
-      <mesh position={[0, 1.75, 0]}>
-        <sphereGeometry args={[0.24, 12, 12]} />
-        <meshStandardMaterial color="#f1c27d" roughness={0.8} />
-      </mesh>
+// ``opacity`` makes the fielder translucent (used by the fielder camera
+// replay so the body doesn't block the view from head-height).
+const Fielder = React.forwardRef(({ position, leanRef, opacity = 1 }, ref) => {
+  const bodyMatRef = useRef(null);
+  const headMatRef = useRef(null);
+
+  // Directly set material properties when opacity changes — R3F's declarative
+  // props may not update the Three.js material in all edge cases.
+  useEffect(() => {
+    const materials = [bodyMatRef.current, headMatRef.current].filter(Boolean);
+    materials.forEach((m) => {
+      m.transparent = opacity < 1;
+      m.opacity = opacity;
+      m.depthWrite = opacity >= 1;
+      m.needsUpdate = true;
+    });
+  }, [opacity]);
+
+  return (
+    <group ref={ref} position={position}>
+      <group ref={leanRef}>
+        <mesh position={[0, 0.9, 0]} castShadow>
+          <capsuleGeometry args={[0.35, 1.1, 4, 8]} />
+          <meshStandardMaterial ref={bodyMatRef} color="#e63946" roughness={0.8} transparent={opacity < 1} opacity={opacity} depthWrite={opacity >= 1} />
+        </mesh>
+        <mesh position={[0, 1.75, 0]}>
+          <sphereGeometry args={[0.24, 12, 12]} />
+          <meshStandardMaterial ref={headMatRef} color="#f1c27d" roughness={0.8} transparent={opacity < 1} opacity={opacity} depthWrite={opacity >= 1} />
+        </mesh>
+      </group>
     </group>
-  </group>
-))
+  );
+});
 Fielder.displayName = 'Fielder'
 
-export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayResult, onComplete, comparison = false }) => {
+export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayResult, onComplete, comparison = false, defenseAlignment = null }) => {
   const [hitIndex, setHitIndex] = useState(0)
   // One-shot confetti burst for home runs (set when the ball clears the wall).
   const [confetti, setConfetti] = useState(null)
+  // Translucent fielder bodies during fielder cam replay so the head-height
+  // camera isn't blocked.
+  const [fielderOpacity, setFielderOpacity] = useState(1)
   const battedGroupRef = useRef()
   const ballRef = useRef()
   // Position-code -> { group, lean } refs for the fielders that can move.
@@ -574,13 +597,6 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     if (!contact) return null
     return buildPlan(activeHit, contact.launch)
   }, [activeHit, contact])
-
-  // Publish the chaser's home position once per plan so the fielder camera
-  // knows where the chaser starts. Only fires for live plays (not comparison).
-  useLayoutEffect(() => {
-    if (!plan || comparison) return
-    setFielderHomePosition(plan.chaserHome, plan.chaser)
-  }, [plan, comparison])
 
   // Tail + yellow trace (same animation as the pitch, no billow particles).
   const tailMeshRef = useRef()
@@ -712,6 +728,8 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     confettiFiredRef.current = false
     setConfetti(null)
     setBattedBallPosition(null)
+    setChaserPosition(null)
+    setPlayBallPosition(null)
   }, [pitchData])
 
   // Clear the shared batted-ball position when this component unmounts (e.g.
@@ -722,10 +740,15 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
   // the follow camera lock onto a vanished ball and capture a wrong "original"
   // view for the first animation after returning to live.
   useEffect(() => {
-    return () => setBattedBallPosition(null)
+    return () => { setBattedBallPosition(null); setChaserPosition(null); setPlayBallPosition(null); }
   }, [])
 
   useFrame((_, delta) => {
+    // Sync fielder opacity from the module-level fielder-cam flag so the
+    // chaser re-renders translucent during the replay.
+    const camActive = getFielderCamActive()
+    if ((camActive ? 0 : 1) !== fielderOpacity) setFielderOpacity(camActive ? 0 : 1)
+
     if (!battedGroupRef.current || !ballRef.current) return
     if (!contact || !plan) {
       battedGroupRef.current.visible = false
@@ -738,6 +761,7 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     if (!(simDuration > 0)) {
       battedGroupRef.current.visible = false
       setBattedBallPosition(null)
+      setChaserPosition(null)
       return
     }
 
@@ -783,6 +807,8 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
       flightClock.current = 0
       confettiFiredRef.current = false
       setBattedBallPosition(null)
+      setChaserPosition(null)
+      setPlayBallPosition(null)
       // Move any fielders that ran last cycle back to their defensive spots so
       // the next pitch starts from a clean alignment.
       const chaserRefs = fielderRefs.current[plan.chaser]
@@ -850,6 +876,7 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     if (!launched.current) {
       battedGroupRef.current.visible = false
       setBattedBallPosition(null)
+      setChaserPosition(null)
       return
     }
 
@@ -960,6 +987,17 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     // for ground balls, and the ball must not be tracked while it sits there.)
     setBattedBallPosition(t <= plan.ballAirTime ? ballRef.current.position : null, pitchData?.play_id ?? null)
 
+    // Fielder cam ball tracking: publish whenever the ball mesh is visible
+    // anywhere — airborne flight, carried by the chaser to a base, or thrown
+    // between fielders — so the fielder camera can follow the ball through
+    // the entire choreography (throws to first, double plays, etc.).
+    if (!comparison) {
+      setPlayBallPosition(
+        ballRef.current?.visible ? ballRef.current.position : null,
+        pitchData?.play_id ?? null,
+      );
+    }
+
 
     // ── Chaser: sprint from their defensive spot to the fielding point, then
     //    (for an unassisted putout) on to the base. ──────────────────────
@@ -968,9 +1006,6 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
       const pos = evalSegments(plan.chaserSegments, t)
       if (pos) {
         chaserRefs.group.position.copy(pos)
-        // Publish the fielder's live position so the fielder camera can
-        // position itself relative to the chaser.
-        setFielderPosition(pos, plan.chaser, pitchData?.play_id ?? null)
         // ``activeSeg`` is only defined while the chaser is actually running
         // (t inside [start, start+duration)), so the lean + facing drop as soon
         // as they stop — e.g. waiting under a fly ball at the fielding point.
@@ -980,12 +1015,11 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
         }
         if (chaserRefs.lean) chaserRefs.lean.rotation.x = activeSeg ? 0.22 : 0
       }
+      // Publish the chaser's live world position so the fielder camera can
+      // follow along during the replay.
+      setChaserPosition(chaserRefs.group.position, pitchData?.play_id ?? null)
     } else {
-      // The chaser isn't rendered (e.g. the catcher), so no position is
-      // published by the group ref; still publish the segment-math position so
-      // the fielder camera has something to orbit.
-      const pos = evalSegments(plan.chaserSegments, t)
-      if (pos) setFielderPosition(pos, plan.chaser, pitchData?.play_id ?? null)
+      setChaserPosition(null)
     }
 
     // ── Putout fielders sprint to their out base while the ball is in flight ──
@@ -1037,7 +1071,7 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
             <Fielder key={pos} position={home.toArray()} ref={registerFielder(pos)} leanRef={registerLean(pos)} />
           ))}
           {renderChaser && (
-            <Fielder key={`chaser-${chaserPos}`} position={plan.chaserHome.toArray()} ref={registerFielder(chaserPos)} leanRef={registerLean(chaserPos)} />
+            <Fielder key={`chaser-${chaserPos}`} position={plan.chaserHome.toArray()} ref={registerFielder(chaserPos)} leanRef={registerLean(chaserPos)} opacity={fielderOpacity} />
           )}
         </>
       )}

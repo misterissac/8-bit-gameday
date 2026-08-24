@@ -59,28 +59,43 @@ export function getBattedBallPosition() {
   return battedBallPosition
 }
 
-// Live world position + identity of the fielder who is chasing the ball,
-// published by BattedBall every frame so the fielder camera can position
-// itself near the chaser and track the ball from the fielder's perspective.
-// Null when no fielder is actively chasing (pre-launch, after the play).
-let fielderWorldPosition = null // { x, y, z, chaser: string, playId: string }
+// Live world position of the chaser (the fielder who fields the batted ball),
+// published by BattedBall every frame while the play is animating. Null when
+// no play is active or the chaser isn't running. Carries the owning pitch's
+// play id so the fielder camera can verify it belongs to the current play.
+let chaserPosition = null
 
-// Standard defensive home position of the currently-active chaser, published
-// once per plan so the fielder camera can compute an offset.
-let fielderHomePosition = null // { x, y, z, chaser: string }
-
-export function setFielderPosition(pos, chaser = null, playId = null) {
-  fielderWorldPosition = pos ? { x: pos.x, y: pos.y ?? 0, z: pos.z, chaser, playId } : null
+export function setChaserPosition(pos, playId = null) {
+  chaserPosition = pos ? { x: pos.x, y: pos.y, z: pos.z, playId: playId ?? null } : null
 }
 
-export function getFielderPosition() {
-  return fielderWorldPosition
+export function getChaserPosition() {
+  return chaserPosition
 }
 
-export function setFielderHomePosition(pos, chaser = null) {
-  fielderHomePosition = pos ? { x: pos.x, y: pos.y ?? 0, z: pos.z, chaser } : null
+// Live world position of the ball throughout the entire play (airborne flight,
+// thrown between fielders, carried to a base by the chaser). Published by
+// BattedBall every frame while the ball mesh is visible so the fielder camera
+// can track it through the choreography. Null when the ball is hidden or no
+// play is active. Carries the owning pitch's play id for gating.
+let playBallPosition = null
+
+export function setPlayBallPosition(pos, playId = null) {
+  playBallPosition = pos ? { x: pos.x, y: pos.y, z: pos.z, playId: playId ?? null } : null
 }
 
-export function getFielderHomePosition() {
-  return fielderHomePosition
+export function getPlayBallPosition() {
+  return playBallPosition
+}
+
+// Whether the fielder camera replay is currently active. Read by BattedBall
+// to make the chaser translucent so the body doesn't block the camera.
+let fielderCamActive = false
+
+export function setFielderCamActive(active) {
+  fielderCamActive = active
+}
+
+export function getFielderCamActive() {
+  return fielderCamActive
 }

@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, Sky, Environment } from '@react-three/drei';
-import { Spherical } from 'three';
+import { OrbitControls, Sky, Environment, Html } from '@react-three/drei';
+import { Spherical, Vector3 } from 'three';
 import { feetToM } from '../util/MathUtil';
-import { getBattedBallPosition } from '../constants/playback';
+import { getBattedBallPosition, getChaserPosition, getPlayBallPosition, setFielderCamActive } from '../constants/playback';
+import { FIELD } from '../constants/field';
 import { Pitch } from './Pitch';
 import { Ballpark } from './Ballpark';
 import { Batter } from './Batter';
@@ -203,14 +204,15 @@ const WASDMovement = ({ controlsRef }) => {
 // write per second, plus a final write on page unload). The camera never
 // moves without WASDMovement/OrbitControls updating the target alongside it,
 // so these two vectors always describe the current view.
-const CameraPersistence = ({ controlsRef, followActiveRef }) => {
+const CameraPersistence = ({ controlsRef, followActiveRef, fielderCamActiveRef }) => {
     const camera = useThree((s) => s.camera);
     const lastSaveRef = useRef(0);
 
     useFrame(() => {
-        // Don't persist the transient follow view; the restored pre-play angle
-        // is the one that should survive reloads.
+        // Don't persist transient follow / fielder cam views; the restored
+        // pre-play angle is the one that should survive reloads.
         if (followActiveRef.current) return;
+        if (fielderCamActiveRef?.current) return;
         const controls = controlsRef.current;
         if (!controls) return;
         const now = performance.now();
@@ -222,12 +224,13 @@ const CameraPersistence = ({ controlsRef, followActiveRef }) => {
     useEffect(() => {
         const save = () => {
             if (followActiveRef.current) return;
+            if (fielderCamActiveRef?.current) return;
             const controls = controlsRef.current;
             if (controls) saveCameraState(camera.position, controls.target);
         };
         window.addEventListener('beforeunload', save);
         return () => window.removeEventListener('beforeunload', save);
-    }, [camera, controlsRef, followActiveRef]);
+    }, [camera, controlsRef, followActiveRef, fielderCamActiveRef]);
 
     return null;
 };
@@ -268,7 +271,7 @@ const FOLLOW_RESTORE_DURATION = 0.6;
 // signal published by BattedBall (a frame later at most), so it uses the
 // default render priority — a positive priority would hand the render loop to
 // this component and leave the scene blank.
-const FollowBattedBall = ({ controlsRef, pitchData, enabled, completeSignalRef, followActiveRef }) => {
+const FollowBattedBall = ({ controlsRef, pitchData, enabled, completeSignalRef, followActiveRef, prePlayPoseRef }) => {
     const camera = useThree((s) => s.camera);
     // idle -> following -> restoring -> restored (restored ignores the same
     // play's looped re-animations until a new play id arrives and re-arms the
@@ -333,9 +336,12 @@ const FollowBattedBall = ({ controlsRef, pitchData, enabled, completeSignalRef, 
         }
 
         if (!enabled) {
-            if (modeRef.current === 'following' || modeRef.current === 'restoring') snapRestore();
-            modeRef.current = 'idle';
+            // Always snap back to the pre-play angle (even if already restored)
+            // and enter 'restored' mode so the follower stays dormant when
+            // re-enabled — e.g. after a fielder-cam replay ends mid-play.
+            snapRestore();
             followActiveRef.current = false;
+            modeRef.current = 'restored';
             return;
         }
 
@@ -374,6 +380,15 @@ const FollowBattedBall = ({ controlsRef, pitchData, enabled, completeSignalRef, 
             if (ball && controls && playId && ball.playId === playId) {
                 originalPositionRef.current = camera.position.clone();
                 originalTargetRef.current = controls.target.clone();
+                // Publish the authoritative pre-play pose so FielderCam
+                // always restores to the true original angle — even if its
+                // trigger fires while we are mid-restore from a prior follow.
+                if (prePlayPoseRef) {
+                    prePlayPoseRef.current = {
+                        position: originalPositionRef.current.clone(),
+                        target: originalTargetRef.current.clone(),
+                    };
+                }
                 controls.enabled = false;
                 modeRef.current = 'following';
                 followActiveRef.current = true;
@@ -405,7 +420,318 @@ const FollowBattedBall = ({ controlsRef, pitchData, enabled, completeSignalRef, 
     return null;
 };
 
-export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, crossingPlane, onCrossings, onArrival, onPlayResult, onComplete, comparisonActive = false, comparisonPlays = [], replayKey = 0, showColoredTails = true, showBillowParticles = true, showComparisonRingLabels = true, followEnabled = true }) => {
+// How long the fielder camera eases back to the pre-play view after the replay
+// finishes (same ease-out curve as the follow-cam restore).
+const FIELDER_CAM_RESTORE_DURATION = 0.6;
+// Height of the camera above the fielder's feet (head height).
+const FIELDER_CAM_HEAD_Y = 1.8;
+// Height of the label above the fielder's head.
+const FIELDER_LABEL_OFFSET_Y = 2.8;
+// Maps Statcast position codes to human-readable names.
+const POSITION_NAMES = {
+  P: 'Pitcher', C: 'Catcher', '1B': 'First Baseman', '2B': 'Second Baseman',
+  '3B': 'Third Baseman', SS: 'Shortstop', LF: 'Left Fielder', CF: 'Center Fielder',
+  RF: 'Right Fielder',
+};
+
+// Switches the camera to a position near the fielder who fields the ball and
+// tracks the ball from that angle for one cycle, then restores the original
+// view. Triggered by the `fielderCamTrigger` counter (bumped from App.jsx
+// after the first animation completes or by the replay button).
+const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigger, onEnd, onActiveChange, fielderPosition, prePlayPoseRef }) => {
+    const camera = useThree((s) => s.camera);
+    // idle -> waiting (for next cycle) -> following -> restoring -> idle
+    const modeRef = useRef('idle');
+    // Currently visible mode (reactively updated for the Html label).
+    const [visibleMode, setVisibleMode] = useState('idle');
+    // Position of the fielder label overlay, updated each frame while following.
+    const [labelPos, setLabelPos] = useState(null);
+    const originalPositionRef = useRef(null);
+    const originalTargetRef = useRef(null);
+    const restoreStartRef = useRef(null);
+    const restoreElapsedRef = useRef(0);
+    const lastCompleteSignal = useRef(0);
+    const lastTrigger = useRef(0);
+    const camPos = useMemo(() => new Vector3(), []);
+    const followedPlayIdRef = useRef(null);
+
+    const snapRestore = () => {
+        const controls = controlsRef.current;
+        if (!controls || !originalPositionRef.current || !originalTargetRef.current) return;
+        camera.position.copy(originalPositionRef.current);
+        controls.target.copy(originalTargetRef.current);
+        camera.lookAt(originalTargetRef.current);
+        controls.update();
+        controls.enabled = true;
+    };
+
+    // When the trigger counter bumps, save the current camera, disable orbit
+    // controls, snap to the fielder's head immediately, and enter 'waiting'
+    // mode (or 'following' if the ball is already in flight). This way the
+    // camera jumps to the fielder's perspective the instant the button is
+    // clicked or the auto-replay fires — no delay until the next cycle.
+    useEffect(() => {
+        if (fielderCamTrigger > lastTrigger.current) {
+            lastTrigger.current = fielderCamTrigger;
+            const controls = controlsRef.current;
+            if (controls) {
+                // Prefer the authoritative pre-play pose (set by FollowBattedBall
+                // when it first started tracking) over the live camera position.
+                // This ensures we restore to the true pre-play angle even when
+                // the trigger fires while FollowBattedBall is mid-restore.
+                if (prePlayPoseRef?.current) {
+                    originalPositionRef.current = prePlayPoseRef.current.position.clone();
+                    originalTargetRef.current = prePlayPoseRef.current.target.clone();
+                } else {
+                    originalPositionRef.current = camera.position.clone();
+                    originalTargetRef.current = controls.target.clone();
+                }
+                controls.enabled = false;
+            }
+            lastCompleteSignal.current = completeSignalRef.current;
+            followedPlayIdRef.current = pitchData?.play_id ?? null;
+
+            // Snap to the fielder's head right now — don't wait for the next
+            // useFrame tick. Prefer the live chaser position; fall back to the
+            // defensive spot if the chaser isn't published yet (e.g. before
+            // the batted ball launched).
+            const playId = pitchData?.play_id ?? null;
+            const chaser = getChaserPosition();
+            const ball = getPlayBallPosition() || getBattedBallPosition();
+            const home = fielderPosition ? FIELD.DEFENSE[fielderPosition] : null;
+            let snapped = false;
+            if (chaser && chaser.playId === playId) {
+                camPos.set(chaser.x, chaser.y + FIELDER_CAM_HEAD_Y, chaser.z);
+                if (camPos.y < 1) camPos.y = 1;
+                camera.position.copy(camPos);
+                setLabelPos({ x: chaser.x, y: chaser.y + FIELDER_LABEL_OFFSET_Y, z: chaser.z });
+                if (ball && ball.playId === playId && controls) {
+                    controls.target.set(ball.x, ball.y, ball.z);
+                    camera.lookAt(ball.x, ball.y, ball.z);
+                }
+                if (controls) controls.enabled = false;
+                snapped = true;
+            } else if (home) {
+                // No live chaser: snap to the defensive spot (will update once
+                // the batted ball launches and the chaser starts moving).
+                camPos.set(home.x, FIELDER_CAM_HEAD_Y, home.z);
+                if (camPos.y < 1) camPos.y = 1;
+                camera.position.copy(camPos);
+                setLabelPos({ x: home.x, y: FIELDER_LABEL_OFFSET_Y, z: home.z });
+                if (controls) {
+                    // Pitcher: look at the plate / strike zone.
+                    // Other fielders: look toward the pitcher on the mound.
+                    const look = fielderPosition === 'P'
+                        ? { x: 0, y: 1.0, z: -1 }
+                        : { x: FIELD.DEFENSE.P.x, y: 1.8, z: FIELD.DEFENSE.P.z };
+                    controls.target.set(look.x, look.y, look.z);
+                    camera.lookAt(look.x, look.y, look.z);
+                    controls.enabled = false;
+                }
+                snapped = true;
+            }
+
+            // Also handle the case where we have a live chaser but no ball —
+            // the fielder is running but the ball hasn't launched yet (or is
+            // on the ground). Still aim at the pitcher so the initial view is
+            // locked there instead of drifting from the previous angle.
+            if (snapped && chaser && chaser.playId === playId && !(ball && ball.playId === playId) && controls) {
+                const look = fielderPosition === 'P'
+                    ? { x: 0, y: 1.0, z: -1 }
+                    : { x: FIELD.DEFENSE.P.x, y: 1.8, z: FIELD.DEFENSE.P.z };
+                controls.target.set(look.x, look.y, look.z);
+                camera.lookAt(look.x, look.y, look.z);
+            }
+
+            // If we snapped to the chaser and there's a play in progress
+            // (ball is flying), go straight to 'following' so the completion
+            // tracking is armed. Otherwise stay in 'waiting' until the next
+            // cycle's launch moves us to 'following'.
+            if (snapped && chaser && chaser.playId === playId) {
+                modeRef.current = 'following';
+                setVisibleMode('following');
+            } else {
+                modeRef.current = 'waiting';
+                setVisibleMode('waiting');
+            }
+            setFielderCamActive(true);
+            if (onActiveChange) onActiveChange(true);
+        }
+    }, [fielderCamTrigger]);
+
+    // Restore orbit controls on unmount so the user is never stuck.
+    useEffect(() => {
+        return () => {
+            if (controlsRef.current) controlsRef.current.enabled = true;
+            setFielderCamActive(false);
+            if (onActiveChange) onActiveChange(false);
+        };
+    }, []);
+
+    useFrame((_, delta) => {
+        const controls = controlsRef.current;
+        const playId = pitchData?.play_id ?? null;
+
+        // If the pitch changed while we were in fielder cam, abort and restore.
+        if (playId !== followedPlayIdRef.current && modeRef.current !== 'idle') {
+            snapRestore();
+            modeRef.current = 'idle';
+            setVisibleMode('idle');
+            setLabelPos(null);
+            setFielderCamActive(false);
+            if (onEnd) onEnd();
+            return;
+        }
+
+        // Both 'waiting' and 'following' lock the camera to the fielder's
+        // head — the only difference is whether we're also tracking the ball
+        // and counting down to completion. This keeps the camera continuous
+        // from trigger through restore with no mid-phase snap.
+        const isActive = modeRef.current === 'waiting' || modeRef.current === 'following';
+
+        if (isActive) {
+            if (!controls) return;
+            const ball = getPlayBallPosition() || getBattedBallPosition();
+            const chaser = getChaserPosition();
+            const home = fielderPosition ? FIELD.DEFENSE[fielderPosition] : null;
+
+            // Lock the camera at the fielder's head as soon as the position
+            // is available (the chaser publishes once the batted ball
+            // launches). Before then (during the pitcher's windup) snap to
+            // the fielder's defensive spot so the view never jumps.
+            if (chaser && chaser.playId === playId) {
+                camPos.set(chaser.x, chaser.y + FIELDER_CAM_HEAD_Y, chaser.z);
+                if (camPos.y < 1) camPos.y = 1;
+                camera.position.copy(camPos);
+                setLabelPos({ x: chaser.x, y: chaser.y + FIELDER_LABEL_OFFSET_Y, z: chaser.z });
+
+                // Track the ball through the entire play (airborne flight,
+                // throws to bases, carries). Falls back to the batted-ball
+                // position for the airborne portion; during choreography
+                // the play-ball position follows throws and carries too.
+                if (ball && ball.playId === playId) {
+                    controls.target.set(ball.x, ball.y, ball.z);
+                    camera.lookAt(ball.x, ball.y, ball.z);
+                } else {
+                    // No ball in flight yet: aim at the pitcher so the view
+                    // is always locked on the mound rather than drifting.
+                    const look = fielderPosition === 'P'
+                        ? { x: 0, y: 1.0, z: -1 }
+                        : { x: FIELD.DEFENSE.P.x, y: 1.8, z: FIELD.DEFENSE.P.z };
+                    controls.target.set(look.x, look.y, look.z);
+                    camera.lookAt(look.x, look.y, look.z);
+                }
+                controls.enabled = false;
+
+                // Once we have a chaser position, we're effectively
+                // 'following' (even if we'd been 'waiting'). Re-arm
+                // completion tracking for this cycle.
+                if (modeRef.current === 'waiting') {
+                    modeRef.current = 'following';
+                    setVisibleMode('following');
+                    lastCompleteSignal.current = completeSignalRef.current;
+                }
+            } else if (home && modeRef.current === 'waiting') {
+                // Windup: no chaser position yet. Snap to the fielder's
+                // defensive spot so the view starts from their head during
+                // the pitcher's windup and pitch flight.
+                camPos.set(home.x, FIELDER_CAM_HEAD_Y, home.z);
+                if (camPos.y < 1) camPos.y = 1;
+                camera.position.copy(camPos);
+                setLabelPos({ x: home.x, y: FIELDER_LABEL_OFFSET_Y, z: home.z });
+                // Pitcher: look at the plate / strike zone.
+                // Other fielders: look toward the pitcher on the mound.
+                const look = fielderPosition === 'P'
+                    ? { x: 0, y: 1.0, z: -1 }
+                    : { x: FIELD.DEFENSE.P.x, y: 1.8, z: FIELD.DEFENSE.P.z };
+                controls.target.set(look.x, look.y, look.z);
+                camera.lookAt(look.x, look.y, look.z);
+                controls.enabled = false;
+            }
+
+            // The play completed this cycle: begin easing back to the original view.
+            if (modeRef.current === 'following' && completeSignalRef.current !== lastCompleteSignal.current) {
+                lastCompleteSignal.current = completeSignalRef.current;
+                if (originalPositionRef.current && originalTargetRef.current && controls) {
+                    restoreStartRef.current = {
+                        position: camera.position.clone(),
+                        target: controls.target.clone(),
+                    };
+                    restoreElapsedRef.current = 0;
+                    modeRef.current = 'restoring';
+                    setVisibleMode('restoring');
+                    setLabelPos(null);
+                } else {
+                    modeRef.current = 'idle';
+                    setVisibleMode('idle');
+                    setLabelPos(null);
+                    setFielderCamActive(false);
+                    if (onEnd) onEnd();
+                }
+            }
+            return;
+        }
+
+        if (modeRef.current === 'restoring') {
+            if (!controls || !restoreStartRef.current || !originalPositionRef.current || !originalTargetRef.current) {
+                modeRef.current = 'idle';
+                setVisibleMode('idle');
+                setLabelPos(null);
+                setFielderCamActive(false);
+                if (onEnd) onEnd();
+                return;
+            }
+            restoreElapsedRef.current += Math.min(delta, 0.1);
+            const t = Math.min(restoreElapsedRef.current / FIELDER_CAM_RESTORE_DURATION, 1);
+            const ease = 1 - Math.pow(1 - t, 3);
+            camera.position.lerpVectors(restoreStartRef.current.position, originalPositionRef.current, ease);
+            controls.target.lerpVectors(restoreStartRef.current.target, originalTargetRef.current, ease);
+            camera.lookAt(controls.target);
+            controls.update();
+            controls.enabled = false;
+            if (t >= 1) {
+                snapRestore();
+                modeRef.current = 'idle';
+                setVisibleMode('idle');
+                setLabelPos(null);
+                setFielderCamActive(false);
+                if (onEnd) onEnd();
+            }
+        }
+    });
+
+    // Show the fielder's position + name as a small overlay label while the
+    // camera is active ('waiting' or 'following'). Positioned above the
+    // chaser's head and updated every frame.
+    const showLabel = (visibleMode === 'waiting' || visibleMode === 'following') && fielderPosition && labelPos;
+    const positionName = POSITION_NAMES[fielderPosition] || fielderPosition;
+
+    if (!showLabel) return null;
+
+    return (
+        <Html position={[labelPos.x, labelPos.y, labelPos.z]} center style={{
+            pointerEvents: 'none',
+            whiteSpace: 'nowrap',
+        }}>
+            <div style={{
+                background: 'rgba(0,0,0,0.75)',
+                color: '#ffd166',
+                padding: '3px 10px',
+                borderRadius: 5,
+                fontSize: 12,
+                fontFamily: 'monospace',
+                fontWeight: 'bold',
+                letterSpacing: '0.05em',
+                textShadow: '0 0 6px rgba(0,0,0,0.8)',
+                border: '1px solid rgba(255,209,102,0.35)',
+            }}>
+                {fielderPosition} · {positionName}
+            </div>
+        </Html>
+    );
+};
+
+export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, crossingPlane, onCrossings, onArrival, onPlayResult, onComplete, comparisonActive = false, comparisonPlays = [], replayKey = 0, showColoredTails = true, showBillowParticles = true, showComparisonRingLabels = true, followEnabled = true, fielderCamTrigger = 0, onFielderCamEnd = null, defenseAlignment = null }) => {
     const controlsRef = useRef();
     // True while the follow camera is actively tracking a batted ball; camera
     // persistence skips saving so a transient follow angle never survives a
@@ -414,14 +740,34 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
     // Bumped every time BattedBall finishes a play so the follow camera knows
     // when the first animation of a live play has completed.
     const completeSignalRef = useRef(0);
+    // Tracks whether the fielder cam is currently active, shared with
+    // FollowBattedBall so it stays idle during the fielder cam replay.
+    // A ref mirrors the state so CameraPersistence (which reads in useFrame)
+    // can also skip saving the transient fielder cam view.
+    const [fielderCamActive, setFielderCamActive] = useState(false);
+    const fielderCamActiveRef = useRef(false);
+    // Shared authoritative pre-play camera pose, written by FollowBattedBall
+    // when it first starts following the ball — this is the true pre-play angle
+    // (before any ball-tracking moved the camera). FielderCam reads from it
+    // when the trigger fires so it restores to the correct angle even if the
+    // trigger fires while FollowBattedBall is still mid-restore.
+    const prePlayPoseRef = useRef(null);
+    const setFielderCamActiveBoth = useCallback((v) => {
+        fielderCamActiveRef.current = v;
+        setFielderCamActive(v);
+    }, []);
     const handleBattedComplete = useCallback((source, details) => {
         completeSignalRef.current += 1;
         if (onComplete) onComplete(source, details);
     }, [onComplete]);
+    const handleFielderCamEnd = useCallback(() => {
+        setFielderCamActiveBoth(false);
+        if (onFielderCamEnd) onFielderCamEnd();
+    }, [onFielderCamEnd, setFielderCamActiveBoth]);
     // Restore the last saved view on mount (read once, localStorage).
     const initialCam = useMemo(() => loadCameraState(), []);
     // Stable identity so OrbitControls doesn't re-apply the target on every render.
-    const controlsTarget = useMemo(() => initialCam?.target ?? [0, 0, -25], [initialCam]);
+    const controlsTarget = useMemo(() => initialCam?.target ?? [0, 1.6, -18], [initialCam]);
     // In comparison mode render one pitcher per distinct mound man so a
     // mid-selection pitching change overlays both. Group by the payload's
     // pitcher name (the trajectory payload's only stable pitcher identifier).
@@ -437,11 +783,11 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
     }, [comparisonPlays]);
 
     return (
-        <Canvas camera={{ position: initialCam?.position ?? [0, 42, 82], fov: 60 }}>
+        <Canvas camera={{ position: initialCam?.position ?? [0, 1.6, 2.2], fov: 60 }}>
             <CameraController snapTrigger={snapTrigger} controlsRef={controlsRef} />
 
             {/* Persists the view to localStorage so it survives page reloads */}
-            <CameraPersistence controlsRef={controlsRef} followActiveRef={followActiveRef} />
+            <CameraPersistence controlsRef={controlsRef} followActiveRef={followActiveRef} fielderCamActiveRef={fielderCamActiveRef} />
 
             {/* WASD free movement across the diamond (Shift to sprint) */}
             <WASDMovement controlsRef={controlsRef} />
@@ -499,7 +845,7 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
 
                     {/* Batted-ball + fielder trajectory (driven by Statcast hit data),
                         launched when the pitch reaches the spot it is hit */}
-                    <BattedBall pitchData={pitchData} hit={battedBall} onPlayResult={onPlayResult} onComplete={handleBattedComplete} />
+                    <BattedBall pitchData={pitchData} hit={battedBall} onPlayResult={onPlayResult} onComplete={handleBattedComplete} defenseAlignment={defenseAlignment} />
                 </>
             )}
 
@@ -511,13 +857,28 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
             <OrbitControls makeDefault ref={controlsRef} target={controlsTarget} />
 
             {/* Follows the batted-ball trajectory when enabled (default on),
-                then restores the pre-play view after the play's first run. */}
+                then restores the pre-play view after the play's first run.
+                Suppressed while the fielder camera replay is active. */}
             <FollowBattedBall
                 controlsRef={controlsRef}
                 pitchData={pitchData}
-                enabled={followEnabled}
+                enabled={followEnabled && !fielderCamActive}
                 completeSignalRef={completeSignalRef}
                 followActiveRef={followActiveRef}
+                prePlayPoseRef={prePlayPoseRef}
+            />
+
+            {/* Switches to a fielder's perspective for one replay cycle after
+                the first animation completes (or via the replay button). */}
+            <FielderCam
+                controlsRef={controlsRef}
+                pitchData={pitchData}
+                completeSignalRef={completeSignalRef}
+                fielderCamTrigger={fielderCamTrigger}
+                onEnd={handleFielderCamEnd}
+                onActiveChange={setFielderCamActiveBoth}
+                fielderPosition={battedBall?.fielder ?? null}
+                prePlayPoseRef={prePlayPoseRef}
             />
         </Canvas>
     );

@@ -1154,11 +1154,17 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
         return [px * 0.3048, pz * 0.3048, FRONT_OF_PLATE_Z];
     }, [pitchData]);
 
-    // Comparison overlay: the pitch-type label under this pitch's ring (e.g.
-    // FF / SL / CU), drawn plain white. Computed only for overlays so normal
-    // playback keeps the strike zone clean.
+    // Comparison overlay: the speed + pitch-type label under this pitch's ring
+    // (e.g. "98 · SI"), drawn plain white broadcast-style. Computed only for
+    // overlays so normal playback keeps the strike zone clean.
     const pitchTypeLabel = overlay
-        ? (pitchData?.pitch_type || pitchData?.pitch_type_description || null)
+        ? (() => {
+            const type = pitchData?.pitch_type || pitchData?.pitch_type_description || null;
+            if (!type) return null;
+            const speed = pitchData?.speed_mph;
+            if (speed != null) return `${Math.round(speed)} · ${type}`;
+            return type;
+        })()
         : null;
 
     // Physics simulation crossing marker — evaluated at targetZ to match the selected plane

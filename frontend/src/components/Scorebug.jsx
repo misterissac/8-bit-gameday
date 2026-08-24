@@ -21,13 +21,25 @@ const statusSnapshot = (data) => ({
   pitchingChange: data?.pitchingChange ?? false,
   pitchingChangePitcher: data?.pitchingChangePitcher ?? null,
   pitchingChangeOldPitcher: data?.pitchingChangeOldPitcher ?? null,
+  pitchingChangePosition: data?.pitchingChangePosition ?? null,
+  pitchingChangeNewPosition: data?.pitchingChangeNewPosition ?? null,
+  review: data?.review ?? false,
+  reviewIsOverturned: data?.reviewIsOverturned ?? null,
+  reviewChallenger: data?.reviewChallenger ?? null,
+  reviewType: data?.reviewType ?? null,
   offensiveSub: data?.offensiveSub ?? false,
   offensiveSubRole: data?.offensiveSubRole ?? null,
   offensiveSubNew: data?.offensiveSubNew ?? null,
   offensiveSubOld: data?.offensiveSubOld ?? null,
+  offensiveSubPosition: data?.offensiveSubPosition ?? null,
+  offensiveSubNewPosition: data?.offensiveSubNewPosition ?? null,
   defensiveSub: data?.defensiveSub ?? false,
   defensiveSubNew: data?.defensiveSubNew ?? null,
   defensiveSubOld: data?.defensiveSubOld ?? null,
+  defensiveSubPosition: data?.defensiveSubPosition ?? null,
+  defensiveSubNewPosition: data?.defensiveSubNewPosition ?? null,
+  defenseAlignment: data?.defenseAlignment ?? null,
+  defenseFormation: data?.defenseFormation ?? 'Standard',
 });
 
 // Status-change tab animation (Scorebug): when the game status changes, a tab
@@ -45,16 +57,23 @@ const STATUS_TAB_HOLD_MS = 3200;
 const STATUS_TAB_OUT_MS = 350;
 
 // Split a long status label into two display lines so it fits the tab.
-// Labels like "Pinch Runner: Leo Rivas replaces Taylor Ward" or
-// "Pitching Change: Colin Rea replaces Daniel Palencia" are too long for
-// one row; split at "replaces" or at the colon so the role is on line 1.
+// Row 1: the category ("Pitching Change:", "Defensive Sub:", etc.)
+// Row 2: the detail (player names, result).
+// For ABS challenges row 1 is the challenge + challenger, row 2 is the result.
 const splitStatusLabel = (label) => {
-  if (!label || label.length <= 34) return null;
+  if (!label) return null;
+  // ABS Challenge: use " — " as the split point.
+  if (label.includes(' — ')) {
+    const idx = label.indexOf(' — ');
+    return [label.slice(0, idx), label.slice(idx + 3)];
+  }
+  // Substitution with "replaces": row 1 = category + new player, row 2 = "replaces ..."
   if (label.includes(' replaces ')) {
     const idx = label.indexOf(' replaces ');
-    return [label.slice(0, idx), label.slice(idx + 1)];
+    return [label.slice(0, idx), `replaces ${label.slice(idx + 10)}`];
   }
-  if (label.includes(': ')) {
+  // Generic colon split for other long labels.
+  if (label.length > 34 && label.includes(': ')) {
     const idx = label.indexOf(': ');
     return [label.slice(0, idx + 1), label.slice(idx + 2)];
   }
@@ -121,6 +140,40 @@ function StatusTab({ id, label, onHidden }) {
           </>
         ) : label}
       </div>
+    </div>
+  );
+}
+
+// Hover popover for the batter's game scoreline (H–AB). Shows each outcome
+// type the batter has recorded in the game, e.g. "1B×2  HR×1  BB×1  RBI×3".
+// Only non-zero counts are shown, left to right. Defined at module level for
+// the same identity-stability reason as HoverStat.
+function BatterLine({ children, hover, style }) {
+  const [open, setOpen] = useState(false);
+  const hasSummary = hover && Object.keys(hover).length > 0;
+  return (
+    <div
+      style={{ position: 'relative', cursor: hasSummary ? 'help' : 'default', ...style }}
+      onMouseEnter={() => hasSummary && setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      {children}
+      {open && hasSummary && (
+        <div style={{
+          position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
+          marginBottom: 4, zIndex: 40,
+          background: '#0a0e14', border: '1px solid rgba(255,255,255,0.25)', borderRadius: 5,
+          padding: '4px 8px', fontSize: 10, lineHeight: 1.6, whiteSpace: 'nowrap',
+          boxShadow: '0 4px 14px rgba(0,0,0,0.55)',
+          display: 'flex', gap: 8,
+        }}>
+          {Object.entries(hover).map(([label, count]) => (
+            <span key={label} style={{ color: '#ffd166', fontWeight: 'bold' }}>
+              {label}×{count}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -275,6 +328,7 @@ function Linescore({ data }) {
           <th style={{ ...th, textAlign: 'center', color: '#9aa' }}>R</th>
           <th style={{ ...th, textAlign: 'center', color: '#9aa' }}>H</th>
           <th style={{ ...th, textAlign: 'center', color: '#9aa' }}>E</th>
+          <th style={{ ...th, textAlign: 'center', color: '#9aa' }}>LOB</th>
         </tr>
       </thead>
       <tbody>
@@ -292,6 +346,7 @@ function Linescore({ data }) {
               <td style={{ ...center, fontWeight: 'bold' }}>{dash(totals.runs)}</td>
               <td style={center}>{dash(totals.hits)}</td>
               <td style={center}>{dash(totals.errors)}</td>
+              <td style={center}>{dash(totals.leftOnBase)}</td>
             </tr>
           );
         })}
@@ -301,6 +356,9 @@ function Linescore({ data }) {
 }
 
 function TeamBox({ team, color }) {
+  // Team-level totals from the feed (aggregated across all players).
+  const tb = team.teamBatting || {};
+  const tp = team.teamPitching || {};
   return (
     <div style={{ marginBottom: 10 }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, lineHeight: 1.35 }}>
@@ -326,6 +384,54 @@ function TeamBox({ team, color }) {
               <td style={{ ...cell, color }}>{dash(p.avg)}</td>
             </tr>
           ))}
+          {/* Team batting totals row */}
+          {(tb.atBats != null || tb.runs != null) && (
+            <tr style={{ borderTop: '2px solid rgba(255,209,102,0.4)' }}>
+              <td style={{ ...cell, textAlign: 'left', fontWeight: 'bold', color: '#ffd166', borderTop: '2px solid rgba(255,209,102,0.4)' }}>
+                TEAM TOTALS
+              </td>
+              <td style={{ ...cell, fontWeight: 'bold', color, borderTop: '2px solid rgba(255,209,102,0.4)' }}>{dash(tb.atBats)}</td>
+              <td style={{ ...cell, fontWeight: 'bold', color, borderTop: '2px solid rgba(255,209,102,0.4)' }}>{dash(tb.runs)}</td>
+              <td style={{ ...cell, fontWeight: 'bold', color, borderTop: '2px solid rgba(255,209,102,0.4)' }}>{dash(tb.hits)}</td>
+              <td style={{ ...cell, fontWeight: 'bold', color, borderTop: '2px solid rgba(255,209,102,0.4)' }}>{dash(tb.rbi)}</td>
+              <td style={{ ...cell, fontWeight: 'bold', color, borderTop: '2px solid rgba(255,209,102,0.4)' }}>{dash(tb.baseOnBalls)}</td>
+              <td style={{ ...cell, fontWeight: 'bold', color, borderTop: '2px solid rgba(255,209,102,0.4)' }}>{dash(tb.strikeOuts)}</td>
+              <td style={{ ...cell, fontWeight: 'bold', color, borderTop: '2px solid rgba(255,209,102,0.4)' }}>{dash(tb.avg)}</td>
+            </tr>
+          )}
+          {/* Extra team stats summary: 2B, 3B, HR */}
+          {(tb.doubles != null || tb.triples != null || tb.homeRuns != null) && (
+            <tr style={{ color: '#889', fontSize: 10 }}>
+              <td style={{ ...cell, textAlign: 'left', color: '#667' }}>
+                2B / 3B / HR
+              </td>
+              <td style={{ ...cell, color: '#667' }} colSpan={7}>
+                {dash(tb.doubles)} / {dash(tb.triples)} / {dash(tb.homeRuns)}
+              </td>
+            </tr>
+          )}
+          {/* RISP (runners in scoring position): hits-for-atBats */}
+          {tb.rispAtBats != null && (
+            <tr style={{ color: '#889', fontSize: 10 }}>
+              <td style={{ ...cell, textAlign: 'left', color: '#667' }}>
+                RISP
+              </td>
+              <td style={{ ...cell, color: '#667' }} colSpan={7}>
+                {dash(tb.rispHits)}-for-{dash(tb.rispAtBats)}
+              </td>
+            </tr>
+          )}
+          {/* Hard-hit balls (95+ mph exit velocity) */}
+          {tb.hardHitBalls != null && (
+            <tr style={{ color: '#889', fontSize: 10 }}>
+              <td style={{ ...cell, textAlign: 'left', color: '#667' }}>
+                Hard-hit
+              </td>
+              <td style={{ ...cell, color: '#667' }} colSpan={7}>
+                {dash(tb.hardHitBalls)}
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, lineHeight: 1.35, marginTop: 6 }}>
@@ -350,6 +456,21 @@ function TeamBox({ team, color }) {
               <td style={{ ...cell, color }}>{dash(p.whip)}</td>
             </tr>
           ))}
+          {/* Team pitching totals row */}
+          {(tp.inningsPitched != null || tp.runs != null) && (
+            <tr style={{ borderTop: '2px solid rgba(255,209,102,0.4)' }}>
+              <td style={{ ...cell, textAlign: 'left', fontWeight: 'bold', color: '#ffd166', borderTop: '2px solid rgba(255,209,102,0.4)' }}>
+                TEAM TOTALS
+              </td>
+              <td style={{ ...cell, fontWeight: 'bold', color, borderTop: '2px solid rgba(255,209,102,0.4)' }}>{dash(tp.inningsPitched)}</td>
+              <td style={{ ...cell, fontWeight: 'bold', color, borderTop: '2px solid rgba(255,209,102,0.4)' }}>{dash(tp.hits)}</td>
+              <td style={{ ...cell, fontWeight: 'bold', color, borderTop: '2px solid rgba(255,209,102,0.4)' }}>{dash(tp.runs)}</td>
+              <td style={{ ...cell, fontWeight: 'bold', color, borderTop: '2px solid rgba(255,209,102,0.4)' }}>{dash(tp.earnedRuns)}</td>
+              <td style={{ ...cell, fontWeight: 'bold', color, borderTop: '2px solid rgba(255,209,102,0.4)' }}>{dash(tp.baseOnBalls)}</td>
+              <td style={{ ...cell, fontWeight: 'bold', color, borderTop: '2px solid rgba(255,209,102,0.4)' }}>{dash(tp.strikeOuts)}</td>
+              <td style={{ ...cell, fontWeight: 'bold', color, borderTop: '2px solid rgba(255,209,102,0.4)' }} colSpan={2}></td>
+            </tr>
+          )}
         </tbody>
       </table>
     </div>
@@ -378,7 +499,7 @@ function TeamBox({ team, color }) {
  * A "BOX SCORE" button fetches /api/box-score on demand and shows both teams'
  * full batting and pitching lines in a panel anchored above the scorebug.
  */
-export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, frozen = false, stateOverride = null }) {
+export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, frozen = false, stateOverride = null, onDefenseUpdate = null }) {
   const rootRef = useRef(null);
   const [state, setState] = useState(null);
   // Status is intentionally separate from the frozen numeric scoreboard. It
@@ -402,6 +523,10 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   // that persists in the bottom-left row after its tab animation, until the
   // next pitch is thrown (outcomeRefresh) or a different status appears.
   const stickyStatusRef = useRef(null);
+  // The compact bottom-row label stored alongside the sticky ref so that when
+  // the tab hides it writes the short version to the row, not the full detail
+  // that was shown in the pop-up tab.
+  const compactLabelRef = useRef(null);
   // Tracks the game_pk the status pollers are answering for, so a stale
   // response from a previously-selected game can't overwrite the new game.
   const gamePkRef = useRef(gamePk);
@@ -455,6 +580,18 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   // liveStatus is reset on game switch, which flips this back to false and
   // resumes polling for the newly-selected game.
   const gameTerminal = isGameTerminal(liveStatus?.gameState);
+
+  // Propagate the current defensive alignment + formation to the parent so the
+  // 3D scene can render position labels under each fielder, and the Defense
+  // panel can show the formation badge.
+  useEffect(() => {
+    if (onDefenseUpdate && liveStatus?.defenseAlignment) {
+      onDefenseUpdate({
+        alignment: liveStatus.defenseAlignment,
+        formation: liveStatus.defenseFormation ?? 'Standard',
+      });
+    }
+  }, [onDefenseUpdate, liveStatus?.defenseAlignment, liveStatus?.defenseFormation]);
 
   useEffect(() => {
     if (!frozen || gameTerminal) return;
@@ -513,41 +650,48 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   //
   // Sticky labels (mound visit, pitching change, pinch/defensive sub) persist
   // in the bottom-left row even after the feed's action event clears and
-  // statusLabel returns to null — they stay until the next pitch is thrown
+  // tabLabel returns to null — they stay until the next pitch is thrown
   // (outcomeRefresh) or a different status appears.
+  //
+  // The statusLabel is now { tabLabel, bottomRowLabel }: the tabLabel is the
+  // full detailed text shown in the pop-up tab, and bottomRowLabel is the
+  // compact version that sits in the bottom-left row.
   useEffect(() => {
+    const tabLabel = statusLabel?.tabLabel ?? null;
+    const rowLabel = statusLabel?.bottomRowLabel ?? null;
     if (pendingGameInitRef.current) {
       // Still waiting for this game's first real status. A null during the
       // fetch transition isn't final; keep waiting until a label arrives.
-      if (statusLabel == null) {
+      if (tabLabel == null) {
         prevStatusRef.current = null;
         setWrittenStatus(null);
         return;
       }
       pendingGameInitRef.current = false;
-      prevStatusRef.current = statusLabel;
+      prevStatusRef.current = tabLabel;
       // Track stickiness for the initial status too.
-      stickyStatusRef.current = STICKY_STATUS_PATTERN.test(statusLabel)
-        ? statusLabel : null;
-      setWrittenStatus(statusLabel);
+      stickyStatusRef.current = STICKY_STATUS_PATTERN.test(tabLabel)
+        ? rowLabel : null;
+      setWrittenStatus(rowLabel);
       return;
     }
 
-    if (statusLabel === prevStatusRef.current) return;
-    prevStatusRef.current = statusLabel;
-    if (statusLabel) {
-      // A new status label appeared. Track whether it's sticky.
-      stickyStatusRef.current = STICKY_STATUS_PATTERN.test(statusLabel)
-        ? statusLabel : null;
+    if (tabLabel === prevStatusRef.current) return;
+    prevStatusRef.current = tabLabel;
+    if (tabLabel) {
+      // A new status appeared. Track whether it's sticky and remember its
+      // compact label for the bottom-left row.
+      stickyStatusRef.current = STICKY_STATUS_PATTERN.test(tabLabel)
+        ? rowLabel : null;
+      compactLabelRef.current = rowLabel;
       // Hide the old bottom-left status while the new tab plays.
       setWrittenStatus(null);
       statusTabSeq.current += 1;
-      setStatusTab({ id: statusTabSeq.current, label: statusLabel });
+      setStatusTab({ id: statusTabSeq.current, label: tabLabel });
     } else {
-      // statusLabel went back to null (the action event cleared). If the
-      // previous label was sticky, keep it visible in the bottom-left row
-      // until the next pitch is thrown — the substitution is still the
-      // relevant game state even though the feed moved past the action event.
+      // tabLabel went back to null (the action event cleared). If the
+      // previous label was sticky, keep the bottomRowLabel visible in the
+      // bottom-left row until the next pitch is thrown.
       if (stickyStatusRef.current) {
         setStatusTab(null);
         setWrittenStatus(stickyStatusRef.current);
@@ -613,18 +757,19 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
     }
   }, [boxOpen, gamePk, state]);
 
-  // The status tab finished its slide-out: write the status into the
-  // bottom-left row and unmount the tab.
-  const handleStatusTabHidden = useCallback((label) => {
+  // The status tab finished its slide-out: write the compact status into the
+  // bottom-left row and unmount the tab. Uses compactLabelRef (the
+  // bottomRowLabel) so the full detail only appears in the pop-up tab.
+  const handleStatusTabHidden = useCallback(() => {
     setStatusTab(null);
-    setWrittenStatus(label);
+    setWrittenStatus(compactLabelRef.current);
   }, []);
 
   if (!displayState || !displayState.success) return null;
 
   const {
     teams, score, inning, outs, count, bases, pitcher, batter, batterLine,
-    batterSeason, pitcherSeason, pitchesThrown, isLive, venue,
+    batterSummary, batterSeason, pitcherSeason, pitchesThrown, isLive, venue,
   } = displayState;
   const awayScore = score?.away?.runs ?? '—';
   const homeScore = score?.home?.runs ?? '—';
@@ -813,7 +958,9 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
         <div style={{ textAlign: 'right', fontSize: 11, color: '#bbb', lineHeight: 1.5 }}>
           <div>Pitches <FlipDigits value={pitchesThrown ?? '—'} /></div>
           {batterLine?.atBats != null && (
-            <div style={{ marginTop: 2, color: '#aaa' }}>{batterLine.hits}–{batterLine.atBats}</div>
+            <BatterLine hover={batterSummary} style={{ marginTop: 2, color: '#aaa' }}>
+              {batterLine.hits}–{batterLine.atBats}
+            </BatterLine>
           )}
         </div>
       </div>

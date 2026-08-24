@@ -88,8 +88,8 @@ body {
 }
 
 #root {
-  width: 1126px;
-  max-width: 100%;
+  width: 100vw;
+  max-width: 1400px;
   margin: 0 auto;
   text-align: center;
   border-inline: 1px solid var(--border);

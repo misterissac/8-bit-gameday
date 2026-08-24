@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 // Tunneling color code, matching the at-bat spec:
 //   red = strike, blue = in play (no outs), purple = in play (outs),
@@ -25,8 +25,12 @@ const OUTCOME_LABELS = {
  * Gameday-style strike zone (catcher's perspective) with every pitch of an
  * at-bat drawn as a numbered, color-coded circle. Clicking a replayable pitch
  * hands it back via ``onSelect`` so the parent can replay that pitch/play.
+ *
+ * With ``showPitchType`` the circles are labeled with the pitch type code
+ * (FF / SL / ...) instead of the pitch number and clicking is disabled, which
+ * powers the whole-game "all pitches the batter has faced" view.
  */
-export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchNumber = null, onSelect, selectionMode = false, selectedPlayIds = null, onToggleSelect }) {
+export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchNumber = null, onSelect, selectionMode = false, selectedPlayIds = null, onToggleSelect, showPitchType = false }) {
   const W = 200;
   const H = 250;
   const plateWidthFt = 17 / 12; // 1.4167 ft
@@ -53,6 +57,10 @@ export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchN
   const zoneW = zoneRight - zoneLeft;
   const zoneH = zoneBottom - zoneTop;
 
+  // Stable identity for a dot, unique across at-bats (the game view mixes
+  // pitches from several at-bats where pitch_number repeats).
+  const dotKey = (p) => p.play_id ?? `${p.at_bat_index ?? '?'}-${p.pitch_number}`;
+
   const dots = pitches
     .map((p) => {
       const px = p.statcast_px_mid ?? p.statcast_px;
@@ -61,6 +69,20 @@ export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchN
       return { ...p, x: ftX(px), y: ftY(pz) };
     })
     .filter(Boolean);
+
+  // The hovered dot is drawn LAST so it sits on top of overlapping neighbors
+  // (SVG paints later elements over earlier ones). In the dense game view the
+  // circles overlap heavily, so this keeps the one under the cursor readable.
+  const [hoveredKey, setHoveredKey] = useState(null);
+  const orderedDots = hoveredKey == null
+    ? dots
+    : [...dots].sort((a, b) => {
+        const aHovered = dotKey(a) === hoveredKey;
+        const bHovered = dotKey(b) === hoveredKey;
+        if (aHovered && !bHovered) return 1;
+        if (bHovered && !aHovered) return -1;
+        return 0;
+      });
 
   return (
     <svg
@@ -92,17 +114,29 @@ export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchN
       <line x1={zoneLeft} y1={zoneTop + (2 * zoneH) / 3} x2={zoneRight} y2={zoneTop + (2 * zoneH) / 3} stroke="rgba(255,255,255,0.3)" strokeWidth={1} />
 
       {/* Pitch location dots, numbered in the order they were thrown */}
-      {dots.map((p) => {
+      {orderedDots.map((p) => {
+        const key = dotKey(p);
         const color = OUTCOME_COLORS[p.outcome] || OUTCOME_COLORS.other;
-        const clickable = !!p.replayable;
+        // The whole-game view shows every pitch as a read-only summary, so
+        // replay (and compare selection) are disabled there.
+        const clickable = !showPitchType && !!p.replayable;
         const isActive = activePitchNumber != null && p.pitch_number === activePitchNumber;
         const isSelected = selectionMode && selectedPlayIds?.has(p.play_id);
-        // Hover pop-up meta from the pitch payload (null when not replayable):
-        // speed, pitch type, and the ball–strike count in effect when thrown.
+        // Hovering raises the dot above its neighbors: full opacity (the game
+        // view's read-only dots sit at 0.5 otherwise) and a thin white ring.
+        const hovered = hoveredKey === key;
+        // Hover pop-up meta: speed, pitch type, and the ball–strike count in
+        // effect when thrown. The game view's pitches carry speed/type at the
+        // top level (no full payload), so each field is read from either.
+        // The type CODE is already its own tooltip line, so the description
+        // line shows only the full name — never the code a second time.
         const pmeta = p.pitch || {};
+        const pitchType = p.pitch_type ?? pmeta.pitch_type ?? null;
+        const speedMph = p.speed_mph ?? pmeta.speed_mph ?? null;
+        const typeDescription = p.pitch_type_description ?? pmeta.pitch_type_description ?? null;
         const metaLines = [
-          pmeta.speed_mph != null ? `${Number(pmeta.speed_mph.toFixed(1))} mph` : null,
-          pmeta.pitch_type_description || pmeta.pitch_type || null,
+          speedMph != null ? `${Number(speedMph.toFixed(1))} mph` : null,
+          typeDescription || null,
           pmeta.game_state?.count?.balls != null && pmeta.game_state?.count?.strikes != null
             ? `Count ${pmeta.game_state.count.balls}–${pmeta.game_state.count.strikes}`
             : null,
@@ -117,18 +151,24 @@ export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchN
         };
         return (
           <g
-            key={p.pitch_number}
+            key={key}
             onClick={handleClick}
-            style={{ cursor: clickable ? 'pointer' : 'default', opacity: clickable ? 1 : 0.5 }}
+            onMouseEnter={() => setHoveredKey(key)}
+            onMouseLeave={() => setHoveredKey((k) => (k === key ? null : k))}
+            style={{ cursor: clickable ? 'pointer' : 'default', opacity: hovered ? 1 : clickable ? 1 : 0.5 }}
           >
             <title>
               {`Pitch ${p.pitch_number} — ${OUTCOME_LABELS[p.outcome] || 'Other'}`}
+              {pitchType ? `\n${pitchType}` : ''}
               {metaLines.map((l) => `\n${l}`)}
               {p.description ? `\n${p.description}` : ''}
               {p.outs > 0 ? `\n${p.outs} out${p.outs === 1 ? '' : 's'}` : ''}
               {!clickable ? '\n(no replay data)' : ''}
               {selectionMode ? (isSelected ? '\nselected for compare' : '\nclick to select for compare') : ''}
             </title>
+            {hovered && (
+              <circle cx={p.x} cy={p.y} r={13} fill="none" stroke="rgba(255,255,255,0.9)" strokeWidth={1.5} />
+            )}
             {isActive && (
               <circle cx={p.x} cy={p.y} r={14} fill="none" stroke="#ffd166" strokeWidth={2} />
             )}
@@ -140,7 +180,7 @@ export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchN
               x={p.x}
               y={p.y + 3.5}
               textAnchor="middle"
-              fontSize={11}
+              fontSize={showPitchType ? 10 : 11}
               fontWeight="bold"
               fill="#fff"
               stroke="#0a0e14"
@@ -148,7 +188,7 @@ export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchN
               paintOrder="stroke"
               pointerEvents="none"
             >
-              {p.pitch_number}
+              {showPitchType ? (pitchType || '?') : p.pitch_number}
             </text>
           </g>
         );

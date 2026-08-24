@@ -1,7 +1,12 @@
-// Decide the scorebug's bottom-left game-status label from the live status
-// fields and the frozen snapshot's pitcher. Returns null when nothing needs
-// showing (normal in-progress play), so the row collapses back to just the
-// ballpark while the game is live.
+// Decide the scorebug's bottom-left game-status label and pop-up tab label from
+// the live status fields and the frozen snapshot's pitcher.
+//
+// Returns an object { tabLabel, bottomRowLabel }:
+//   tabLabel        — the full text shown in the slide-up tab at the top of the
+//                     scorebug (includes player names, positions for subs).
+//   bottomRowLabel  — the compact version shown in the bottom-left row after the
+//                     tab hides (short label only, stays sticky).
+// Both are null when nothing needs showing (normal in-progress play).
 export const scorebugStatusLabel = ({
   gameState,
   liveStatus,
@@ -12,51 +17,87 @@ export const scorebugStatusLabel = ({
 }) => {
   const liveGameState = liveStatus?.gameState ?? gameState
 
-  // The feed embeds mound visits and pitching substitutions as action events
-  // in the current play's playEvents. The backend surfaces these as explicit
-  // flags, which is far more reliable than inferring from pitcher-identity
-  // comparison (which can't tell a real relief appearance from the defensive
-  // team simply swapping after an inning turns over).
-  //
-  // A mound visit takes priority — it's transient and the most actionable
-  // in-game notice.
-  if (liveStatus?.moundVisit) return 'Mound Visit'
+  // ── Mound Visit ───────────────────────────────────────────────────────
+  if (liveStatus?.moundVisit) return { tabLabel: 'Mound Visit', bottomRowLabel: 'Mound Visit' }
 
-  // A pitching change detected from the feed's own action event is always
-  // genuine, even during inning transitions. Surface the new pitcher's name
-  // (and the old one when available) so the label reads like a broadcast.
+  // ── ABS Challenge / Umpire Review ─────────────────────────────────────
+  // The feed stores these in reviewDetails on the current play. Surface the
+  // challenger and result in the tab, and keep a compact label in the row.
+  if (liveStatus?.review) {
+    const challenger = liveStatus?.reviewChallenger || 'Batter';
+    const overturned = liveStatus?.reviewIsOverturned;
+    const resultWord = overturned === true ? 'OVERTURNED' : overturned === false ? 'STANDS' : null;
+    const tabLabel = resultWord
+      ? `ABS Challenge: ${challenger} — ${resultWord}`
+      : `ABS Challenge: ${challenger}`;
+    const bottomRowLabel = resultWord
+      ? `Challenge ${resultWord === 'OVERTURNED' ? 'Overturned' : 'Stands'}`
+      : 'ABS Challenge';
+    return { tabLabel, bottomRowLabel };
+  }
+
+  // ── Pitching Change ───────────────────────────────────────────────────
   if (liveStatus?.pitchingChange) {
     const newP = liveStatus?.pitchingChangePitcher;
     const oldP = liveStatus?.pitchingChangeOldPitcher;
-    if (newP && oldP) return `Pitching Change: ${newP} replaces ${oldP}`;
-    if (newP) return `Pitching Change: ${newP}`;
-    return 'Pitching Change';
+    const pos = liveStatus?.pitchingChangePosition || 'P';
+    // Full text for the pop-up tab.
+    let tabLabel;
+    if (newP && oldP) tabLabel = `Pitching Change: ${newP} (${pos}) replaces ${oldP}`;
+    else if (newP) tabLabel = `Pitching Change: ${newP} (${pos})`;
+    else tabLabel = 'Pitching Change';
+    // Compact text for the bottom-left row.
+    const bottomRowLabel = newP
+      ? `Pitching Change: ${newP}`
+      : 'Pitching Change';
+    return { tabLabel, bottomRowLabel };
   }
 
-  // An offensive substitution (pinch hitter or pinch runner). Surface the
-  // role and both player names so the label reads like a broadcast.
+  // ── Offensive Substitution (Pinch Hitter / Pinch Runner) ─────────────
   if (liveStatus?.offensiveSub) {
     const role = liveStatus?.offensiveSubRole || 'Pinch Hitter';
     const sub = liveStatus?.offensiveSubNew;
     const old = liveStatus?.offensiveSubOld;
-    if (sub && old) return `${role}: ${sub} replaces ${old}`;
-    if (sub) return `${role}: ${sub}`;
-    return role;
+    const oldPos = liveStatus?.offensiveSubPosition;
+    const newPos = liveStatus?.offensiveSubNewPosition;
+    const oldPosTag = oldPos ? ` (${oldPos})` : '';
+    const newPosTag = newPos ? ` (${newPos})` : '';
+    // Full text for the pop-up tab.
+    let tabLabel;
+    if (sub && old) tabLabel = `${role}: ${sub}${newPosTag} replaces ${old}${oldPosTag}`;
+    else if (sub) tabLabel = `${role}: ${sub}${newPosTag}`;
+    else tabLabel = role;
+    // Compact text for the bottom-left row.
+    const bottomRowLabel = sub
+      ? `${role}: ${sub}${newPosTag}`
+      : role;
+    return { tabLabel, bottomRowLabel };
   }
 
-  // A defensive substitution (position player swap). Surface both player
-  // names so the label reads like a broadcast.
+  // ── Defensive Substitution ────────────────────────────────────────────
   if (liveStatus?.defensiveSub) {
     const sub = liveStatus?.defensiveSubNew;
     const old = liveStatus?.defensiveSubOld;
-    if (sub && old) return `Defensive Sub: ${sub} replaces ${old}`;
-    if (sub) return `Defensive Sub: ${sub}`;
-    return 'Defensive Sub';
+    const oldPos = liveStatus?.defensiveSubPosition;
+    const newPos = liveStatus?.defensiveSubNewPosition;
+    const oldPosTag = oldPos ? ` (${oldPos})` : '';
+    const newPosTag = newPos ? ` (${newPos})` : '';
+    // Full text for the pop-up tab.
+    let tabLabel;
+    if (sub && old) tabLabel = `Defensive Sub: ${sub}${newPosTag} replaces ${old}${oldPosTag}`;
+    else if (sub) tabLabel = `Defensive Sub: ${sub}${newPosTag}`;
+    else tabLabel = 'Defensive Sub';
+    // Compact text for the bottom-left row.
+    const bottomRowLabel = sub
+      ? `Defensive Sub: ${sub}${newPosTag}`
+      : 'Defensive Sub';
+    return { tabLabel, bottomRowLabel };
   }
 
   // Show any non-"In Progress" detailed state (Final, Rain Delay, Suspended,
   // Umpire Review, ...) and hide the generic live state.
-  return liveGameState && liveGameState !== 'In Progress' ? liveGameState : null
+  const label = liveGameState && liveGameState !== 'In Progress' ? liveGameState : null;
+  return label ? { tabLabel: label, bottomRowLabel: label } : { tabLabel: null, bottomRowLabel: null };
 }
 
 // Terminal game states after which the scorebug has nothing left to poll.

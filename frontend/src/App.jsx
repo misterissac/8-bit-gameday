@@ -146,6 +146,12 @@ const battedBallResolutionKey = (d) => {
   });
 };
 
+// Pitches drawn in the at-bat / game strike zones: the current in-flight
+// pitch (play_id matches but its outcome isn't revealed yet) is excluded so
+// the zone never spoils it before the animation finishes.
+const revealedPitches = (list, pitchData, pitchOutcome) =>
+  (list ?? []).filter((p) => !(p.play_id === pitchData?.play_id && !pitchOutcome));
+
 const trajectoryResolutionKey = (d) => JSON.stringify({
   playComplete: d?.play_complete ?? d?.is_complete ?? false,
   resultEvent: d?.result_event ?? null,
@@ -362,6 +368,167 @@ const OutcomeBanner = ({ label }) => {
           }}
         />
       </div>
+    </div>
+  );
+};
+
+// ── PLAY SEQUENCE PANEL ───────────────────────────────────────────────────
+// Unfolds at the bottom of the screen showing the players involved in the
+// play (e.g. "Juan Soto grounds into double play, SS Bo Bichette to 2B
+// Cavan Biggio to 1B Vladdy Jr." for a double play, "CF Mike Trout makes
+// the catch" for a flyout). Reuses the same unroll/collapse keyframes as
+// the OutcomeBanner.
+const SEQUENCE_UNROLL_MS = 750;
+const SEQUENCE_COLLAPSE_MS = 600;
+const SEQUENCE_TEXT_IN_MS = 400;
+const SEQUENCE_TEXT_OUT_MS = 350;
+const SEQUENCE_TEXT_IN_DELAY_MS = Math.round(SEQUENCE_UNROLL_MS * 0.6);
+const SEQUENCE_COLLAPSE_DELAY_MS = SEQUENCE_TEXT_OUT_MS;
+const PlaySequencePanel = ({ lines }) => {
+  const [display, setDisplay] = useState(null);
+  const [hiding, setHiding] = useState(false);
+  const displayRef = useRef(null);
+
+  useEffect(() => {
+    if (lines && lines.length > 0) {
+      displayRef.current = lines;
+      setDisplay(lines);
+      setHiding(false);
+    } else if (displayRef.current != null) {
+      setHiding(true);
+    }
+  }, [lines]);
+
+  if (!display || display.length === 0) return null;
+
+  const finishHide = () => {
+    if (hiding) {
+      displayRef.current = null;
+      setDisplay(null);
+      setHiding(false);
+    }
+  };
+
+  const textAnimation = hiding
+    ? `outcome-text-out ${SEQUENCE_TEXT_OUT_MS}ms ease-in forwards`
+    : `outcome-text-in ${SEQUENCE_TEXT_IN_MS}ms ease-out ${SEQUENCE_TEXT_IN_DELAY_MS}ms forwards`;
+  const boxAnimation = hiding
+    ? `outcome-box-collapse ${SEQUENCE_COLLAPSE_MS}ms ease-in-out ${SEQUENCE_COLLAPSE_DELAY_MS}ms forwards`
+    : `outcome-box-unroll ${SEQUENCE_UNROLL_MS}ms ease-out forwards`;
+
+  return (
+    <div style={{
+      position: 'absolute',
+      bottom: 80,
+      left: 0,
+      right: 0,
+      zIndex: 19,
+      textAlign: 'center',
+      pointerEvents: 'none',
+    }}>
+      <div style={{ position: 'relative', display: 'inline-block' }}>
+        <span
+          style={{
+            position: 'relative',
+            zIndex: 1,
+            display: 'inline-block',
+            padding: '8px 28px',
+            fontFamily: 'monospace',
+            fontWeight: 'bold',
+            fontSize: '15px',
+            lineHeight: 1.5,
+            letterSpacing: '0.04em',
+            WebkitTextStroke: '1px rgba(0,0,0,0.85)',
+            textShadow: [
+              '1px 0 0 rgba(0,0,0,0.85)', '-1px 0 0 rgba(0,0,0,0.85)',
+              '0 1px 0 rgba(0,0,0,0.85)', '0 -1px 0 rgba(0,0,0,0.85)',
+              '0 0 8px rgba(0,0,0,0.45)',
+            ].join(', '),
+            color: '#ffffff',
+            animation: textAnimation,
+          }}
+        >
+          {display.map((line, i) => (
+            <div key={i}>{line}</div>
+          ))}
+        </span>
+        <span
+          onAnimationEnd={finishHide}
+          style={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            left: 0,
+            right: 0,
+            background: 'rgba(0,0,0,0.8)',
+            borderRadius: 8,
+            transformOrigin: 'center',
+            animation: boxAnimation,
+            border: '1px solid rgba(255,255,255,0.15)',
+            boxShadow: '0 0 16px rgba(0,0,0,0.5)',
+          }}
+        />
+      </div>
+    </div>
+  );
+};
+
+// ── DEFENSIVE ALIGNMENT DIAMOND ───────────────────────────────────────────
+// Mini diamond diagram of the defending team's alignment, shown in the
+// pitch panel's Defense tab before each pitch. Renders a small SVG with the
+// position code + player name at each of the nine spots.
+const DEFENSE_DIAGRAM_POSITIONS = {
+  // Bird's-eye broadcast orientation: outfield at the top, home plate at the
+  // bottom. Middle infielders play deeper than the corners, who hug the lines.
+  // Spread across a 320×260 canvas to give 20px-radius circles breathing room.
+  LF: { x: 44, y: 48 },
+  CF: { x: 160, y: 34 },
+  RF: { x: 276, y: 48 },
+  '3B': { x: 64, y: 120 },
+  SS: { x: 112, y: 102 },
+  '2B': { x: 208, y: 102 },
+  '1B': { x: 256, y: 120 },
+  P: { x: 160, y: 178 },
+  C: { x: 160, y: 222 },
+};
+const DefenseDiagram = ({ alignment, formation = 'Standard' }) => {
+  // Name shortening: "Mauricio Dubón" -> "Dubón", "Michael Harris II" -> "M. Harris II"
+  const shortName = (name) => {
+    if (!name) return '—';
+    const parts = name.trim().split(/\s+/);
+    if (parts.length === 1) return parts[0];
+    return `${parts[0][0]}. ${parts.slice(1).join(' ')}`;
+  };
+  // Color the formation badge by type.
+  const formationColor = formation === 'Strategic'
+    ? '#ffb066'       // warm amber for shifts/strategic alignments
+    : formation === 'Infield In'
+    ? '#66b3ff'        // cool blue for infield-in
+    : '#9aa3ad';      // muted grey for standard
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '4px 0 2px' }}>
+      <svg width="100%" height="260" viewBox="0 0 320 260" preserveAspectRatio="xMidYMid meet">
+        {/* Formation badge at top-left */}
+        <rect x="8" y="6" rx="3" ry="3" width="76" height="16" fill="rgba(10,14,20,0.8)" stroke={formationColor} strokeWidth="0.8" />
+        <text x="46" y="17" textAnchor="middle" style={{ fontSize: 8.5, fontWeight: 'bold', fill: formationColor, fontFamily: 'monospace', letterSpacing: '0.03em' }}>
+          {formation.toUpperCase()}
+        </text>
+        {/* Fielders */}
+        {Object.entries(DEFENSE_DIAGRAM_POSITIONS).map(([pos, { x, y }]) => {
+          const player = alignment[pos];
+          return (
+            <g key={pos}>
+              <circle cx={x} cy={y} r="20" fill="rgba(10,14,20,0.75)" stroke="rgba(255,209,102,0.5)" strokeWidth="1.3" />
+              <text x={x} y={y - 2} textAnchor="middle" style={{ fontSize: 12, fontWeight: 'bold', fill: '#ffd166', fontFamily: 'monospace' }}>
+                {pos}
+              </text>
+              <text x={x} y={y + 10} textAnchor="middle" style={{ fontSize: 9, fill: '#dde3ea', fontFamily: 'monospace' }}>
+                {shortName(player?.name)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
     </div>
   );
 };
@@ -638,6 +805,31 @@ function AppContent() {
   // then returns to the pre-play angle. Disabled automatically in comparison
   // and historical-replay modes.
   const [followBattedBall, setFollowBattedBall] = useState(true);
+  // Defaults ON: after a contact play's first animation completes, the camera
+  // automatically switches to a fielder's over-the-shoulder angle for one
+  // replay cycle. When OFF the replay button is always available instead.
+  const [autoFielderCam, setAutoFielderCam] = useState(true);
+  const autoFielderCamRef = useRef(true);
+  const toggleAutoFielderCam = () => {
+    setAutoFielderCam((v) => {
+      const next = !v;
+      autoFielderCamRef.current = next;
+      return next;
+    });
+  };
+  // Bumped to trigger the fielder-camera replay (over-the-shoulder view of
+  // the fielder who fields the ball). For contact plays it auto-fires after
+  // the first animation; the replay button lets the user replay it again.
+  const [fielderCamTrigger, setFielderCamTrigger] = useState(0);
+  // Ref gate: when true the next handlePlayComplete is a fielder-cam replay
+  // and should NOT re-arm (it should finish the play normally instead).
+  const fielderCamArmedRef = useRef(false);
+  // Whether a fielder-cam replay button should be shown for the current play
+  // (only contact plays with fielding data).
+  const fielderCamAvailable = useRef(false);
+  // Tracks whether the auto-fielder-cam has already fired for the current
+  // play, so it never fires more than once per pitch.
+  const fielderCamFiredRef = useRef(false);
   // Toggles for the pitch trail layers, default ON. Hiding them reduces visual
   // clutter without changing the simulation (the ball still flies; only the
   // colored tail / billow wake are dropped).
@@ -666,9 +858,19 @@ function AppContent() {
   // At-bat tunneling view: replaces the panel's stats/spin ball with a 2D
   // strike zone of every pitch thrown in the current at-bat.
   const [atBatOpen, setAtBatOpen] = useState(false);
+  const [defenseOpen, setDefenseOpen] = useState(false);
   const [atBatData, setAtBatData] = useState(null);
   const [atBatLoading, setAtBatLoading] = useState(false);
   const [atBatError, setAtBatError] = useState(null);
+  // Whole-game scope in the at-bat tab: the strike zone shows every pitch
+  // thrown to the batter across the game (labeled by pitch type, no replay),
+  // with a pitcher list below it to filter by pitcher.
+  const [batterGameOpen, setBatterGameOpen] = useState(false);
+  const [batterGameData, setBatterGameData] = useState(null);
+  const [batterGameLoading, setBatterGameLoading] = useState(false);
+  const [batterGameError, setBatterGameError] = useState(null);
+  // pitcher_id filter in the game view (null = all pitchers the batter faced).
+  const [pitcherFilter, setPitcherFilter] = useState(null);
   // Snapshot the pitch panel's rendered width when switching to the at-bat
   // view so the loading placeholder doesn't shrink the panel during the fetch.
   const [atBatSnapshotWidth, setAtBatSnapshotWidth] = useState(null);
@@ -724,6 +926,35 @@ function AppContent() {
   // exactly once per pitch (even while frozen) — the count/outs/score update
   // the moment the BALL/STRIKE/HIT/RUN/OUT indicator appears.
   const [scorebugOutcomeRefresh, setScorebugOutcomeRefresh] = useState(0);
+  // Current defensive alignment: position-code → {id, name} + formation type.
+  // Updated by the Scorebug component on each game-state poll. Used by the
+  // DefenseDiagram panel (bottom-left), which auto-opens only when the
+  // fielding arrangement actually changes (new player at a position or a new
+  // formation), not on every poll.
+  const [defenseData, setDefenseData] = useState(null);
+  const defenseAlignment = defenseData?.alignment ?? null;
+  const defenseFormation = defenseData?.formation ?? 'Standard';
+
+  // Auto-open the Defense tab only when the fielding arrangement actually
+  // changes: a new player at any position (a pitching change swaps the P slot)
+  // or a different formation (Standard → Strategic / Infield In / ...). The
+  // scorebug re-reports the alignment on every status poll as a fresh object,
+  // so identity alone can't distinguish a real change — compare the contents.
+  // The first sighting only seeds the baseline (the status quo isn't a
+  // change), so the initial pitch resolves onto the pitch panel instead.
+  const lastDefenseSigRef = useRef(null);
+  useEffect(() => {
+    if (!defenseAlignment || Object.keys(defenseAlignment).length === 0) return;
+    const sig = JSON.stringify([defenseAlignment, defenseFormation]);
+    if (lastDefenseSigRef.current == null) {
+      lastDefenseSigRef.current = sig;
+      return;
+    }
+    if (sig === lastDefenseSigRef.current) return;
+    lastDefenseSigRef.current = sig;
+    setDefenseOpen(true);
+  }, [defenseAlignment, defenseFormation]);
+
   // Bumped exactly once when a play fully finishes; the effect below commits
   // the scoreboard snapshot and advances the queue AFTER the reveal render, so
   // the outcome banner gets a frame to display before the next play starts.
@@ -1299,7 +1530,13 @@ function AppContent() {
     lastBattedPlayId.current = playId;
     lastBattedResolutionKey.current = resolutionKey;
     rememberAppliedBattedBall(d, resolutionKey);
-    setBattedBallData(toBattedBallData(d));
+    const bb = toBattedBallData(d);
+    setBattedBallData(bb);
+    // When auto-fielder-cam is OFF, make the replay button immediately
+    // available as soon as a contact play's fielding data arrives.
+    if (!autoFielderCamRef.current && bb?.fielder) {
+      fielderCamAvailable.current = true;
+    }
     return true;
   };
 
@@ -1320,6 +1557,9 @@ function AppContent() {
     pitchDataRef.current = d;
     outcomeShownPlayId.current = null;
     playFinishedRef.current = false;
+    fielderCamAvailable.current = false;
+    fielderCamArmedRef.current = false;
+    fielderCamFiredRef.current = false;
     currentPitchScoreSnapshotRef.current = d?.game_state ?? null;
     if (nextBattedPayload) {
       pendingBattedBallsRef.current.delete(nextBattedPayload.play_id);
@@ -1330,11 +1570,27 @@ function AppContent() {
     // A non-contact pitch clears the animation data but deliberately keeps the
     // last applied hit cursor, so a later dropped-hit response can be resumed.
     setBattedBallData(nextBattedBall);
+    // When auto-fielder-cam is OFF, make the replay button immediately
+    // available for contact plays with fielding data (don't wait for the
+    // first completion).
+    if (!autoFielderCamRef.current && nextBattedBall?.fielder) {
+      fielderCamAvailable.current = true;
+    }
     // A new pitch is about to animate: clear the previous outcome and collapse
     // the panel in the same update as the pitch swap, so the scorebug remains
     // frozen on the last completed snapshot until this pitch finishes.
     setPitchOutcome(null);
     setPitchPanelOpen(false);
+    // Every new pitch resolves onto the pitch panel, not whatever view was
+    // left open (the Defense tab previously auto-opened after every play).
+    // At-Bat and Defense stay available through their tabs; Defense only
+    // auto-reopens when the fielding actually changes (see below). The game
+    // view (a whole-game scope inside the At-Bat tab) also closes, so
+    // reopening the tab never lands on a stale batter's game summary — it
+    // refreshes to the at-bat view and re-fetches on the next open.
+    setAtBatOpen(false);
+    setDefenseOpen(false);
+    setBatterGameOpen(false);
     setPitchData(d);
   };
 
@@ -1468,6 +1724,13 @@ function AppContent() {
     lastTrajectoryResolutionKey.current = null;
     lastBattedResolutionKey.current = null;
     lastPendingPlayEventRef.current = null;
+    // Clear the scene immediately so the old pitch doesn't keep animating
+    // while the new fetch is in flight (matches backToLive's behaviour).
+    setPitchData(null);
+    setBattedBallData(null);
+    setPitchOutcome(null);
+    setWaitingForPitchData(false);
+    setError(null);
     fetchTrajectory(gamePk);
     fetchBattedBall(gamePk);
     setHudRefresh(prev => prev + 1);
@@ -1502,11 +1765,11 @@ function AppContent() {
     outcomeShownPlayId.current = null;
     setAtBatData(null);
     setAtBatError(null);
-    // Keep the at-bat window expanded (and its view) across the new game's
-    // first fetch: it collapses only when the new game's first play starts
-    // animating and reopens in the same view once it finishes.
     // Selecting a different game resumes the app-level pollers; the new
-    // game's first payload flips this back if it is already final.
+    // game's first payload flips this back if it is already final. When the
+    // new game's first play animates, applyTrajectoryPayload switches the
+    // panel to the pitch view; the Defense tab only auto-reopens on an actual
+    // fielding change.
     setGameTerminal(false);
     refreshAll(gamePk);
   };
@@ -1516,6 +1779,33 @@ function AppContent() {
   // path used by switching games, exiting replay, and exiting comparison).
   const jumpToNewest = () => {
     refreshAll(activeGamePk);
+  };
+
+  // Fetch every pitch thrown to the current batter across the whole game,
+  // grouped by pitcher, for the at-bat tab's game view. Lightweight payload:
+  // location/type/outcome only (the game view disables click-to-replay).
+  const fetchBatterGame = async (atBatIndex) => {
+    try {
+      setBatterGameLoading(true);
+      setBatterGameError(null);
+      // Clear the previous batter's dots when the at-bat rolls over, so the
+      // zone resets to "Loading…" instead of briefly showing the old batter.
+      if (batterGameData && batterGameData.at_bat_index !== atBatIndex) setBatterGameData(null);
+      const params = new URLSearchParams();
+      if (activeGamePk) params.set('game_pk', activeGamePk);
+      if (atBatIndex != null) params.set('at_bat_index', atBatIndex);
+      const qs = params.toString();
+      const response = await axios.get(`${API_BASE}/api/batter-pitches${qs ? `?${qs}` : ''}`);
+      // Drop stale responses (e.g. a batter change while an older fetch was
+      // still in flight) so the zone never shows the previous batter's pitches.
+      if (atBatIndex != null && response.data?.at_bat_index !== atBatIndex) return;
+      setBatterGameData(response.data);
+    } catch (err) {
+      console.error("Failed to fetch batter game pitches", err);
+      setBatterGameError(err.response?.data?.detail || "Failed to load the batter's game pitches.");
+    } finally {
+      setBatterGameLoading(false);
+    }
   };
 
   const fetchAtBat = async (atBatIndex) => {
@@ -1551,6 +1841,7 @@ function AppContent() {
     if (compareMode === 'active') exitComparison();
     if (compareMode === 'selecting') cancelCompareSelecting();
     if (!pitchData) return;
+    setDefenseOpen(false);
     // Freeze the panel's current dimensions so the switch back to the pitch
     // view eases from the at-bat content's size instead of snapping.
     const panel = pitchPanelRef.current;
@@ -1576,6 +1867,14 @@ function AppContent() {
       setAtBatSnapshotHeight(rect.height);
     }
     setAtBatOpen(true);
+    setDefenseOpen(false);
+    setPitchPanelOpen(true);
+  };
+
+  const selectDefenseView = () => {
+    if (!pitchData) return;
+    setAtBatOpen(false);
+    setDefenseOpen(true);
     setPitchPanelOpen(true);
   };
 
@@ -1728,14 +2027,16 @@ function AppContent() {
     replayRef.current = nextReplay;
     trajectoryQueueRef.current = [];
     queuedTrajectoryPlayIdsRef.current.clear();
+    fielderCamAvailable.current = false;
+    fielderCamArmedRef.current = false;
+    fielderCamFiredRef.current = false;
     setScorebugStateOverride(null);
     setReplay(nextReplay);
-    // Keep the at-bat window expanded and in its current view across the live
-    // re-fetch: it collapses only when the new live play starts animating
-    // (applyTrajectoryPayload) and reopens in the same view once it finishes.
     // Clear the replayed pitch immediately so the scene doesn't keep looping
     // it while the fresh live fetch is in flight, and reset the outcome state
-    // so the next live play reveals cleanly.
+    // so the next live play reveals cleanly. The fresh live play's animation
+    // (applyTrajectoryPayload) resolves the panel onto the pitch view; the
+    // Defense tab only auto-reopens on an actual fielding change.
     setPitchData(null);
     setBattedBallData(null);
     setPitchOutcome(null);
@@ -1744,6 +2045,112 @@ function AppContent() {
     outcomeShownPlayId.current = null;
     refreshAll(activeGamePk);
   };
+
+  // Build a human-readable play sequence from the batted-ball runner credits.
+  // Extracts the ordered chain of fielders who touched the ball (fielded,
+  // assisted, or recorded the putout) and formats it as:
+  //   "3B Austin Riley to 1B Matt Olson"
+  //   "Juan Soto grounds out, SS Bo Bichette to 1B Vladdy Jr."
+  //   "CF Mike Trout makes the catch"
+const playSequence = useMemo(() => {
+    const lines = [];
+
+    // ── Contact plays (batted ball): fielder chain from runner credits ──
+    const bb = battedBallData;
+    if (bb) {
+      const event = bb.event;
+      const isHit = ['Single', 'Double', 'Triple', 'Home Run'].includes(event);
+      // Only show the sequence for outs and defensive plays (home runs skip).
+      if (!isHit || event === 'Home Run') {
+        const batter = bb.batter || null;
+
+        // Collect all unique credit entries across all runners, preserving order.
+        const seen = new Set();
+        const chain = [];
+        for (const runner of bb.runners || []) {
+          for (const credit of runner.credits || []) {
+            const key = `${credit.position}-${credit.credit}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              chain.push(credit);
+            }
+          }
+        }
+
+        if (chain.length > 0) {
+          // For a caught fly ball.
+          if (bb.was_caught) {
+            const fielder = chain[0];
+            const name = fielder.player || '?';
+            const pos = fielder.position || '?';
+            lines.push(`${pos} ${name} makes the catch`);
+          } else {
+            // Build the "pos name" parts for each fielder in the chain.
+            const parts = [];
+            for (const credit of chain) {
+              const name = credit.player || '?';
+              const pos = credit.position || '?';
+              parts.push(`${pos} ${name}`);
+            }
+            const fielders = parts.join(' to ');
+
+            // Determine the play description prefix from the event.
+            let prefix = '';
+            if (event === 'Grounded Into DP') {
+              prefix = batter ? `${batter} grounds into double play, ` : 'Grounded into double play, ';
+            } else if (event === 'Double Play') {
+              prefix = batter ? `${batter} hit into double play, ` : 'Double play, ';
+            } else if (event === 'Forceout') {
+              prefix = batter ? `${batter} grounds into force out, ` : 'Force out, ';
+            } else if (event === 'Groundout') {
+              prefix = batter ? `${batter} grounds out, ` : 'Ground out, ';
+            } else if (event === 'Flyout') {
+              prefix = '';
+            } else if (event === 'Lineout') {
+              prefix = '';
+            } else if (event === 'Pop Out') {
+              prefix = '';
+            } else if (event === 'Sac Fly') {
+              prefix = batter ? `${batter} sacrifice fly, ` : 'Sacrifice fly, ';
+            } else if (event === 'Sac Bunt' || event === 'Bunt Groundout') {
+              prefix = batter ? `${batter} sacrifice bunt, ` : 'Sacrifice bunt, ';
+            } else if (batter) {
+              prefix = `${batter} out, `;
+            }
+
+            // Unassisted putout: the fielder does it alone.
+            if (parts.length === 1) {
+              lines.push(`${prefix}${parts[0]} records the out`);
+            } else {
+              lines.push(`${prefix}${fielders}`);
+            }
+          }
+        }
+      }
+    }
+
+    // ── Non-contact plays: stolen base / caught stealing / wild pitch etc. ──
+    // Always as a separate line — can stack with a batted ball line above.
+    const pd = pitchData;
+    if (pd) {
+      const ae = pd.action_event;
+      if (ae) {
+        const runner = pd.action_event_runner || pd.batter || '?';
+        if (ae === 'Stolen Base 2B') lines.push(`${runner} steals 2nd base`);
+        else if (ae === 'Stolen Base 3B') lines.push(`${runner} steals 3rd base`);
+        else if (ae === 'Stolen Base Home') lines.push(`${runner} steals home`);
+        else if (ae === 'Caught Stealing 2B') lines.push(`${runner} caught stealing 2nd base`);
+        else if (ae === 'Caught Stealing 3B') lines.push(`${runner} caught stealing 3rd base`);
+        else if (ae === 'Caught Stealing Home') lines.push(`${runner} caught stealing home`);
+        else if (ae === 'Wild Pitch') lines.push(`Wild pitch`);
+        else if (ae === 'Passed Ball') lines.push(`Passed ball`);
+        else if (ae === 'Pickoff Attempt 1B' || ae === 'Pickoff Attempt 2B' || ae === 'Pickoff Attempt 3B') lines.push(`Pickoff attempt`);
+        else if (ae === 'Balk') lines.push(`Balk`);
+      }
+    }
+
+    return lines.length > 0 ? lines : null;
+  }, [battedBallData, pitchData]);
 
   // Coarse play-outcome indicator shown where the old OUT banner was: BALL /
   // STRIKE for takes, HIT for a base hit, RUN when a run scores, and OUT (or
@@ -1811,9 +2218,40 @@ function AppContent() {
   // settled). Unlike handlePlayResult, which fires per result (including the
   // intermediate OUT of a double play), this fires exactly once per play and
   // is the signal that advances to the next queued play.
+  //
+  // For contact plays, the first completion arms a fielder-camera replay:
+  // the play loops, the camera follows the fielder, and only the second
+  // completion advances the queue.
   const handlePlayComplete = (source, details) => {
-    finishCurrentPlay();
     const isWatchdog = source === 'watchdog';
+    const isContactPlay = battedBallData && battedBallData.fielder;
+
+    // Mark the play as having fielding data so the replay button can appear.
+    if (isContactPlay) fielderCamAvailable.current = true;
+
+    // Gate: for contact plays (not watchdog), first completion arms the
+    // fielder-cam replay instead of advancing the queue. Only fires once
+    // per pitch; subsequent completions replay at the original angle.
+    // Skip the auto-replay when there are queued plays waiting, in comparison
+    // mode, or when this is a watchdog forced-completion.
+    const skipFielderCam = (
+      compareModeRef.current === 'active' ||
+      trajectoryQueueRef.current.length > 0 ||
+      !autoFielderCamRef.current ||
+      isWatchdog ||
+      fielderCamFiredRef.current
+    );
+    if (isContactPlay && !fielderCamArmedRef.current && !skipFielderCam) {
+      fielderCamArmedRef.current = true;
+      fielderCamFiredRef.current = true;
+      setFielderCamTrigger((prev) => prev + 1);
+      return; // Don't finish the play yet; the replay cycle keeps it alive.
+    }
+
+    // Second completion (or watchdog, or skipped): finish normally.
+    fielderCamArmedRef.current = false;
+    finishCurrentPlay();
+
     // A play can finish without ever showing an outcome: a watchdog completion
     // can fire before the batted-ball choreography emitted its OUT/SINGLE/etc.,
     // and a contacted pitch whose hit never arrived never emits one at all.
@@ -1902,6 +2340,20 @@ function AppContent() {
     fetchAtBat(pitchData?.at_bat_index ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [atBatOpen, pitchData?.at_bat_index, atBatOutcomeRefresh]);
+
+  // Load (and refresh) the whole-game pitch list while the game view is open:
+  // same triggers as the at-bat list (open, batter change, each pitch reveal).
+  useEffect(() => {
+    if (!atBatOpen || !batterGameOpen) return;
+    fetchBatterGame(atBatData?.at_bat_index ?? pitchData?.at_bat_index ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [atBatOpen, batterGameOpen, atBatData?.at_bat_index, atBatOutcomeRefresh]);
+
+  // The pitcher filter belongs to one batter: drop it when the game view rolls
+  // over to a new batter (or its data is cleared).
+  useEffect(() => {
+    setPitcherFilter(null);
+  }, [batterGameData?.batter_id]);
 
   // Release the frozen panel dimensions once the at-bat data arrives (the
   // loading state is done) or when switching back to the pitch view. The
@@ -2330,6 +2782,11 @@ function AppContent() {
           clears the outcome. ── */}
       <OutcomeBanner label={pitchOutcome} />
 
+      {/* ── PLAY SEQUENCE PANEL (players involved in the play, shown at the
+          bottom of the screen for outs and double plays). Same unfolding
+          animation as the outcome banner. ── */}
+      <PlaySequencePanel lines={playSequence} />
+
       {/* ── WAITING FOR PLAY TO RESOLVE BANNER (contact pitch whose Statcast
           fielding point hasn't arrived yet). Drops in and slides out via CSS
           keyframes; WaitingResolveBanner owns its exit animation. ── */}
@@ -2484,6 +2941,63 @@ function AppContent() {
               style={{ width: '100%', cursor: 'pointer', accentColor: '#ffd166' }}
             />
           </div>
+
+          {/* ── Auto Fielder Cam toggle: when ON the camera automatically
+              switches to a fielder's angle after the first play-through.
+              When OFF the replay button appears immediately instead. ── */}
+          <button
+            onClick={toggleAutoFielderCam}
+            title={autoFielderCam
+              ? 'Disable auto fielder camera; the replay button will appear immediately for manual use'
+              : 'Enable auto fielder camera; it switches automatically after the first animation'}
+            style={{
+              width: '100%',
+              marginTop: 8,
+              padding: '5px 8px',
+              background: autoFielderCam ? 'rgba(255,143,143,0.12)' : 'rgba(255,255,255,0.06)',
+              border: autoFielderCam ? '1px solid rgba(255,143,143,0.55)' : '1px solid rgba(255,255,255,0.25)',
+              color: autoFielderCam ? '#ff8f8f' : '#9aa3ad',
+              borderRadius: 4,
+              fontSize: 11,
+              fontFamily: 'monospace',
+              fontWeight: 'bold',
+              letterSpacing: '0.06em',
+              cursor: 'pointer',
+            }}
+          >
+            {autoFielderCam ? '🏃 Auto Fielder Cam: ON' : '🏃 Auto Fielder Cam: OFF'}
+          </button>
+
+          {/* ── Fielder Cam Replay button: shown for contact plays with
+              fielding data after the first animation completes (auto ON)
+              or immediately (auto OFF). Replays the play from the
+              fielder's over-the-shoulder angle. ── */}
+          {fielderCamAvailable.current && (
+            <button
+              onClick={() => {
+                fielderCamArmedRef.current = true;
+                fielderCamFiredRef.current = true;
+                setFielderCamTrigger((prev) => prev + 1);
+              }}
+              title="Replay the fielder camera view"
+              style={{
+                width: '100%',
+                marginTop: 8,
+                padding: '5px 8px',
+                background: 'rgba(255,143,143,0.12)',
+                border: '1px solid rgba(255,143,143,0.55)',
+                color: '#ff8f8f',
+                borderRadius: 4,
+                fontSize: 11,
+                fontFamily: 'monospace',
+                fontWeight: 'bold',
+                letterSpacing: '0.06em',
+                cursor: 'pointer',
+              }}
+            >
+              🏃 Fielder Cam Replay
+            </button>
+          )}
         </div>
 
         {/* ── DEBUG OVERLAYS DRAWER (collapsible) ── */}
@@ -2595,13 +3109,14 @@ function AppContent() {
       </div>
 
 
-      <Scene pitchData={pitchData} battedBall={battedBallData} snapTrigger={snapTrigger} onCrossings={setCrossings} onArrival={handlePitchArrival} onPlayResult={handlePlayResult} onComplete={handlePlayComplete} comparisonActive={compareMode === 'active'} comparisonPlays={comparisonPlays} replayKey={comparisonReplayKey} showColoredTails={showColoredTails} showBillowParticles={showBillowParticles} showComparisonRingLabels={showComparisonRingLabels} followEnabled={followBattedBall && compareMode !== 'active' && !replay.active} />
+      <Scene pitchData={pitchData} battedBall={battedBallData} snapTrigger={snapTrigger} onCrossings={setCrossings} onArrival={handlePitchArrival} onPlayResult={handlePlayResult} onComplete={handlePlayComplete} comparisonActive={compareMode === 'active'} comparisonPlays={comparisonPlays} replayKey={comparisonReplayKey} showColoredTails={showColoredTails} showBillowParticles={showBillowParticles} showComparisonRingLabels={showComparisonRingLabels} followEnabled={followBattedBall && compareMode !== 'active' && !replay.active} fielderCamTrigger={fielderCamTrigger} onFielderCamEnd={() => {}} defenseAlignment={defenseAlignment} />
       <Scorebug
         refreshKey={hudRefresh}
         outcomeRefresh={scorebugOutcomeRefresh}
         gamePk={activeGamePk}
         frozen={scoreboardFrozen}
         stateOverride={scorebugStateOverride}
+        onDefenseUpdate={setDefenseData}
       />
 
       {/* ── BOTTOM-LEFT: pitch metrics + movement hint ── */}
@@ -2696,8 +3211,9 @@ function AppContent() {
                 }}
               >
                 {[
-                  { label: 'Pitch', active: !atBatOpen, onClick: selectPitchView, title: 'Show pitch details' },
+                  { label: 'Pitch', active: !atBatOpen && !defenseOpen, onClick: selectPitchView, title: 'Show pitch details' },
                   { label: 'At-Bat', active: atBatOpen, onClick: selectAtBatView, title: 'Show every pitch in this at-bat' },
+                  { label: 'Defense', active: defenseOpen, onClick: selectDefenseView, title: 'Show defensive alignment' },
                 ].map((tab, index) => (
                   <button
                     key={tab.label}
@@ -2736,7 +3252,10 @@ function AppContent() {
                   at-bat body. The empty slot keeps Hide right-aligned in the
                   pitch view. */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                {atBatOpen && atBatData && (
+                {/* The compare flow operates on the current at-bat's replayable
+                    pitches, so its controls are hidden in the read-only game
+                    view (and entering that view drops any pending selection). */}
+                {atBatOpen && atBatData && !batterGameOpen && (
                   compareMode === 'active' ? (
                     <>
                       <button
@@ -2859,39 +3378,184 @@ function AppContent() {
                       >
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 11 }}>
                           <span style={{ opacity: 0.8 }}>{atBatData.batter ?? '—'}</span>
-                          <span style={{ opacity: 0.7 }}>{atBatData.pitches?.length ?? 0} pitches</span>
+                          {batterGameOpen ? (
+                            (() => {
+                              const total = revealedPitches(batterGameData?.pitches, pitchData, pitchOutcome).length;
+                              const shown = pitcherFilter == null
+                                ? total
+                                : revealedPitches(batterGameData?.pitches, pitchData, pitchOutcome)
+                                    .filter((p) => p.pitcher_id === pitcherFilter).length;
+                              return (
+                                <span style={{ opacity: 0.7 }}>
+                                  {shown} / {total} pitches
+                                </span>
+                              );
+                            })()
+                          ) : (
+                            <span style={{ opacity: 0.7 }}>{atBatData.pitches?.length ?? 0} pitches</span>
+                          )}
                         </div>
                         {atBatError && <div style={{ color: '#ffb066', fontSize: 10, marginBottom: 4 }}>{atBatError}</div>}
-                        <AtBatZone
-                          pitches={(atBatData.pitches ?? []).filter((p) => !(p.play_id === pitchData?.play_id && !pitchOutcome))}
-                          szTop={atBatData.strike_zone_top ?? pitchData?.strike_zone_top ?? 3.5}
-                          szBot={atBatData.strike_zone_bottom ?? pitchData?.strike_zone_bottom ?? 1.5}
-                          activePitchNumber={replay.active ? replay.pitchNumber : null}
-                          onSelect={compareMode === 'active' ? undefined : selectReplayPitch}
-                          selectionMode={compareMode === 'selecting'}
-                          selectedPlayIds={compareMode === 'selecting' ? new Set(compareSelectedIds) : null}
-                          onToggleSelect={toggleCompareSelection}
-                        />
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 10px', marginTop: 6, fontSize: 10, opacity: 0.85 }}>
-                          <span><span style={{ color: '#ff5f5f' }}>●</span> Strike</span>
-                          <span><span style={{ color: '#7ee0a0' }}>●</span> Ball</span>
-                          <span><span style={{ color: '#ffa64d' }}>●</span> Foul</span>
-                          <span><span style={{ color: '#4da6ff' }}>●</span> In play</span>
-                          <span><span style={{ color: '#c15cff' }}>●</span> In play · out</span>
-                        </div>
-                        {/* Selection feedback while picking pitches to compare;
-                            the Compare/Simulate/Cancel buttons themselves live
-                            in the header row above. */}
-                        {compareMode === 'selecting' && (
-                          <div style={{ marginTop: 6, fontSize: 10, color: '#9be7a0', opacity: 0.9 }}>
-                            Select pitches to compare{compareSelectedIds.length > 0 ? ` — ${compareSelectedIds.length} selected` : ''}.
-                          </div>
+                        {batterGameOpen ? (
+                          (() => {
+                            // Every pitch this batter has faced in the game
+                            // (minus the still-animating one), filtered by the
+                            // selected pitcher when a chip is active.
+                            const allGamePitches = revealedPitches(batterGameData?.pitches, pitchData, pitchOutcome);
+                            const shownGamePitches = pitcherFilter == null
+                              ? allGamePitches
+                              : allGamePitches.filter((p) => p.pitcher_id === pitcherFilter);
+                            return (
+                              <>
+                                {batterGameLoading && !batterGameData && <AtBatLoadingPlaceholder />}
+                                {batterGameError && !batterGameData && <div style={{ color: '#ff6b6b', padding: '8px 0' }}>{batterGameError}</div>}
+                                {batterGameData && (
+                                  <>
+                                    <AtBatZone
+                                      pitches={shownGamePitches}
+                                      szTop={batterGameData.strike_zone_top ?? atBatData.strike_zone_top ?? pitchData?.strike_zone_top ?? 3.5}
+                                      szBot={batterGameData.strike_zone_bottom ?? atBatData.strike_zone_bottom ?? pitchData?.strike_zone_bottom ?? 1.5}
+                                      showPitchType
+                                    />
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 10px', marginTop: 6, fontSize: 10, opacity: 0.85 }}>
+                                      <span><span style={{ color: '#ff5f5f' }}>●</span> Strike</span>
+                                      <span><span style={{ color: '#7ee0a0' }}>●</span> Ball</span>
+                                      <span><span style={{ color: '#ffa64d' }}>●</span> Foul</span>
+                                      <span><span style={{ color: '#4da6ff' }}>●</span> In play</span>
+                                      <span><span style={{ color: '#c15cff' }}>●</span> In play · out</span>
+                                    </div>
+                                    {/* Pitchers the batter has faced this game;
+                                        click one to filter the zone above. */}
+                                    <div style={{ marginTop: 8, borderTop: '1px solid rgba(255,255,255,0.12)', paddingTop: 6 }}>
+                                      <div style={{ fontSize: 10, opacity: 0.7, marginBottom: 4 }}>
+                                        Pitchers faced — click to filter
+                                      </div>
+                                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                                        <button
+                                          onClick={() => setPitcherFilter(null)}
+                                          title="Show every pitcher's pitches"
+                                          style={{
+                                            padding: '3px 8px',
+                                            background: pitcherFilter == null ? 'rgba(123,180,255,0.18)' : 'rgba(255,255,255,0.05)',
+                                            color: pitcherFilter == null ? '#9fd0ff' : '#c7d0da',
+                                            border: pitcherFilter == null ? '1px solid rgba(123,180,255,0.6)' : '1px solid rgba(255,255,255,0.2)',
+                                            borderRadius: 10,
+                                            fontSize: 10,
+                                            fontFamily: 'monospace',
+                                            cursor: 'pointer',
+                                          }}
+                                        >
+                                          All ({allGamePitches.length})
+                                        </button>
+                                        {(batterGameData.pitchers ?? []).map((p) => {
+                                          const active = pitcherFilter === p.pitcher_id;
+                                          return (
+                                            <button
+                                              key={p.pitcher_id ?? p.pitcher}
+                                              onClick={() => setPitcherFilter(active ? null : p.pitcher_id)}
+                                              title={`Show only ${p.pitcher}'s pitches`}
+                                              style={{
+                                                padding: '3px 8px',
+                                                background: active ? 'rgba(123,180,255,0.18)' : 'rgba(255,255,255,0.05)',
+                                                color: active ? '#9fd0ff' : '#c7d0da',
+                                                border: active ? '1px solid rgba(123,180,255,0.6)' : '1px solid rgba(255,255,255,0.2)',
+                                                borderRadius: 10,
+                                                fontSize: 10,
+                                                fontFamily: 'monospace',
+                                                cursor: 'pointer',
+                                              }}
+                                            >
+                                              {p.pitcher} ({p.pitches})
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  </>
+                                )}
+                              </>
+                            );
+                          })()
+                        ) : (
+                          <>
+                            <AtBatZone
+                              pitches={revealedPitches(atBatData.pitches, pitchData, pitchOutcome)}
+                              szTop={atBatData.strike_zone_top ?? pitchData?.strike_zone_top ?? 3.5}
+                              szBot={atBatData.strike_zone_bottom ?? pitchData?.strike_zone_bottom ?? 1.5}
+                              activePitchNumber={replay.active ? replay.pitchNumber : null}
+                              onSelect={compareMode === 'active' ? undefined : selectReplayPitch}
+                              selectionMode={compareMode === 'selecting'}
+                              selectedPlayIds={compareMode === 'selecting' ? new Set(compareSelectedIds) : null}
+                              onToggleSelect={toggleCompareSelection}
+                            />
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 10px', marginTop: 6, fontSize: 10, opacity: 0.85 }}>
+                              <span><span style={{ color: '#ff5f5f' }}>●</span> Strike</span>
+                              <span><span style={{ color: '#7ee0a0' }}>●</span> Ball</span>
+                              <span><span style={{ color: '#ffa64d' }}>●</span> Foul</span>
+                              <span><span style={{ color: '#4da6ff' }}>●</span> In play</span>
+                              <span><span style={{ color: '#c15cff' }}>●</span> In play · out</span>
+                            </div>
+                            {/* Selection feedback while picking pitches to compare;
+                                the Compare/Simulate/Cancel buttons themselves live
+                                in the header row above. */}
+                            {compareMode === 'selecting' && (
+                              <div style={{ marginTop: 6, fontSize: 10, color: '#9be7a0', opacity: 0.9 }}>
+                                Select pitches to compare{compareSelectedIds.length > 0 ? ` — ${compareSelectedIds.length} selected` : ''}.
+                              </div>
+                            )}
+                          </>
                         )}
                         <div style={{ marginTop: 6, fontSize: 10, opacity: 0.6 }}>
-                          {compareMode === 'selecting'
-                            ? 'Click pitches to select them for comparison.'
-                            : 'Click a pitch to replay it.'}
+                          {batterGameOpen
+                            ? 'Read-only view — click a pitcher above to filter the zone.'
+                            : compareMode === 'selecting'
+                              ? 'Click pitches to select them for comparison.'
+                              : 'Click a pitch to replay it.'}
                         </div>
+                        {/* Game scope toggle, under the at-bat panel: switches
+                            the zone between the current at-bat and every pitch
+                            the batter has faced this game. */}
+                        <button
+                          onClick={() => {
+                            // Entering the read-only game view has no way to
+                            // select or compare pitches, so drop any pending
+                            // comparison state first.
+                            if (!batterGameOpen) {
+                              if (compareMode === 'active') exitComparison();
+                              if (compareMode === 'selecting') cancelCompareSelecting();
+                            }
+                            setBatterGameOpen((v) => !v);
+                          }}
+                          title={batterGameOpen
+                            ? 'Show only the current at-bat'
+                            : 'Show every pitch this batter has faced in the game'}
+                          style={{
+                            width: '100%',
+                            marginTop: 8,
+                            padding: '4px 8px',
+                            background: batterGameOpen ? 'rgba(26,74,122,0.55)' : 'rgba(26,74,122,0.35)',
+                            color: '#9fd0ff',
+                            border: '1px solid rgba(74,158,255,0.55)',
+                            borderRadius: 4,
+                            fontSize: 11,
+                            fontFamily: 'monospace',
+                            fontWeight: 'bold',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {batterGameOpen ? '◀ At-bat' : '⚾ Game'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : defenseOpen ? (
+                  <div className="at-bat-fade-in" key="defense-view">
+                    {/* Defensive alignment diamond diagram */}
+                    {defenseAlignment ? (
+                      <DefenseDiagram alignment={defenseAlignment} formation={defenseFormation} />
+                    ) : (
+                      <div style={{ color: '#aab', padding: '12px 0', fontSize: 11 }}>
+                        Defensive alignment unavailable.
                       </div>
                     )}
                   </div>
