@@ -1,10 +1,13 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, Sky, Environment, Html } from '@react-three/drei';
+import { OrbitControls, Sky, Environment } from '@react-three/drei';
+import * as THREE from 'three';
 import { Spherical, Vector3 } from 'three';
 import { feetToM } from '../util/MathUtil';
 import { getBattedBallPosition, getChaserPosition, getPlayBallPosition, setFielderCamActive } from '../constants/playback';
 import { FIELD } from '../constants/field';
+import { getTuning } from '../constants/tuning';
+import { impactDistortion, SHOCK_SWEEP_FACTOR } from '../util/impactDistortion';
 import { Pitch } from './Pitch';
 import { Ballpark } from './Ballpark';
 import { Batter } from './Batter';
@@ -38,10 +41,6 @@ const useKeysPressed = () => {
 // of snapping back, and the camera is clamped to the ballpark (above the
 // grass, inside the outfield grass circle).
 const GRASS_RADIUS = feetToM(400); // field extent, matches Ballpark.jsx
-const MIN_CAM_HEIGHT = 1; // m, keep the camera above the grass
-const MOVE_SPEED = 10; // m/s
-const BOOST_MULT = 3;
-const ROTATION_SPEED = 0.0025; // rad of look per pixel of mouse movement
 
 // Camera view persistence: the camera position + orbit target fully define
 // the view (OrbitControls keeps the camera aimed at its target), so saving
@@ -154,8 +153,9 @@ const WASDMovement = ({ controlsRef }) => {
                 const dist = offset.length();
                 if (dist > 1e-6) {
                     spherical.setFromVector3(offset);
-                    spherical.theta -= lookDelta.current.x * ROTATION_SPEED;
-                    spherical.phi += lookDelta.current.y * ROTATION_SPEED;
+                    const cameraTuning = getTuning().camera;
+                    spherical.theta -= lookDelta.current.x * cameraTuning.rotationSpeed;
+                    spherical.phi += lookDelta.current.y * cameraTuning.rotationSpeed;
                     spherical.makeSafe();
                     offset.setFromSpherical(spherical);
                     target.copy(camera.position).add(offset);
@@ -166,7 +166,8 @@ const WASDMovement = ({ controlsRef }) => {
             lookDelta.current.y = 0;
         }
 
-        const speed = MOVE_SPEED * speedScaleRef.current * (keys.has('shift') ? BOOST_MULT : 1) * Math.min(delta, 0.1);
+        const cameraTuning = getTuning().camera;
+        const speed = cameraTuning.moveSpeed * speedScaleRef.current * (keys.has('shift') ? cameraTuning.boostMultiplier : 1) * Math.min(delta, 0.1);
         const prev = camera.position.clone();
 
         if (keys.has('w')) camera.translateZ(-speed);
@@ -178,7 +179,7 @@ const WASDMovement = ({ controlsRef }) => {
 
         // Clamp to the ballpark: stay above the grass and inside the field.
         const clampPos = (pos) => {
-            pos.y = Math.max(MIN_CAM_HEIGHT, pos.y);
+            pos.y = Math.max(cameraTuning.minHeight, pos.y);
             const horiz = Math.hypot(pos.x, pos.z);
             if (horiz > GRASS_RADIUS) {
                 const scale = GRASS_RADIUS / horiz;
@@ -260,11 +261,6 @@ const CameraController = ({ snapTrigger, controlsRef }) => {
     return null;
 };
 
-// How long the follow camera glides back to the pre-play view after a batted
-// ball lands. An ease-out curve (not an instant snap) makes the restore read
-// as a smooth broadcast-style move instead of a jarring cut.
-const FOLLOW_RESTORE_DURATION = 0.6;
-
 // While enabled, follows the first batted-ball flight of each live pitch by
 // keeping the camera aimed at the ball, then eases back to the pre-play view
 // once that first animation finishes. Reads the ball position / completion
@@ -336,10 +332,16 @@ const FollowBattedBall = ({ controlsRef, pitchData, enabled, completeSignalRef, 
         }
 
         if (!enabled) {
-            // Always snap back to the pre-play angle (even if already restored)
-            // and enter 'restored' mode so the follower stays dormant when
-            // re-enabled — e.g. after a fielder-cam replay ends mid-play.
-            snapRestore();
+            // Reclaim the camera only if we were actively following or easing
+            // back — then go dormant and NEVER touch the camera again while
+            // disabled. (Previously this snapped every frame, which fought the
+            // fielder cam for control: whenever the chaser position was briefly
+            // unpublished between cycles, the camera flashed back to the
+            // pre-play angle mid-pitch.) On re-enable the follower re-arms from
+            // the current view on the next batted ball.
+            if (modeRef.current === 'following' || modeRef.current === 'restoring') {
+                snapRestore();
+            }
             followActiveRef.current = false;
             modeRef.current = 'restored';
             return;
@@ -352,7 +354,8 @@ const FollowBattedBall = ({ controlsRef, pitchData, enabled, completeSignalRef, 
                 return;
             }
             restoreElapsedRef.current += Math.min(delta, 0.1);
-            const t = Math.min(restoreElapsedRef.current / FOLLOW_RESTORE_DURATION, 1);
+            const restoreDuration = Math.max(0.01, getTuning().camera.followRestoreDuration);
+            const t = Math.min(restoreElapsedRef.current / restoreDuration, 1);
             // Ease-out cubic: fast initial recovery that settles softly.
             const ease = 1 - Math.pow(1 - t, 3);
             camera.position.lerpVectors(restoreStartRef.current.position, originalPositionRef.current, ease);
@@ -420,15 +423,9 @@ const FollowBattedBall = ({ controlsRef, pitchData, enabled, completeSignalRef, 
     return null;
 };
 
-// How long the fielder camera eases back to the pre-play view after the replay
-// finishes (same ease-out curve as the follow-cam restore).
-const FIELDER_CAM_RESTORE_DURATION = 0.6;
-// Height of the camera above the fielder's feet (head height).
-const FIELDER_CAM_HEAD_Y = 1.8;
-// Height of the label above the fielder's head.
-const FIELDER_LABEL_OFFSET_Y = 2.8;
 // Maps Statcast position codes to human-readable names.
-const POSITION_NAMES = {
+// Maps Statcast position codes to human-readable names.
+export const POSITION_NAMES = {
   P: 'Pitcher', C: 'Catcher', '1B': 'First Baseman', '2B': 'Second Baseman',
   '3B': 'Third Baseman', SS: 'Shortstop', LF: 'Left Fielder', CF: 'Center Fielder',
   RF: 'Right Fielder',
@@ -442,10 +439,8 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
     const camera = useThree((s) => s.camera);
     // idle -> waiting (for next cycle) -> following -> restoring -> idle
     const modeRef = useRef('idle');
-    // Currently visible mode (reactively updated for the Html label).
+    // Currently visible mode (reactively updated for the label gating).
     const [visibleMode, setVisibleMode] = useState('idle');
-    // Position of the fielder label overlay, updated each frame while following.
-    const [labelPos, setLabelPos] = useState(null);
     const originalPositionRef = useRef(null);
     const originalTargetRef = useRef(null);
     const restoreStartRef = useRef(null);
@@ -501,10 +496,9 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
             const home = fielderPosition ? FIELD.DEFENSE[fielderPosition] : null;
             let snapped = false;
             if (chaser && chaser.playId === playId) {
-                camPos.set(chaser.x, chaser.y + FIELDER_CAM_HEAD_Y, chaser.z);
-                if (camPos.y < 1) camPos.y = 1;
+                camPos.set(chaser.x, chaser.y + getTuning().camera.fielderHeadHeight, chaser.z);
+                if (camPos.y < getTuning().camera.minHeight) camPos.y = getTuning().camera.minHeight;
                 camera.position.copy(camPos);
-                setLabelPos({ x: chaser.x, y: chaser.y + FIELDER_LABEL_OFFSET_Y, z: chaser.z });
                 if (ball && ball.playId === playId && controls) {
                     controls.target.set(ball.x, ball.y, ball.z);
                     camera.lookAt(ball.x, ball.y, ball.z);
@@ -514,10 +508,9 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
             } else if (home) {
                 // No live chaser: snap to the defensive spot (will update once
                 // the batted ball launches and the chaser starts moving).
-                camPos.set(home.x, FIELDER_CAM_HEAD_Y, home.z);
-                if (camPos.y < 1) camPos.y = 1;
+                camPos.set(home.x, getTuning().camera.fielderHeadHeight, home.z);
+                if (camPos.y < getTuning().camera.minHeight) camPos.y = getTuning().camera.minHeight;
                 camera.position.copy(camPos);
-                setLabelPos({ x: home.x, y: FIELDER_LABEL_OFFSET_Y, z: home.z });
                 if (controls) {
                     // Pitcher: look at the plate / strike zone.
                     // Other fielders: look toward the pitcher on the mound.
@@ -577,7 +570,6 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
             snapRestore();
             modeRef.current = 'idle';
             setVisibleMode('idle');
-            setLabelPos(null);
             setFielderCamActive(false);
             if (onEnd) onEnd();
             return;
@@ -600,10 +592,9 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
             // launches). Before then (during the pitcher's windup) snap to
             // the fielder's defensive spot so the view never jumps.
             if (chaser && chaser.playId === playId) {
-                camPos.set(chaser.x, chaser.y + FIELDER_CAM_HEAD_Y, chaser.z);
-                if (camPos.y < 1) camPos.y = 1;
+                camPos.set(chaser.x, chaser.y + getTuning().camera.fielderHeadHeight, chaser.z);
+                if (camPos.y < getTuning().camera.minHeight) camPos.y = getTuning().camera.minHeight;
                 camera.position.copy(camPos);
-                setLabelPos({ x: chaser.x, y: chaser.y + FIELDER_LABEL_OFFSET_Y, z: chaser.z });
 
                 // Track the ball through the entire play (airborne flight,
                 // throws to bases, carries). Falls back to the batted-ball
@@ -631,14 +622,15 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
                     setVisibleMode('following');
                     lastCompleteSignal.current = completeSignalRef.current;
                 }
-            } else if (home && modeRef.current === 'waiting') {
-                // Windup: no chaser position yet. Snap to the fielder's
-                // defensive spot so the view starts from their head during
-                // the pitcher's windup and pitch flight.
-                camPos.set(home.x, FIELDER_CAM_HEAD_Y, home.z);
-                if (camPos.y < 1) camPos.y = 1;
+            } else if (home) {
+                // No chaser position yet (windup, or the brief gap while the
+                // fielders are reset to their defensive spots between cycles
+                // of the looped play): keep the camera glued to the fielder's
+                // defensive spot so the view never jumps — the chaser group
+                // itself is reset there, so this stays continuous.
+                camPos.set(home.x, getTuning().camera.fielderHeadHeight, home.z);
+                if (camPos.y < getTuning().camera.minHeight) camPos.y = getTuning().camera.minHeight;
                 camera.position.copy(camPos);
-                setLabelPos({ x: home.x, y: FIELDER_LABEL_OFFSET_Y, z: home.z });
                 // Pitcher: look at the plate / strike zone.
                 // Other fielders: look toward the pitcher on the mound.
                 const look = fielderPosition === 'P'
@@ -660,11 +652,9 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
                     restoreElapsedRef.current = 0;
                     modeRef.current = 'restoring';
                     setVisibleMode('restoring');
-                    setLabelPos(null);
                 } else {
                     modeRef.current = 'idle';
                     setVisibleMode('idle');
-                    setLabelPos(null);
                     setFielderCamActive(false);
                     if (onEnd) onEnd();
                 }
@@ -676,13 +666,13 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
             if (!controls || !restoreStartRef.current || !originalPositionRef.current || !originalTargetRef.current) {
                 modeRef.current = 'idle';
                 setVisibleMode('idle');
-                setLabelPos(null);
                 setFielderCamActive(false);
                 if (onEnd) onEnd();
                 return;
             }
             restoreElapsedRef.current += Math.min(delta, 0.1);
-            const t = Math.min(restoreElapsedRef.current / FIELDER_CAM_RESTORE_DURATION, 1);
+            const restoreDuration = Math.max(0.01, getTuning().camera.fielderRestoreDuration);
+            const t = Math.min(restoreElapsedRef.current / restoreDuration, 1);
             const ease = 1 - Math.pow(1 - t, 3);
             camera.position.lerpVectors(restoreStartRef.current.position, originalPositionRef.current, ease);
             controls.target.lerpVectors(restoreStartRef.current.target, originalTargetRef.current, ease);
@@ -693,45 +683,215 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
                 snapRestore();
                 modeRef.current = 'idle';
                 setVisibleMode('idle');
-                setLabelPos(null);
                 setFielderCamActive(false);
                 if (onEnd) onEnd();
             }
         }
     });
 
-    // Show the fielder's position + name as a small overlay label while the
-    // camera is active ('waiting' or 'following'). Positioned above the
-    // chaser's head and updated every frame.
-    const showLabel = (visibleMode === 'waiting' || visibleMode === 'following') && fielderPosition && labelPos;
-    const positionName = POSITION_NAMES[fielderPosition] || fielderPosition;
-
-    if (!showLabel) return null;
-
-    return (
-        <Html position={[labelPos.x, labelPos.y, labelPos.z]} center style={{
-            pointerEvents: 'none',
-            whiteSpace: 'nowrap',
-        }}>
-            <div style={{
-                background: 'rgba(0,0,0,0.75)',
-                color: '#ffd166',
-                padding: '3px 10px',
-                borderRadius: 5,
-                fontSize: 12,
-                fontFamily: 'monospace',
-                fontWeight: 'bold',
-                letterSpacing: '0.05em',
-                textShadow: '0 0 6px rgba(0,0,0,0.8)',
-                border: '1px solid rgba(255,209,102,0.35)',
-            }}>
-                {fielderPosition} · {positionName}
-            </div>
-        </Html>
-    );
+    // The fielder's position label is now rendered by the app in the top-left
+    // corner of the screen (see Scene's onFielderCamActiveChange + App.jsx),
+    // not projected above the chaser's head.
+    return null;
 };
 
-export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, crossingPlane, onCrossings, onArrival, onPlayResult, onComplete, comparisonActive = false, comparisonPlays = [], replayKey = 0, showColoredTails = true, showBillowParticles = true, showComparisonRingLabels = true, followEnabled = true, fielderCamTrigger = 0, onFielderCamEnd = null, defenseAlignment = null }) => {
+// Screen-space shockwave distortion for the 100+ mph impact ripple. While
+// Pitch's ripple is running (see util/impactDistortion.js), the scene is
+// re-rendered into a render target and drawn back as a full-screen quad whose
+// shader warps the image radially around the impact point: a sharp expanding
+// shock front with a short damped wake trailing behind it like a supersonic
+// N-wave, plus slight chromatic aberration — so the scenery behind the crack
+// visibly bends. The wave is deliberately transparent: it displaces and
+// refracts the image but adds no light of its own (no white rim, no glint),
+// so it reads as a pressure front, not a pond ripple or lens flare. A brief,
+// strictly-localized light bloom at the impact point (tight radial glow +
+// faint cross flare, decaying within ~0.15 s) gives the crack its kick. The shock front starts at the projected impact ring and
+// eases outward until it is fully outside the frame, so the crack sweeps the
+// whole screen. The displacement is strictly localized to the shock front
+// and its wake, and the bloom is centered on the impact point: everywhere
+// else the image passes through pixel-identical (no whole-frame zoom or
+// tint), so the background keeps its exact colors during the impact.
+// Renders via a positive useFrame priority, which hands the render loop to
+// this component (R3F skips its own draw), so it renders the scene itself
+// every frame: two passes only while the shock is active, one ordinary pass
+// otherwise.
+
+// Farthest screen corner from the frame center, in aspect-corrected uv units
+// (half-diagonal ≈ 1.02 at 16:9, ≈ 1.85 at 32:9). The shock expands to past
+// this so it always exits the frame, from any camera angle or zoom.
+const OFF_SCREEN_RADIUS = 2.2;
+const IMPACT_DISTORT_VERTEX = `
+varying vec2 vUv;
+void main() {
+    vUv = uv;
+    gl_Position = vec4(position.xy, 0.0, 1.0);
+}
+`;
+const IMPACT_DISTORT_FRAGMENT = `
+uniform sampler2D tScene;
+uniform vec2 uCenter;
+uniform float uTime;
+uniform float uRadius;
+uniform float uStrength;
+uniform float uAspect;
+varying vec2 vUv;
+void main() {
+    // Aspect-corrected vector from the impact center.
+    vec2 delta = vUv - uCenter;
+    delta.x *= uAspect;
+    float dist = length(delta);
+    vec2 dir = dist > 0.0001 ? delta / dist : vec2(0.0);
+
+    // Hard-edged expanding shock front — a compressed-air N-wave, not a pond
+    // ripple: a thin leading edge (steep Gaussian), a sharp inward rarefaction
+    // notch right behind it, and a short damped wake. All localized within a
+    // few percent of the radius so the front reads as a crack line.
+    float d = dist - uRadius;
+    float front = exp(-pow(d * 95.0, 2.0));
+    float notch = -0.55 * exp(-pow((d + 0.008) * 82.0, 2.0));
+    float wake = sin(d * 300.0 - uTime * 90.0) * 0.25
+        * exp(-pow((d + 0.026) * 45.0, 2.0));
+    float warp = (front + notch + wake) * uStrength;
+
+    // Displace the sample radially; chromatic aberration splits the front
+    // into red-out / blue-in edges, selling the distortion. Deliberately no
+    // whole-frame zoom or tint: the background must stay pixel-for-pixel
+    // identical anywhere the shock isn't crossing.
+    vec2 offset = dir * warp * vec2(1.0 / uAspect, 1.0);
+    float ca = front * uStrength * 1.1;
+    vec2 caOff = dir * ca * vec2(1.0 / uAspect, 1.0);
+    float r = texture2D(tScene, vUv + offset + caOff).r;
+    float g = texture2D(tScene, vUv + offset).g;
+    float b = texture2D(tScene, vUv + offset - caOff).b;
+
+    // Brief localized light bloom at the impact point — the crack's kick.
+    // A tight radial glow with a faint cross flare (lens-flare streak),
+    // decaying to near-zero within ~0.2 s. Purely additive and strictly
+    // centered on the impact, so the background stays untouched everywhere
+    // else (no whole-frame zoom or tint). No white glint on the front
+    // itself: the shockwave is a pressure wave, not light — it stays
+    // transparent and only bends the scenery as it sweeps.
+    float flash = exp(-uTime * 18.0) * uStrength * 10.0;
+    float glow = exp(-pow(dist * 10.0, 2.0));
+    // Short cross streaks so the whole flare stays localized near the impact
+    // point (within ~15% of the frame around it), not a screen-wide sweep.
+    float streakX = exp(-pow(delta.y * 26.0, 2.0)) * exp(-pow(delta.x * 6.0, 2.0));
+    float streakY = exp(-pow(delta.x * 26.0, 2.0)) * exp(-pow(delta.y * 6.0, 2.0));
+    vec3 bloom = vec3(1.0, 0.88, 0.62) * flash * (glow * 0.7 + (streakX + streakY) * 0.25);
+
+    // The scene renders sRGB-encoded values into the target and the GPU
+    // decodes them to linear on sample (SRGB8_ALPHA8 internal format), so the
+    // passthrough must re-encode for the screen — otherwise the whole frame
+    // renders gamma-dark while the shock is active. linearToOutputTexel is
+    // provided by three's ShaderMaterial prefix.
+    gl_FragColor = linearToOutputTexel(vec4(r + bloom.r, g + bloom.g, b + bloom.b, 1.0));
+}
+`;
+
+const ImpactDistortion = () => {
+    const { gl, scene, camera, size } = useThree();
+    const rtRef = useRef();
+    const quadSceneRef = useRef();
+    const quadCamRef = useRef();
+    const materialRef = useRef();
+    const quadGeomRef = useRef();
+    // Scratch vectors for projecting the shock center/radius (no per-frame
+    // allocations).
+    const scratchV = useMemo(() => new THREE.Vector3(), []);
+    const scratchV2 = useMemo(() => new THREE.Vector3(), []);
+    const scratchRight = useMemo(() => new THREE.Vector3(), []);
+    const bufferSize = useMemo(() => new THREE.Vector2(), []);
+
+    // Build the render target + full-screen quad once.
+    if (!rtRef.current) {
+        const rt = new THREE.WebGLRenderTarget(1, 1);
+        // The scene is rendered into the target in sRGB (the renderer's
+        // output space), so sampling it and writing straight to the screen
+        // reproduces the image exactly.
+        rt.texture.colorSpace = THREE.SRGBColorSpace;
+        rtRef.current = rt;
+        const material = new THREE.ShaderMaterial({
+            vertexShader: IMPACT_DISTORT_VERTEX,
+            fragmentShader: IMPACT_DISTORT_FRAGMENT,
+            uniforms: {
+                tScene: { value: rt.texture },
+                uCenter: { value: new THREE.Vector2(0.5, 0.5) },
+                uTime: { value: 0 },
+                uRadius: { value: 0.05 },
+                uStrength: { value: 0 },
+                uAspect: { value: 1 },
+            },
+            depthTest: false,
+            depthWrite: false,
+        });
+        materialRef.current = material;
+        const quadGeom = new THREE.PlaneGeometry(2, 2);
+        quadGeomRef.current = quadGeom;
+        const quad = new THREE.Mesh(quadGeom, material);
+        quad.frustumCulled = false;
+        const quadScene = new THREE.Scene();
+        quadScene.add(quad);
+        quadSceneRef.current = quadScene;
+        quadCamRef.current = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    }
+
+    // Keep the render target matched to the drawing buffer (canvas size × DPR).
+    useEffect(() => {
+        gl.getDrawingBufferSize(bufferSize);
+        rtRef.current.setSize(bufferSize.x, bufferSize.y);
+    }, [gl, bufferSize, size.width, size.height]);
+
+    // Free GPU resources on unmount.
+    useEffect(() => () => {
+        if (rtRef.current) rtRef.current.dispose();
+        if (materialRef.current) materialRef.current.dispose();
+        if (quadGeomRef.current) quadGeomRef.current.dispose();
+    }, []);
+
+    useFrame(() => {
+        const mat = materialRef.current;
+        if (!impactDistortion.active) {
+            gl.render(scene, camera);
+            return;
+        }
+        // Project the impact center and the shock radius into screen uv.
+        scratchV.copy(impactDistortion.pos).project(camera);
+        const cx = scratchV.x * 0.5 + 0.5;
+        const cy = scratchV.y * 0.5 + 0.5;
+        scratchRight.setFromMatrixColumn(camera.matrixWorld, 0);
+        scratchV2.copy(impactDistortion.pos)
+            .addScaledVector(scratchRight, impactDistortion.radius)
+            .project(camera);
+        const radiusUv = Math.max(0.0005, Math.abs(scratchV2.x - scratchV.x) * 0.5);
+        const aspect = size.width / Math.max(1, size.height);
+        mat.uniforms.uCenter.value.set(cx, cy);
+        // Grow the shock from the projected impact ring to beyond the farthest
+        // screen corner at SHOCK_SWEEP_FACTOR times the ring's speed (the
+        // shock reaches off-screen in SHOCK_SWEEP_FACTOR × the ripple life),
+        // on the same ease-out curve as the visible ring, so the crack rolls
+        // across the whole frame and exits it instead of flashing past in a
+        // blur.
+        const shockP = Math.min(impactDistortion.time / Math.max(0.001, impactDistortion.life * SHOCK_SWEEP_FACTOR), 1);
+        const shockEase = 1 - Math.pow(1 - shockP, 3);
+        mat.uniforms.uRadius.value = THREE.MathUtils.lerp(radiusUv * aspect, OFF_SCREEN_RADIUS, shockEase);
+        mat.uniforms.uTime.value = impactDistortion.time;
+        // Strength decays 1.3× faster to match the 1.3× faster sweep, so the
+        // front looks identical at every radius as it crosses the frame — it
+        // just gets there sooner. Peak is tuned for the thin front (narrow
+        // band ⇒ punchier per-pixel displacement).
+        mat.uniforms.uStrength.value = 0.028 * Math.exp(-impactDistortion.time * 0.3125 * 1.3);
+        mat.uniforms.uAspect.value = aspect;
+        // Two passes: scene -> render target, then distorted quad -> screen.
+        gl.setRenderTarget(rtRef.current);
+        gl.render(scene, camera);
+        gl.setRenderTarget(null);
+        gl.render(quadSceneRef.current, quadCamRef.current);
+    }, 1);
+
+    return null;
+};
+
+export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, crossingPlane, onCrossings, onArrival, onPlayResult, onComplete, comparisonActive = false, comparisonPlays = [], replayKey = 0, showColoredTails = true, showBillowParticles = true, impactEffect = 'beams', showComparisonRingLabels = true, followEnabled = true, fielderCamTrigger = 0, onFielderCamEnd = null, onFielderCamActiveChange = null, defenseAlignment = null }) => {
     const controlsRef = useRef();
     // True while the follow camera is actively tracking a batted ball; camera
     // persistence skips saving so a transient follow angle never survives a
@@ -755,7 +915,8 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
     const setFielderCamActiveBoth = useCallback((v) => {
         fielderCamActiveRef.current = v;
         setFielderCamActive(v);
-    }, []);
+        if (onFielderCamActiveChange) onFielderCamActiveChange(v);
+    }, [onFielderCamActiveChange]);
     const handleBattedComplete = useCallback((source, details) => {
         completeSignalRef.current += 1;
         if (onComplete) onComplete(source, details);
@@ -791,6 +952,11 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
 
             {/* WASD free movement across the diamond (Shift to sprint) */}
             <WASDMovement controlsRef={controlsRef} />
+
+            {/* Screen-space shockwave distortion for the 100+ mph impact
+                ripple: re-renders the scene through a warp quad while the
+                shock is active (see ImpactDistortion above). */}
+            <ImpactDistortion />
             
             {/* Lighting */}
             <ambientLight intensity={0.5} />
@@ -818,7 +984,7 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
                         <Pitcher key={`compare-pitcher-${replayKey}-${key}`} pitchData={pitch} overlay />
                     ))}
                     {comparisonPlays.map((play, i) => (
-                        <Pitch key={`compare-pitch-${replayKey}-${i}`} pitchData={play.pitch} overlay showRingLabel={showComparisonRingLabels} showColoredTail={showColoredTails} showBillows={showBillowParticles} />
+                        <Pitch key={`compare-pitch-${replayKey}-${i}`} pitchData={play.pitch} overlay showRingLabel={showComparisonRingLabels} showColoredTail={showColoredTails} showBillows={showBillowParticles} impactEffect={impactEffect} />
                     ))}
                     {comparisonPlays
                         .filter((play) => play.pitch?.is_contact === true)
@@ -833,7 +999,7 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
                 </>
             ) : (
                 <>
-                    <Pitch pitchData={pitchData} defaultPitchData={defaultPitchData} crossingPlane={crossingPlane} onCrossings={onCrossings} onArrival={onArrival} showColoredTail={showColoredTails} showBillows={showBillowParticles} />
+                    <Pitch pitchData={pitchData} defaultPitchData={defaultPitchData} crossingPlane={crossingPlane} onCrossings={onCrossings} onArrival={onArrival} showColoredTail={showColoredTails} showBillows={showBillowParticles} impactEffect={impactEffect} />
 
                     {/* Batter at the plate, swinging with the live at-bat data */}
                     <Batter pitchData={pitchData} />
@@ -877,9 +1043,10 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
                 fielderCamTrigger={fielderCamTrigger}
                 onEnd={handleFielderCamEnd}
                 onActiveChange={setFielderCamActiveBoth}
-                fielderPosition={battedBall?.fielder ?? null}
-                prePlayPoseRef={prePlayPoseRef}
+                fielderPosition={battedBall?.fielder ?? null}                prePlayPoseRef={prePlayPoseRef}
             />
+
         </Canvas>
+
     );
 };

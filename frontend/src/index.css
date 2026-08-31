@@ -78,6 +78,19 @@ body {
   animation: at-bat-skeleton-pulse 2s ease-in-out infinite;
 }
 
+/* Fielder name swap in the defense diagram when a substitution happens
+   (App.jsx DefenseDiagram). */
+@keyframes defense-name-in {
+  0% {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* Fade-in for at-bat content when it first appears after loading. */
 @keyframes at-bat-fade-in {
   0% { opacity: 0; }
@@ -141,4 +154,254 @@ code {
   line-height: 135%;
   padding: 4px 8px;
   background: var(--code-bg);
+}
+
+/* Runtime tuning controls stay above the canvas, HUD, popups, and banners. */
+.debug-drawer {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 10000;
+  width: min(360px, calc(100vw - 24px));
+  color: #e8edf2;
+  font-family: var(--mono);
+  text-align: left;
+  pointer-events: auto;
+}
+
+.debug-drawer-panel {
+  width: 100%;
+  max-height: min(88svh, 760px);
+  overflow: hidden;
+  box-sizing: border-box;
+  background: rgba(8, 12, 17, 0.97);
+  border: 1px solid rgba(255, 209, 102, 0.55);
+  border-radius: 8px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(12px);
+}
+
+.debug-drawer-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 5px;
+  background: rgba(27, 34, 42, 0.96);
+  color: #ffd166;
+  font: bold 20px/24px var(--mono);
+  cursor: pointer;
+}
+
+.debug-drawer-toggle:hover,
+.debug-drawer-toggle:focus-visible {
+  border-color: #ffd166;
+  background: rgba(58, 53, 35, 0.98);
+}
+
+.debug-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 36px;
+  min-height: 48px;
+  box-sizing: border-box;
+  padding: 10px 46px 9px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.debug-drawer-header strong {
+  display: block;
+  color: #ffd166;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
+.debug-drawer-header span {
+  display: block;
+  margin-top: 2px;
+  color: #8d99a6;
+  font-size: 10px;
+}
+
+.debug-drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.debug-save-button,
+.debug-export-button,
+.debug-reset-button {
+  width: 27px;
+  height: 27px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #cbd5df;
+  font: bold 17px/22px var(--mono);
+  cursor: pointer;
+}
+
+.debug-save-button,
+.debug-export-button {
+  padding: 4px 7px;
+  border: 1px solid rgba(126,224,160,0.45);
+  border-radius: 4px;
+  background: rgba(126,224,160,0.1);
+  color: #7ee0a0;
+  font: 10px monospace;
+  cursor: pointer;
+}
+
+.debug-save-button:hover,
+.debug-save-button:focus-visible,
+.debug-export-button:hover,
+.debug-export-button:focus-visible,
+.debug-reset-button:hover,
+.debug-reset-button:focus-visible {
+  color: #ffd166;
+  border-color: rgba(255, 209, 102, 0.7);
+}
+
+.debug-drawer-scroll {
+  max-height: calc(min(88svh, 760px) - 48px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: #596572 rgba(255, 255, 255, 0.05);
+}
+
+/* Finished-games strip: modern rounded scrollbar, transparent track. */
+.finished-games-scroll {
+  scrollbar-color: #596572 transparent;
+}
+.finished-games-scroll::-webkit-scrollbar {
+  height: 8px;
+}
+.finished-games-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.finished-games-scroll::-webkit-scrollbar-thumb {
+  background: #596572;
+  border-radius: 9999px;
+}
+.finished-games-scroll::-webkit-scrollbar-thumb:hover {
+  background: #7a8694;
+}
+
+/* Shared modern scrollbar: grey rounded thumb on a transparent track, used by
+   the live-games drawer, game log, box score, and the finished-games strip. */
+.app-scroll {
+  scrollbar-color: #596572 transparent;
+}
+.app-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.app-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.app-scroll::-webkit-scrollbar-thumb {
+  background: #596572;
+  border-radius: 9999px;
+}
+.app-scroll::-webkit-scrollbar-thumb:hover {
+  background: #7a8694;
+}
+
+.debug-slider-group + .debug-slider-group {
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.debug-slider-group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 32px;
+  padding: 7px 12px;
+  border: 0;
+  background: rgba(255, 255, 255, 0.035);
+  color: #dce4eb;
+  font: bold 11px/16px var(--mono);
+  text-align: left;
+  cursor: pointer;
+}
+
+.debug-slider-group-toggle:hover,
+.debug-slider-group-toggle:focus-visible {
+  background: rgba(255, 209, 102, 0.1);
+  color: #ffd166;
+}
+
+.debug-slider-list {
+  padding: 2px 12px 8px;
+}
+
+.debug-slider-row {
+  display: block;
+  padding: 5px 0 6px;
+  color: #bac5cf;
+  cursor: default;
+}
+
+.debug-slider-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.debug-slider-label > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.debug-slider-label output {
+  flex: 0 0 auto;
+  color: #ffd166;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.debug-slider-row input[type='range'] {
+  display: block;
+  width: 100%;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: #ffd166;
+  cursor: pointer;
+}
+
+.debug-slider-row input[type='range']:focus-visible,
+.debug-slider-group-toggle:focus-visible,
+.debug-reset-button:focus-visible,
+.debug-drawer-toggle:focus-visible {
+  outline: 2px solid #9fd0ff;
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .debug-drawer {
+    top: 8px;
+    right: 8px;
+    width: min(340px, calc(100vw - 16px));
+  }
+
+  .debug-drawer-panel {
+    max-height: 82svh;
+  }
+
+  .debug-drawer-scroll {
+    max-height: calc(82svh - 48px);
+  }
 }

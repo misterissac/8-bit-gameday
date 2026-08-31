@@ -5,21 +5,20 @@ import {
   PLATE_FRONT_Y,
   clamp,
   feetToM,
-  findIntersection,
   getBallXYSpeed,
   getLandingLocation,
   lerp,
   makeSymmetricalArc,
   mphToMetersPerSecond,
   plateCrossing,
+  resolveFieldedIntercept,
   statcastHitToWorld,
 } from '../util/MathUtil'
-import { isHitFieldingReady, hitMatchesAtBat, isBattedBallLaunchable, shouldCycleWrapWatchdogFire } from '../util/battedBall'
-import { FIELD, MAX_RUN_SPEED } from '../constants/field'
-import { setCycleDuration, getCycleDuration, getTimeScale, CYCLE_PAUSE, setBattedBallPosition, setChaserPosition, setPlayBallPosition, getFielderCamActive } from '../constants/playback'
-import { BALL_RELEASE_TIME } from './Pitcher'
+import { isHitFieldingReady, hitMatchesAtBat, isBattedBallLaunchable, shouldAutoAdvanceStuckPlay } from '../util/battedBall'
+import { FIELD } from '../constants/field'
+import { setCycleDuration, getCycleDuration, getTimeScale, getCyclePause, getBallReleaseTime, setBattedBallPosition, setChaserPosition, setPlayBallPosition, getFielderCamActive } from '../constants/playback'
+import { getTuning, useTuning } from '../constants/tuning'
 import { ConfettiBurst } from './ConfettiBurst'
-import { Html } from '@react-three/drei'
 
 // ---------------------------------------------------------------------------
 // Batted-ball + fielder choreography, ported from
@@ -78,7 +77,6 @@ function makeFoulHit(pitchData) {
 }
 
 // Throw speed for the assist chain, matching solomon-gumball's 70 mph.
-const THROW_SPEED = mphToMetersPerSecond(70)
 
 // Outfield wall radius (matches Ballpark.jsx): the circle a home run clears in
 // the air, and where the confetti burst fires as the ball leaves the park.
@@ -93,17 +91,9 @@ const WALL_RADIUS = feetToM(330)
 // spread across the whole arc — enough that the trail stays a continuous
 // path rather than a dotted line even on fast, long hits.
 const TRAIL_MAX_PARTICLES = 16384
-const TRAIL_LEAD_SCALE = 0.08
-const TRAIL_PARTICLE_SCALE = 0.04
-const TRAIL_FADE_TIME = 0.18 // s — how long the tail lingers behind the ball (same as the pitch)
-const TRAIL_MAX_OPACITY = 0.5 // overall translucency (same as the pitch)
 // The trace is slightly thicker and more opaque than the pitch's white trace
 // (0.018 / 0.16) so the yellow path stays legible from the broadcast
 // distance.
-const YELLOW_TRACE_SCALE = 0.024
-const YELLOW_TRACE_OPACITY = 0.5
-const YELLOW_TRACE_MIN_OPACITY = 0.2
-const YELLOW_TRACE_FADE_TIME = 0.5 // s to dim after the ball lands
 // Persistent dim-yellow trace under the tail. Kept clearly dimmer than the
 // golden 100 mph elite-fastball ring so the two read as distinct.
 const YELLOW_TRACE_COLOR = [0.7, 0.6, 0.16]
@@ -111,17 +101,8 @@ const YELLOW_TRACE_COLOR = [0.7, 0.6, 0.16]
 // batted ball's tail is always this color, never speed-graded.
 const TRAIL_COLOR_YELLOWISH_WHITE = [1, 0.95, 0.65]
 
-// A contacted pitch whose batted ball never becomes launchable (live hit data
-// still missing, or present without a fielding point) is given this long to
-// arrive before the watchdog force-completes the play so the live queue can
-// advance. The hit normally lands a poll or two after the pitch event, so a
-// few seconds is plenty of grace without letting a stuck pitch block playback.
-const NO_LAUNCH_GRACE_MS = 6000
-
 // Tunneling comparison: batted balls dim more than the overlaid pitches so the
 // trajectories stay distinguishable, and their tail/trace fade back too.
-const COMPARISON_BALL_OPACITY = 0.35
-const COMPARISON_TRAIL_FACTOR = 0.55
 
 const TRAIL_VERTEX_SHADER = `
 attribute vec3 aColor;
@@ -265,7 +246,9 @@ function evalSegments(segments, t) {
   return segments[segments.length - 1].to.clone()
 }
 
-function buildPlan(hit, launchPoint) {
+function buildPlan(hit, launchPoint, settings = getTuning().battedBall) {
+  const maxRunSpeed = mphToMetersPerSecond(settings.maxRunSpeedMph)
+  const throwSpeed = mphToMetersPerSecond(settings.throwSpeedMph)
   const launch = launchPoint.clone()
 
   // Prefer the raw Statcast hit coordinates when present; fall back to the
@@ -306,23 +289,35 @@ function buildPlan(hit, launchPoint) {
   const chaser = hit.fielder || 'CF'
   const chaserHome = FIELD.DEFENSE[chaser] ?? FIELD.DEFENSE.CF
 
-  // Fielder trajectory: only fielded (not caught) balls use findIntersection,
-  // mirroring solomon-gumball's LiveGameView.
+  // Fielder trajectory: only fielded (not caught) balls are intercepted,
+  // mirroring solomon-gumball's LiveGameView. The ball flies to its arc
+  // landing at its horizontal (exit) speed, then ROLLS on the ground at
+  // ``groundRollSpeedMph`` (0 = auto = the exit speed, i.e. the historical
+  // timing). Re-solving the interception with the tuned roll speed keeps the
+  // catch point AND the fielder's sprint consistent with however fast the user
+  // makes the ball roll, so ball and fielder still arrive together.
+  const airXY = getBallXYSpeed(speed, hit.launchAngle)
+  const rollXY = settings.groundRollSpeedMph
+    ? mphToMetersPerSecond(settings.groundRollSpeedMph)
+    : airXY
+  const contactDistance = flatLaunch.distanceTo(flatLanding)
   const intersection = hit.wasCaught
     ? undefined
-    : findIntersection(
+    : resolveFieldedIntercept(
         flatLaunch,
         ballDir,
-        getBallXYSpeed(speed, hit.launchAngle),
+        airXY,
+        rollXY,
+        ballAirTime,
+        contactDistance,
         chaserHome,
-        MAX_RUN_SPEED,
-        ballAirTime + 0.05,
+        maxRunSpeed,
       )
 
   const ballCatch = intersection ?? { location: flatLanding, t: ballAirTime }
   const catchLocation = ballCatch.location
   const timeUntilChaserReaches = chaserHome
-    ? Math.min(ballCatch.t, catchLocation.distanceTo(chaserHome) / MAX_RUN_SPEED)
+    ? Math.min(ballCatch.t, catchLocation.distanceTo(chaserHome) / maxRunSpeed)
     : ballCatch.t
 
   // ── Force-out / double-play choreography (ported from solomon-gumball) ──
@@ -359,7 +354,7 @@ function buildPlan(hit, launchPoint) {
             fielder,
             from: from.clone(),
             to,
-            duration: Math.max(Math.min(to.distanceTo(from) / MAX_RUN_SPEED, ballCatch.t), 0.001),
+            duration: Math.max(Math.min(to.distanceTo(from) / maxRunSpeed, ballCatch.t), 0.001),
           })
         }
       }
@@ -413,7 +408,7 @@ function buildPlan(hit, launchPoint) {
     // Unassisted putout: the chaser runs the ball from the fielding point to
     // the base (solomon-gumball's "run catching player to base").
     const to = getDefenseBaseLocation(chaserPutoutBase)
-    const duration = Math.max(catchLocation.distanceTo(to) / MAX_RUN_SPEED, 0.3)
+    const duration = Math.max(catchLocation.distanceTo(to) / maxRunSpeed, 0.3)
     chaserSegments.push({ from: catchLocation.clone(), to, start: ballCatch.t, duration })
     endTime = ballCatch.t + duration
     recordOut(endTime)
@@ -436,7 +431,7 @@ function buildPlan(hit, launchPoint) {
       const throwArc = makeSymmetricalArc(
         throwOrigin.x, throwOrigin.z, throwOrigin.y,
         throwDest.x, throwDest.z, throwDest.y,
-        THROW_SPEED, throwAngle,
+        throwSpeed, throwAngle,
       )
       const duration = throwArc.totalDuration()
       throws.push({
@@ -467,6 +462,11 @@ function buildPlan(hit, launchPoint) {
   return {
     arc, ballAirTime, ballCatch, catchLocation, timeUntilChaserReaches,
     chaser, chaserHome, landing, wallExit,
+    // Real-ground-path roll inputs (see the frame loop): the ball's ground
+    // position after it touches the plane is ``flatLaunch + ballDir * d`` with
+    // ``d = contactDistance + rollSpeedXY * (t - ballAirTime)``. When the roll
+    // knob is 0, rollSpeedXY === airXY and this reduces to the arc's own x/z.
+    flatLaunch, ballDir, rollSpeedXY: rollXY, contactDistance,
     chaserSegments, putoutMoves, throws, outs, resultText, endTime,
     // Where the ball ends up at the end of the play (glove of the final
     // receiver, the chaser at the base, or the catch point).
@@ -515,7 +515,10 @@ const Fielder = React.forwardRef(({ position, leanRef, opacity = 1 }, ref) => {
 });
 Fielder.displayName = 'Fielder'
 
-export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayResult, onComplete, comparison = false, defenseAlignment = null }) => {
+export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayResult, onComplete, comparison = false }) => {
+  const tuning = useTuning()
+  const battedTuning = tuning.battedBall
+  const playbackTuning = tuning.playback
   const [hitIndex, setHitIndex] = useState(0)
   // One-shot confetti burst for home runs (set when the ball clears the wall).
   const [confetti, setConfetti] = useState(null)
@@ -535,9 +538,13 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
   const recordedOuts = useRef(0)
   const resultEmitted = useRef(false)
   const completeEmitted = useRef(false)
-  // Wall-clock time the current pitch first reached the plate while contacted
-  // but not yet launched; drives the never-launched completion watchdog.
-  const noLaunchSinceRef = useRef(null)
+  // Wall-clock deadline (performance.now + timeout) at which a contacted pitch
+  // that still hasn't launched its batted ball is force-completed, so a play
+  // whose Statcast hit never arrives can't wedge the live queue. Set once the
+  // pitch reaches the plate, cleared on launch / new pitch. Deliberately a long
+  // timeout: the hit normally lands a poll or two after contact, so this never
+  // fires early — it only rescues a genuinely missing hit.
+  const noLaunchDeadlineRef = useRef(null)
   // Home-run confetti: fires once per cycle at the wall-crossing spot.
   const confettiFiredRef = useRef(false)
   // Pitch object that owned the current cycle duration. A live hit can arrive
@@ -595,8 +602,8 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
 
   const plan = useMemo(() => {
     if (!contact) return null
-    return buildPlan(activeHit, contact.launch)
-  }, [activeHit, contact])
+    return buildPlan(activeHit, contact.launch, battedTuning)
+  }, [activeHit, contact, battedTuning])
 
   // Tail + yellow trace (same animation as the pitch, no billow particles).
   const tailMeshRef = useRef()
@@ -643,7 +650,9 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
         if (i < trailPoints.length) {
           const p = trailPoints[i]
           dummy.position.copy(p.pos)
-          dummy.scale.setScalar(isTrace ? YELLOW_TRACE_SCALE : (i === 0 ? TRAIL_LEAD_SCALE : TRAIL_PARTICLE_SCALE))
+          dummy.scale.setScalar(isTrace
+            ? battedTuning.traceScale
+            : (i === 0 ? battedTuning.trailLeadScale : battedTuning.trailParticleScale))
           dummy.rotation.set(0, 0, 0)
           dummy.updateMatrix()
           mesh.setMatrixAt(i, dummy.matrix)
@@ -662,13 +671,13 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     }
     writeLayer(tailMeshRef.current, trailGeometry.getAttribute('aColor'), trailGeometry.getAttribute('aAlpha'), 'tail')
     writeLayer(traceMeshRef.current, traceGeometry.getAttribute('aColor'), traceGeometry.getAttribute('aAlpha'), 'yellow')
-  }, [trailPoints, plan, trailGeometry, traceGeometry])
+  }, [trailPoints, plan, trailGeometry, traceGeometry, battedTuning])
 
   // The shared cycle spans the real-time pitch flight, then the full play
   // (batted-ball flight, chaser run, throw chain), then a pause, then the
   // pitcher's windup, so the windup (which ends with the release at the wrap)
   // only starts AFTER the play has fully resolved — never overlapping the
-  // batted-ball/fielding animation. BALL_RELEASE_TIME is appended at the end
+  // batted-ball/fielding animation. getBallReleaseTime() is appended at the end
   // of the cycle for exactly that reason. Kept out of the render phase so a
   // late-arriving live hit can update the duration without resetting any of the
   // shared clocks (see durationOwnerPitch above). A shorter duration is only
@@ -679,7 +688,8 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     if (comparison && !launchable) return
     // Comparison flies only until the ball hits the ground; no fielding.
     const playEnd = comparison ? plan.ballAirTime : plan.endTime
-    const duration = contact.simDuration + playEnd + CYCLE_PAUSE + BALL_RELEASE_TIME
+    const duration = contact.simDuration + playEnd + getCyclePause() + getBallReleaseTime()
+      + (comparison ? (playbackTuning.comparisonFinishPause ?? 0) : 0)
     const isNewPitch = durationOwnerPitch.current !== pitchData
     const justWrapped = playback.current < 0.05
     // In comparison many hits share one cycle: only ever lengthen it (skip the
@@ -690,7 +700,16 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
       : (isNewPitch || justWrapped || duration > getCycleDuration())
     if (shouldSet) setCycleDuration(duration)
     durationOwnerPitch.current = pitchData
-  }, [contact, plan, pitchData, comparison, launchable])
+  }, [
+    contact,
+    plan,
+    pitchData,
+    comparison,
+    launchable,
+    playbackTuning.cyclePause,
+    playbackTuning.ballReleaseTime,
+    playbackTuning.comparisonFinishPause,
+  ])
 
   // Register a fielder's group/lean refs by position code. Both callbacks
   // create the entry independently so their invocation order doesn't matter.
@@ -713,9 +732,9 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
   // useLayoutEffect (not useEffect): runs synchronously after render, before
   // the next useFrame. A non-contact pitch (ball / take / whiff) must have its
   // refs cleared before the cycle wraps, otherwise a stale launched=true from
-  // the previous contact pitch survives one frame and the cycle-wrap watchdog
-  // spuriously fires onComplete for a non-contact pitch — surfacing an OUT and
-  // wedging the queue.
+  // the previous contact pitch survives one frame and leaks into the new
+  // pitch's first frame (re-firing the launch gate / leaving the batted ball
+  // visible).
   useLayoutEffect(() => {
     playback.current = 0
     firedThisCycle.current = false
@@ -724,12 +743,12 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     recordedOuts.current = 0
     resultEmitted.current = false
     completeEmitted.current = false
-    noLaunchSinceRef.current = null
     confettiFiredRef.current = false
     setConfetti(null)
     setBattedBallPosition(null)
     setChaserPosition(null)
     setPlayBallPosition(null)
+    noLaunchDeadlineRef.current = null
   }, [pitchData])
 
   // Clear the shared batted-ball position when this component unmounts (e.g.
@@ -778,31 +797,6 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     // Reset the batted ball to its pre-launch state and, in demo mode, advance
     // to the next sample hit so the *next* cycle plays it — never mid-cycle.
     if (playback.current < prevPlayback) {
-      // Safety net: a launched play that never reached its completion time
-      // before the cycle wrapped (a degenerate/non-finite endTime, or a cycle
-      // that was too short) would otherwise loop forever and wedge the live
-      // queue. Force-complete it so the next play can animate.
-      //
-      // Guard on contact.swing: a non-contact pitch (ball / take / whiff)
-      // never launches the batted ball, so launched.current should be false.
-      // But the reset effect (useEffect) runs AFTER the first useFrame with the
-      // new pitchData, so a stale launched=true from the previous contact pitch
-      // could survive one cycle wrap and spuriously fire onComplete for a
-      // non-contact pitch — surfacing an OUT and wedging the queue.
-      if (shouldCycleWrapWatchdogFire({
-        contactSwing: contact.swing,
-        launched: launched.current,
-        completeEmitted: completeEmitted.current,
-        comparison,
-      })) {
-        completeEmitted.current = true
-        const reason = Number.isFinite(plan.endTime) ? 'cycle too short' : 'non-finite endTime'
-        if (onComplete) onComplete('watchdog', {
-          playId: pitchData?.play_id ?? null,
-          reason,
-          endTime: plan.endTime,
-        })
-      }
       launched.current = false
       flightClock.current = 0
       confettiFiredRef.current = false
@@ -844,32 +838,46 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
       recordedOuts.current = 0
       resultEmitted.current = false
       completeEmitted.current = false
+      noLaunchDeadlineRef.current = null
       // The hit data can land after the pitch reached the plate, so this launch
       // may start later than contact. Lengthen the shared cycle so the ball's
       // full flight plus the pause plus the pitcher's windup still fit before
       // the wrap. Every shared clock is still below the old duration here, so
       // lengthening never jumps the pitch/batter/pitcher animations mid-play.
-      const needed = playback.current + plan.endTime + CYCLE_PAUSE + BALL_RELEASE_TIME
+      const needed = playback.current + plan.endTime + getCyclePause() + getBallReleaseTime()
       if (needed > getCycleDuration()) setCycleDuration(needed)
-      noLaunchSinceRef.current = null
     }
 
     // A contacted pitch whose batted ball never became launchable (its live
-    // hit data is still missing, or is present but lacks a fielding point)
-    // would otherwise loop forever and wedge the live queue — the pitch's own
-    // arrival handler defers completion to BattedBall, but a ball that never
-    // launches never fires onComplete. Give the feed a short grace, then
-    // force-complete so the queue can advance to the next play.
-    if (!comparison && contact.swing && !launched.current && !completeEmitted.current && playback.current >= contactWallTime) {
-      if (noLaunchSinceRef.current == null) {
-        noLaunchSinceRef.current = performance.now()
-      } else if (performance.now() - noLaunchSinceRef.current >= NO_LAUNCH_GRACE_MS) {
-        completeEmitted.current = true
-        if (onComplete) onComplete('watchdog', {
-          playId: pitchData?.play_id ?? null,
-          reason: hit == null ? 'hit never arrived' : 'hit not launchable',
-          endTime: null,
-        })
+    // Statcast hit is still missing, or is present but lacks a fielding point)
+    // would loop forever and wedge the live queue — the pitch's own arrival
+    // handler defers completion to BattedBall, but a ball that never launches
+    // never fires onComplete. Give the feed a long, gentle grace
+    // (``battedTuning.noLaunchTimeoutMs``, default 30s) then auto-advance. This
+    // never fires early: the hit normally lands a poll or two after contact, so
+    // a real late hit still launches well inside the window; only a genuinely
+    // missing hit reaches the deadline.
+    if (!comparison && contact.swing && !launched.current && !completeEmitted.current) {
+      // Only count wall-clock time while the ball has actually reached the
+      // plate un-launched; before that the deadline is left untouched so it
+      // persists (not reset) across the looping cycles a missing hit produces.
+      if (playback.current >= contactWallTime) {
+        const now = performance.now()
+        if (noLaunchDeadlineRef.current == null) {
+          noLaunchDeadlineRef.current = now + battedTuning.noLaunchTimeoutMs
+        } else if (shouldAutoAdvanceStuckPlay({
+          contactSwing: contact.swing,
+          launched: launched.current,
+          completeEmitted: completeEmitted.current,
+          deadlineExceeded: now >= noLaunchDeadlineRef.current,
+          comparison,
+        })) {
+          completeEmitted.current = true
+          if (onComplete) onComplete('noHit', {
+            playId: pitchData?.play_id ?? null,
+            reason: `statcast hit never arrived after ${Math.round(battedTuning.noLaunchTimeoutMs / 1000)}s`,
+          })
+        }
       }
     }
 
@@ -895,26 +903,26 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     // moment the pitch's white trajectory trace clears — the instant the
     // pitcher restarts his windup — so the tail of the play is gone the moment
     // the windup begins, never lingering into the cycle wrap.
-    const windupStart = Math.max(contactWallTime, loopDuration - BALL_RELEASE_TIME)
+    const windupStart = Math.max(contactWallTime, loopDuration - getBallReleaseTime())
     const trailFade = playback.current >= windupStart ? 0 : 1
     if (tailMeshRef.current || traceMeshRef.current) {
       const tailAlphaAttr = trailGeometry.getAttribute('aAlpha')
       const yellowAlphaAttr = traceGeometry.getAttribute('aAlpha')
       const tailAlphas = tailAlphaAttr.array
       const yellowAlphas = yellowAlphaAttr.array
-      const fadeRate = 1 / TRAIL_FADE_TIME
-      const trailFactor = comparison ? COMPARISON_TRAIL_FACTOR : 1
+      const fadeRate = 1 / Math.max(0.001, battedTuning.trailFadeTime)
+      const trailFactor = comparison ? battedTuning.comparisonTrailFactor : 1
       let yellowFade = 1
       if (t >= plan.ballAirTime) {
-        yellowFade = 1 - Math.min((t - plan.ballAirTime) / YELLOW_TRACE_FADE_TIME, 1)
+        yellowFade = 1 - Math.min((t - plan.ballAirTime) / Math.max(0.001, battedTuning.traceFadeTime), 1)
       }
-      const yellowAlphaNow = (YELLOW_TRACE_MIN_OPACITY
-        + (YELLOW_TRACE_OPACITY - YELLOW_TRACE_MIN_OPACITY) * yellowFade) * trailFactor
+      const yellowAlphaNow = (battedTuning.traceMinOpacity
+        + (battedTuning.traceOpacity - battedTuning.traceMinOpacity) * yellowFade) * trailFactor
       for (let i = 0; i < trailPoints.length; i++) {
         const age = t - trailPoints[i].t
         let tailAlpha = 0
         if (age >= 0) {
-          tailAlpha = TRAIL_MAX_OPACITY * trailFactor * (1 - age * fadeRate)
+          tailAlpha = battedTuning.trailMaxOpacity * trailFactor * (1 - age * fadeRate)
           if (tailAlpha < 0) tailAlpha = 0
         }
         tailAlphas[i] = tailAlpha * trailFade
@@ -937,15 +945,42 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
         ballRef.current.visible = false
       }
     } else if (t <= plan.ballCatch.t) {
-      // In flight along the batted-ball arc, then resting at the landing spot
-      // until the fielder arrives. The time is clamped to the arc's TRUE flight
-      // time (ballAirTime): makeSymmetricalArc is a quadratic, and evaluating it
-      // past its landing point extrapolates — a hit with a negative launch angle
-      // (whose arc dips below the ground almost immediately) would otherwise
-      // shoot straight up into the sky while the fielder runs over to field it.
+      // In flight along the batted-ball arc, and the moment it first touches
+      // the ground it keeps rolling forward on the same real path toward the
+      // fielder's fielding point.
+      //
+      // The arc is a quadratic, so the flight time is clamped to the TRUE
+      // air time (ballAirTime): evaluating past its landing point would
+      // extrapolate the height upward — a negative-launch hit (whose arc dips
+      // below the ground almost immediately) would otherwise shoot into the
+      // sky while the fielder fields it. Its x/z, however, is linear in time
+      // at the ball's horizontal speed.
+      //
+      // Once on the ground the ball rolls along the real trajectory line at
+      // the tuned ``rollSpeedXY`` (plan.groundRollSpeedMph): its ground
+      // distance is ``contactDistance + rollSpeedXY * (t - ballAirTime)``,
+      // clamped at the catch. Because the interception was resolved with that
+      // same roll speed (see buildPlan), the ball lands on ``catchLocation``
+      // at ``t == ballCatch.t`` — the same instant the fielder's sprint
+      // arrives — so a faster/slower roll still meets the fielder in sync.
       const ballTime = Math.min(t, plan.ballAirTime)
-      const ballPosition = plan.arc.positionAtTime(ballTime)
-      if (ballPosition.y < 0) ballPosition.y = 0
+      let ballPosition
+      if (t <= plan.ballAirTime) {
+        // Airborne: height from the arc, clamped at the plane so a ball whose
+        // path dips below the ground starts sliding the instant it crosses it.
+        ballPosition = plan.arc.positionAtTime(ballTime)
+        if (ballPosition.y < 0) ballPosition.y = 0
+      } else {
+        // Rolling on the real path at the tuned roll speed, clamped so it
+        // never passes the fielding point. Default (rollSpeedXY === airXY)
+        // reduces to the arc's own x/z continuation.
+        const d = plan.contactDistance + plan.rollSpeedXY * (t - plan.ballAirTime)
+        const dMax = plan.flatLaunch.distanceTo(plan.catchLocation)
+        ballPosition = plan.flatLaunch
+          .clone()
+          .add(plan.ballDir.clone().multiplyScalar(Math.min(Math.max(d, 0), dMax)))
+        ballPosition.y = 0
+      }
       ballRef.current.position.copy(ballPosition)
       ballRef.current.visible = true
     } else if (plan.chaserSegments.length > 1) {
@@ -1109,7 +1144,7 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
             color="#ffffff"
             roughness={0.4}
             transparent={comparison}
-            opacity={comparison ? COMPARISON_BALL_OPACITY : 1}
+            opacity={comparison ? battedTuning.comparisonBallOpacity : 1}
           />
         </mesh>
       </group>

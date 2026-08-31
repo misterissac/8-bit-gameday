@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { TextureLoader } from 'three';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { getCycleDuration, getTimeScale } from '../constants/playback';
+import { getTuning, useTuning } from '../constants/tuning';
 
 // ---------------------------------------------------------------------------
 // Pitcher at the mound, ported from solomon-gumball's player.glb character +
@@ -27,13 +28,8 @@ import { getCycleDuration, getTimeScale } from '../constants/playback';
 // 0.83 s. The windup is mapped onto the post-contact window of the shared
 // cycle so the release lands exactly on the wrap (t = 0, when the pitch ball
 // appears at the release point and flies).
-export const BALL_RELEASE_TIME = 1.32; // s into the clip when the ball releases
-const PITCH_CLIP_DURATION = 2.08; // RightHandPitch / LeftHandPitch length
-const NEUTRAL_CLIP_DURATION = 0.83; // StandingNeutral length
-const FADE_TIME = 0.2; // s — animation crossfade (the reference's fadeIn/Out)
-// Tunneling comparison overlay: the whole pitcher model dims so overlaid
-// pitchers (e.g. after a mid-at-bat pitching change) stay readable together.
-const OVERLAY_OPACITY = 0.55;
+// Tunneling comparison overlay, clip lengths, and crossfade time are read
+// from the shared debug-tuning store in the component below.
 
 // Hand-release offset in this app's world frame, converted from the
 // reference's BALL_RIGHT/LEFT_HAND_RELEASE_POSITION ([-0.2205, -1.4052,
@@ -54,6 +50,8 @@ const AWAY_TEXTURE_URL = '/textures/AwayPlayer_BaseColor.png';
 useGLTF.preload(PLAYER_MODEL_URL);
 
 export const Pitcher = ({ pitchData, overlay = false }) => {
+    const tuning = useTuning();
+    const pitcherTuning = tuning.pitcher;
     const gltf = useGLTF(PLAYER_MODEL_URL);
     // Deep clone (skeleton re-bound) so the shared useGLTF cache isn't mutated
     // by the per-pitch materials/visibility — the same SkeletonUtils.clone the
@@ -145,11 +143,11 @@ export const Pitcher = ({ pitchData, overlay = false }) => {
             for (const mat of materials) {
                 if (!mat) continue;
                 mat.transparent = overlay;
-                mat.opacity = overlay ? OVERLAY_OPACITY : 1;
+                mat.opacity = overlay ? pitcherTuning.overlayOpacity : 1;
                 mat.depthWrite = !overlay;
             }
         });
-    }, [model, overlay]);
+    }, [model, overlay, pitcherTuning.overlayOpacity]);
 
     // Animation mixer: the throw clip (RightHandPitch / LeftHandPitch) and the
     // between-pitches idle (StandingNeutral), both loop-once + clamped. Their
@@ -229,9 +227,16 @@ export const Pitcher = ({ pitchData, overlay = false }) => {
         //   * follow-through — continues past the wrap while the ball flies;
         //   * idle — StandingNeutral until the next windup.
         const contactT = placement.contactTime;
-        const windupStart = Math.max(contactT, loopDuration - BALL_RELEASE_TIME);
-        const rate = BALL_RELEASE_TIME / Math.max(0.25, loopDuration - windupStart);
-        const followEnd = (PITCH_CLIP_DURATION - BALL_RELEASE_TIME) / rate;
+        const clipDuration = Math.max(0.001, pitcherTuning.clipDuration);
+        const neutralDuration = Math.max(0.001, pitcherTuning.neutralClipDuration);
+        const releaseTime = Math.min(
+            Math.max(0.001, getTuning().playback.ballReleaseTime),
+            clipDuration,
+        );
+        const crossfadeTime = Math.max(0, pitcherTuning.crossfadeTime);
+        const windupStart = Math.max(contactT, loopDuration - releaseTime);
+        const rate = releaseTime / Math.max(0.25, loopDuration - windupStart);
+        const followEnd = Math.max(0, (clipDuration - releaseTime) / rate);
 
         let isPitch;
         let pitchTime;
@@ -241,27 +246,29 @@ export const Pitcher = ({ pitchData, overlay = false }) => {
             pitchTime = (t - windupStart) * rate;
         } else if (t <= followEnd) {
             isPitch = true;
-            pitchTime = BALL_RELEASE_TIME + t * rate;
+            pitchTime = releaseTime + t * rate;
         } else {
             isPitch = false;
-            pitchTime = PITCH_CLIP_DURATION;
-            neutralTime = Math.min(t - followEnd, NEUTRAL_CLIP_DURATION);
+            pitchTime = clipDuration;
+            neutralTime = Math.min(t - followEnd, neutralDuration);
         }
         if (isPitch) {
-            pitchTime = Math.min(pitchTime, PITCH_CLIP_DURATION);
-            neutralTime = NEUTRAL_CLIP_DURATION;
+            pitchTime = Math.min(pitchTime, clipDuration);
+            neutralTime = neutralDuration;
         }
 
         // Crossfade the two actions whenever the phase flips (the reference's
         // 0.2 s fadeIn/fadeOut between animation states).
         if (isPitch !== prevPhaseRef.current) {
             prevPhaseRef.current = isPitch;
-            fadeRef.current = FADE_TIME;
+            fadeRef.current = crossfadeTime;
         }
         if (fadeRef.current > 0) {
             fadeRef.current = Math.max(0, fadeRef.current - delta * getTimeScale());
         }
-        const k = fadeRef.current > 0 ? 1 - fadeRef.current / FADE_TIME : 1;
+        const k = crossfadeTime > 0 && fadeRef.current > 0
+            ? 1 - fadeRef.current / crossfadeTime
+            : 1;
         pitchAction.setEffectiveWeight(isPitch ? k : 1 - k);
         neutralAction.setEffectiveWeight(isPitch ? 1 - k : k);
         pitchAction.time = pitchTime;

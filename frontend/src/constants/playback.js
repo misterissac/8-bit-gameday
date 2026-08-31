@@ -16,6 +16,8 @@
 //
 // BattedBall knows how long the hit stays airborne, so it computes the full
 // cycle length; Pitch and Batter read it back each frame via getCycleDuration().
+import { getTuning } from './tuning'
+
 let cycleDuration = 0.5
 let timeScale = 1
 
@@ -41,7 +43,13 @@ export function getTimeScale() {
 export const SLOWEST_SPEED = 0.05
 
 // Short beat between the batted ball landing and the next pitch of the loop.
-export const CYCLE_PAUSE = 0.6
+export function getCyclePause() {
+  return getTuning().playback.cyclePause
+}
+
+export function getBallReleaseTime() {
+  return getTuning().playback.ballReleaseTime
+}
 
 // Live world position of the batted ball while it is in flight, published by
 // BattedBall every frame so the batter can track it with its head after

@@ -6,10 +6,15 @@ import {
   normalizeBroadcastDelaySeconds,
   serializeBroadcastDelayValue,
 } from '../util/broadcastDelay';
+import { groupGameLogPlays } from '../util/gameLog';
+
+const STATUS_ROLL_DELAY_MS = 2200;
+const STATUS_ROLL_SPEED_PX_PER_SECOND = 42;
 
 const GAME_STATE_URL = 'http://localhost:8000/api/game-state';
 const GAME_STATUS_URL = 'http://localhost:8000/api/game-status';
 const BOX_SCORE_URL = 'http://localhost:8000/api/box-score';
+const GAME_LOG_URL = 'http://localhost:8000/api/game-log';
 const POLL_MS = 1000;
 
 const dash = (v) => (v == null || v === '' ? '—' : v);
@@ -56,6 +61,40 @@ const statusSnapshot = (data) => ({
 // tab animation finishes, persisting until the next pitch is thrown rather
 // than vanishing the moment the feed's action event clears.
 const STICKY_STATUS_PATTERN = /Mound Visit|Pitching Change|Pinch Hitter|Pinch Runner|Defensive Sub/i;
+
+function RollingStatusText({ value, style }) {
+  const viewportRef = useRef(null);
+  const textRef = useRef(null);
+  const [rolling, setRolling] = useState(false);
+
+  useEffect(() => {
+    setRolling(false);
+    const viewport = viewportRef.current;
+    const text = textRef.current;
+    if (!value || !viewport || !text) return undefined;
+    const overflow = text.scrollWidth - viewport.clientWidth;
+    if (overflow <= 0) return undefined;
+    const start = setTimeout(() => setRolling(true), STATUS_ROLL_DELAY_MS);
+    return () => clearTimeout(start);
+  }, [value]);
+
+  const overflow = viewportRef.current && textRef.current
+    ? Math.max(0, textRef.current.scrollWidth - viewportRef.current.clientWidth)
+    : 0;
+  const duration = overflow > 0 ? Math.max(1.2, overflow / STATUS_ROLL_SPEED_PX_PER_SECOND) : 0;
+
+  return (
+    <span ref={viewportRef} style={{ display: 'block', width: '220px', maxWidth: '220px', overflow: 'hidden', whiteSpace: 'nowrap', textAlign: 'left', ...style }}>
+      <span
+        ref={textRef}
+        style={{ display: 'inline-block', whiteSpace: 'nowrap', transform: rolling ? `translateX(-${overflow}px)` : 'translateX(0)', transition: rolling ? `transform ${duration}s linear` : 'none' }}
+        onTransitionEnd={() => setRolling(false)}
+      >
+        {value || ''}
+      </span>
+    </span>
+  );
+}
 
 const STATUS_TAB_IN_MS = 350;
 const STATUS_TAB_HOLD_MS = 3200;
@@ -158,7 +197,12 @@ function BatterLine({ children, hover, style }) {
   const hasSummary = hover && Object.keys(hover).length > 0;
   return (
     <div
-      style={{ position: 'relative', cursor: hasSummary ? 'help' : 'default', ...style }}
+      style={{
+        position: 'relative',
+        cursor: hasSummary ? 'help' : 'default',
+        borderBottom: hasSummary ? '1px dotted rgba(255,255,255,0.35)' : 'none',
+        ...style,
+      }}
       onMouseEnter={() => hasSummary && setOpen(true)}
       onMouseLeave={() => setOpen(false)}
     >
@@ -168,9 +212,11 @@ function BatterLine({ children, hover, style }) {
           position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
           marginBottom: 4, zIndex: 40,
           background: '#0a0e14', border: '1px solid rgba(255,255,255,0.25)', borderRadius: 5,
-          padding: '4px 8px', fontSize: 10, lineHeight: 1.6, whiteSpace: 'nowrap',
+          padding: '4px 8px', fontSize: 10, lineHeight: 1.6, whiteSpace: 'normal',
+          maxWidth: 'min(360px, calc(100vw - 24px))',
+          boxSizing: 'border-box',
           boxShadow: '0 4px 14px rgba(0,0,0,0.55)',
-          display: 'flex', gap: 8,
+          display: 'flex', flexWrap: 'wrap', gap: '0 8px',
         }}>
           {Object.entries(hover).map(([label, count]) => (
             <span key={label} style={{ color: '#ffd166', fontWeight: 'bold' }}>
@@ -189,7 +235,7 @@ function BatterLine({ children, hover, style }) {
 // unmount/remount it every poll and reset the hover state.
 function HoverStat({ children, rows }) {
   const [open, setOpen] = useState(false);
-  const hasStats = rows.some(([, v]) => v !== '—');
+  const hasStats = rows.some(([, v]) => v !== '—' && v != null);
   return (
     <span
       style={{ position: 'relative', borderBottom: hasStats ? '1px dotted rgba(255,255,255,0.35)' : 'none', cursor: hasStats ? 'help' : 'default' }}
@@ -360,6 +406,104 @@ function Linescore({ data }) {
   );
 }
 
+function GameLogPanel({ data, loading, error, maxHeight, onClose, onSelectPlay, selectedAtBatIndex }) {
+  const groups = groupGameLogPlays(data?.plays || []);
+
+  return (
+    <div style={{
+      position: 'absolute', bottom: '100%', right: 0, marginBottom: 10, zIndex: 31,
+      width: 390, maxWidth: '90vw', maxHeight: maxHeight || '72vh', overflowY: 'auto',
+      background: 'rgba(8,12,18,0.98)', border: '1px solid rgba(255,255,255,0.2)',
+      borderRadius: 10, padding: '10px 12px', boxShadow: '0 10px 34px rgba(0,0,0,0.6)',
+      fontFamily: 'monospace', color: '#fff', userSelect: 'text',
+    }} className="app-scroll">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <strong style={{ color: '#ffd166', letterSpacing: '0.12em', fontSize: 12 }}>GAME LOG</strong>
+        <button onClick={onClose} aria-label="Close game log" style={{ background: 'transparent', border: 0, color: '#aaa', cursor: 'pointer', fontSize: 16 }}>×</button>
+      </div>
+      {loading ? <div style={{ padding: 10, color: '#aaa', fontSize: 12 }}>Loading game log…</div>
+        : error ? <div style={{ padding: 10, color: '#ff6b6b', fontSize: 12 }}>{error}</div>
+          : groups.length === 0 ? <div style={{ padding: 10, color: '#888', fontSize: 12 }}>No plays available yet.</div>
+            : groups.map((group) => (
+              <section key={group.key} style={{ marginBottom: 12 }}>
+                <h3 style={{
+                  margin: '10px 0 4px',
+                  paddingBottom: 4,
+                  color: '#ffd166',
+                  fontSize: 11,
+                  lineHeight: 1.35,
+                  letterSpacing: '0.1em',
+                  textTransform: 'uppercase',
+                  textAlign: 'left',
+                  borderBottom: '1px solid rgba(255,209,102,0.35)',
+                }}>
+                  {group.title}
+                </h3>                {group.plays.map((play, index) => (
+                  <button
+                    key={`${play.id ?? group.key}-${index}`}
+                    type="button"
+                    onClick={() => onSelectPlay?.(play)}
+                    aria-pressed={selectedAtBatIndex != null && selectedAtBatIndex === play.id}
+                    style={{
+                      display: 'block', width: '100%', padding: play.isScoreUpdate ? '2px 2px 2px 16px' : '5px 2px', textAlign: 'left',
+                      border: 0, borderBottom: '1px solid rgba(255,255,255,0.07)',
+                      background: selectedAtBatIndex != null && selectedAtBatIndex === play.id
+                        ? 'rgba(255,209,102,0.16)' : 'transparent',
+                      color: play.isScoreUpdate ? '#aab4c0' : '#fff', fontSize: 12, lineHeight: 1.35,
+                      fontFamily: 'monospace', cursor: 'pointer',
+                    }}
+                  >
+                    {play.isScoreUpdate ? (
+                      <span style={{ display: 'block', paddingLeft: 10, color: '#aab4c0', fontSize: 11 }}>
+                        {['away', 'home'].map((side, scoreIndex) => {
+                          const team = play.scoreAfter[side];
+                          const scoring = play.scoreAfter.scoring_side === side;
+                          return (
+                            <React.Fragment key={side}>
+                              {scoreIndex > 0 && <span> - </span>}
+                              <span style={scoring ? { fontWeight: 'bold', color: '#ffd166' } : undefined}>
+                                {team.abbreviation} {scoring && <strong>{team.runs}</strong>}{!scoring && team.runs}
+                              </span>
+                            </React.Fragment>
+                          );
+                        })}
+                      </span>
+                    ) : play.description}
+                  </button>
+                ))}
+              </section>
+            ))}
+    </div>
+  );
+}
+
+const nonZeroStats = (entries) => Object.fromEntries(
+  entries.filter(([, value]) => value != null && value !== '' && Number(value) !== 0),
+);
+
+// Keep box-score hover cards focused on details that are not already visible
+// in the batting table columns. The backend may provide either the compact
+// feed names or the full MLB stat names, so accept both forms.
+const batterExtraStat = (player, ...keys) => {
+  for (const key of keys) {
+    if (player?.[key] != null && player[key] !== '') return player[key];
+  }
+  return null;
+};
+
+// Pitcher hover details intentionally exclude values already rendered in the
+// pitching table, keeping the card useful without repeating the box score.
+const pitcherExtraStats = (p) => nonZeroStats([
+  ['PIT', batterExtraStat(p, 'pitchesThrown', 'pitches', 'pit')],
+  ['STR', batterExtraStat(p, 'strikesThrown', 'strikes')],
+  ['S%', batterExtraStat(p, 'strikePercentage', 'strikePct')],
+  ['WP', batterExtraStat(p, 'wildPitches', 'wp')],
+  ['HBP', batterExtraStat(p, 'hitByPitch', 'hbp')],
+  ['BK', batterExtraStat(p, 'balks', 'bk')],
+  ['SV', batterExtraStat(p, 'saves', 'sv')],
+  ['BS', batterExtraStat(p, 'blownSaves', 'bs')],
+]);
+
 function TeamBox({ team, color }) {
   // Team-level totals from the feed (aggregated across all players).
   const tb = team.teamBatting || {};
@@ -378,7 +522,25 @@ function TeamBox({ team, color }) {
           {team.batting.map((p) => (
             <tr key={p.id}>
               <td style={{ ...cell, textAlign: 'left', whiteSpace: 'nowrap' }}>
-                {p.name} <span style={{ color: '#788' }}>{p.position}</span>
+                {p.pinchHitterFor && <span style={{ color: '#667', marginRight: 5 }}>↳</span>}
+                <BatterLine hover={nonZeroStats([
+                  ['1B', batterExtraStat(p, 'singles', 'oneB')],
+                  ['2B', batterExtraStat(p, 'doubles', 'twoB')],
+                  ['3B', batterExtraStat(p, 'triples', 'threeB')],
+                  ['HR', batterExtraStat(p, 'homeRuns', 'hr')],
+                  ['HBP', batterExtraStat(p, 'hitByPitch', 'hitByPitch')],
+                  ['SB', batterExtraStat(p, 'stolenBases', 'sb')],
+                  ['CS', batterExtraStat(p, 'caughtStealing', 'cs')],
+                  ['GDP', batterExtraStat(p, 'groundedIntoDoublePlay', 'gdp')],
+                  ['GTP', batterExtraStat(p, 'groundedIntoTriplePlay', 'gtp')],
+                  ['GO', batterExtraStat(p, 'groundOuts', 'go')],
+                  ['FO', batterExtraStat(p, 'flyOuts', 'fo')],
+                  ['SF', batterExtraStat(p, 'sacrificeFlies', 'sf')],
+                  ['SH', batterExtraStat(p, 'sacrificeBunts', 'sh')],
+                ])} style={{ display: 'inline-block', marginLeft: p.pinchHitterFor ? 16 : 0 }}>
+                  {p.name}
+                </BatterLine>{' '}<span style={{ color: '#788' }}>{p.position}</span>
+                {p.pinchHitterFor && <div style={{ marginLeft: 16, color: '#667', fontSize: 9 }}>for {p.pinchHitterFor}</div>}
               </td>
               <td style={cell}>{dash(p.ab)}</td>
               <td style={cell}>{dash(p.r)}</td>
@@ -450,7 +612,11 @@ function TeamBox({ team, color }) {
         <tbody>
           {team.pitching.map((p) => (
             <tr key={p.id}>
-              <td style={{ ...cell, textAlign: 'left', whiteSpace: 'nowrap' }}>{p.name}</td>
+              <td style={{ ...cell, textAlign: 'left', whiteSpace: 'nowrap' }}>
+                <BatterLine hover={pitcherExtraStats(p)} style={{ display: 'inline-block' }}>
+                  {p.name}
+                </BatterLine>
+              </td>
               <td style={cell}>{dash(p.ip)}</td>
               <td style={cell}>{dash(p.h)}</td>
               <td style={cell}>{dash(p.r)}</td>
@@ -506,7 +672,7 @@ function TeamBox({ team, color }) {
  * A "BOX SCORE" button fetches /api/box-score on demand and shows both teams'
  * full batting and pitching lines in a panel anchored above the scorebug.
  */
-export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, frozen = false, stateOverride = null, delaySeconds = 0, onDefenseUpdate = null }) {
+export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, frozen = false, stateOverride = null, delaySeconds = 0, onDefenseUpdate = null, onSelectGameLogPlay = null, selectedGameLogPlayId = null, reviewMode = false, reviewScoreTab = 'replay', onReviewScoreTabChange = null, comparisonActive = false, gameTerminal = false }) {
   const rootRef = useRef(null);
   const [state, setState] = useState(null);
   // Status is intentionally separate from the frozen numeric scoreboard. It
@@ -514,6 +680,14 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   // without revealing a newer count or score.
   const [liveStatus, setLiveStatus] = useState(null);
   const [boxOpen, setBoxOpen] = useState(false);
+  const [gameLogOpen, setGameLogOpen] = useState(false);
+  const [gameLogData, setGameLogData] = useState(null);
+  const [gameLogLoading, setGameLogLoading] = useState(false);
+  const [gameLogError, setGameLogError] = useState(null);
+  const gameLogButtonRef = useRef(null);
+  const gameLogPanelRef = useRef(null);
+  const boxButtonRef = useRef(null);
+  const boxPanelRef = useRef(null);
   const [boxData, setBoxData] = useState(null);
   const [boxLoading, setBoxLoading] = useState(false);
   const [boxError, setBoxError] = useState(null);
@@ -543,6 +717,7 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   const delayedStateBufferRef = useRef(null);
   const delayedStatusBufferRef = useRef(null);
   const delayedBoxBufferRef = useRef(null);
+  const delayedGameLogBufferRef = useRef(null);
   if (!delayedStateBufferRef.current) {
     delayedStateBufferRef.current = new BroadcastDelayBuffer((item) => {
       if (gamePkRef.current !== item.gamePk) return;
@@ -563,15 +738,28 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
       setBoxLoading(false);
     }, { delayMs });
   }
+  if (!delayedGameLogBufferRef.current) {
+    delayedGameLogBufferRef.current = new BroadcastDelayBuffer((item) => {
+      if (gamePkRef.current !== item.gamePk) return;
+      setGameLogData(item.data);
+      setGameLogLoading(false);
+    }, { delayMs });
+  }
   // True until the current game's first real status has been observed. Used to
   // write that initial status directly (no tab animation) so a delay/final
   // that was already active when the game was entered shows immediately.
   const pendingGameInitRef = useRef(true);
+  // Ref mirror of gameTerminal for synchronous checks inside callbacks.
+  const gameTerminalRef = useRef(gameTerminal);
+  // Keep the ref in sync on renders (mirrors reviewRef/compareModeRef pattern).
+  gameTerminalRef.current = gameTerminal;
 
   // Computed early (before any early return) so the status-change effect below
   // can key on the label. The frozen snapshot's own fields are used while
   // frozen; liveStatus always reflects the freshest status poll.
-  const displayState = frozen && stateOverride ? stateOverride : state;
+  const displayState = reviewMode
+    ? (reviewScoreTab === 'replay' && stateOverride ? stateOverride : state)
+    : (frozen && stateOverride ? stateOverride : state);
   const statusLabel = displayState?.success
     ? scorebugStatusLabel({
         gameState: displayState.gameState,
@@ -638,8 +826,10 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
 
   // A finished game has nothing left to update, so stop the recurring polls.
   // liveStatus is reset on game switch, which flips this back to false and
-  // resumes polling for the newly-selected game.
-  const gameTerminal = isGameTerminal(liveStatus?.gameState);
+  // resumes polling for the newly-selected game. Derived from the feed itself
+  // (not the app-level gameTerminal prop) so it stays true for a finished game
+  // even while the app-level flag is briefly toggled during navigation.
+  const feedTerminal = isGameTerminal(liveStatus?.gameState);
 
   // Propagate the current defensive alignment + formation to the parent so the
   // 3D scene can render position labels under each fielder, and the Defense
@@ -654,25 +844,32 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   }, [onDefenseUpdate, liveStatus?.defenseAlignment, liveStatus?.defenseFormation]);
 
   useEffect(() => {
-    if (!frozen || gameTerminal) return;
+    if (!frozen || feedTerminal) return;
     fetchStatus();
     const id = setInterval(fetchStatus, POLL_MS);
     return () => clearInterval(id);
-  }, [fetchStatus, frozen, gameTerminal]);
+  }, [fetchStatus, frozen, feedTerminal]);
 
   useEffect(() => {
     delayedStateBufferRef.current?.setDelay(delayMs);
     delayedStatusBufferRef.current?.setDelay(delayMs);
     delayedBoxBufferRef.current?.setDelay(delayMs);
+    delayedGameLogBufferRef.current?.setDelay(delayMs);
   }, [delayMs]);
 
   useEffect(() => {
+    // Entering a different game also clears the on-demand game log.
+    setGameLogOpen(false);
+    setGameLogData(null);
+    setGameLogError(null);
+    setGameLogLoading(false);
     // Entering a different game: drop the previous game's scoreboard and status
     // so stale state can't leak into (or swallow) the new game's first status —
     // e.g. a delay that was already underway before the game was selected.
     delayedStateBufferRef.current?.clear({ resetDelivered: true });
     delayedStatusBufferRef.current?.clear({ resetDelivered: true });
     delayedBoxBufferRef.current?.clear({ resetDelivered: true });
+    delayedGameLogBufferRef.current?.clear({ resetDelivered: true });
     gamePkRef.current = gamePk;
     setState(null);
     setLiveStatus(null);
@@ -686,20 +883,52 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
     pendingGameInitRef.current = true;
   }, [gamePk]);
 
+  useEffect(() => {
+    if (!gameLogOpen) return undefined;
+    const id = setInterval(async () => {
+      try {
+        const url = gamePk ? `${GAME_LOG_URL}?game_pk=${gamePk}` : GAME_LOG_URL;
+        const res = await axios.get(url);
+        if (delayMs > 0 || delayedGameLogBufferRef.current.size > 0) {
+          delayedGameLogBufferRef.current.enqueue(
+            `${gamePk ?? 'default'}:game-log`,
+            { gamePk, data: res.data },
+            { version: serializeBroadcastDelayValue(res.data), coalesce: true },
+          );
+        } else {
+          setGameLogData(res.data);
+        }
+      } catch (err) {
+        console.error('Failed to refresh game log', err);
+      }
+    }, POLL_MS);
+    return () => clearInterval(id);
+  }, [delayMs, gameLogOpen, gamePk]);
+
   useEffect(() => () => {
     delayedStateBufferRef.current?.clear({ resetDelivered: true });
     delayedStatusBufferRef.current?.clear({ resetDelivered: true });
     delayedBoxBufferRef.current?.clear({ resetDelivered: true });
+    delayedGameLogBufferRef.current?.clear({ resetDelivered: true });
   }, []);
 
   useEffect(() => {
-    if (!frozen && !gameTerminal) {
+    // Review mode keeps the hidden Live tab current even while Replay is
+    // selected; switching tabs should reveal the delayed live snapshot
+    // immediately instead of starting a fresh poll cycle.
+    //
+    // A finished game stays terminal so the app never treats it as live (no
+    // Live tab, no polling), but when the user is REVIEWING that game we still
+    // poll the game-state endpoint once and on an interval so the (final)
+    // team identity and score load immediately for the Replay scoreboard,
+    // rather than flashing the previously-selected game's data.
+    if ((!frozen || reviewMode) && (reviewMode || !feedTerminal)) {
       fetchState();
       const id = setInterval(fetchState, POLL_MS);
       return () => clearInterval(id);
     }
     return undefined;
-  }, [fetchState, frozen, gameTerminal]);
+  }, [fetchState, frozen, feedTerminal, reviewMode]);
 
   // Manual Refresh button (deliberate user action, so allowed even while
   // frozen) and game switches, which also bump refreshKey.
@@ -801,10 +1030,38 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
     if (state || liveStatus) pendingGameInitRef.current = false;
   }, [state, liveStatus]);
 
+  // Close the game log when the user clicks anywhere outside the button or
+  // the panel itself. pointerdown (not click) so a click that starts inside
+  // the panel — e.g. selecting a play — never bubbles to a close.
+  useEffect(() => {
+    if (!gameLogOpen) return;
+    const handlePointerDown = (e) => {
+      if (gameLogButtonRef.current?.contains(e.target)) return;
+      if (gameLogPanelRef.current?.contains(e.target)) return;
+      setGameLogOpen(false);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [gameLogOpen]);
+
+  // Close the box score when the user clicks anywhere outside the button or
+  // the panel itself (pointerdown so a click that starts inside the panel —
+  // e.g. toggling a team tab — never closes it).
+  useEffect(() => {
+    if (!boxOpen) return;
+    const handlePointerDown = (e) => {
+      if (boxButtonRef.current?.contains(e.target)) return;
+      if (boxPanelRef.current?.contains(e.target)) return;
+      setBoxOpen(false);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [boxOpen]);
+
   // Keep the box-score panel within the window: cap its height to the space
   // between the top of the viewport and the scorebug, so it's fully visible.
   useEffect(() => {
-    if (!boxOpen) return;
+    if (!boxOpen && !gameLogOpen) return;
     const update = () => {
       if (rootRef.current) {
         setPanelMaxH(Math.max(120, rootRef.current.getBoundingClientRect().top - 12));
@@ -813,7 +1070,36 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
     update();
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
-  }, [boxOpen]);
+  }, [boxOpen, gameLogOpen]);
+
+  const toggleGameLog = useCallback(async () => {
+    const next = !gameLogOpen;
+    setGameLogOpen(next);
+    if (!next) return;
+    setGameLogLoading(true);
+    setGameLogError(null);
+    let waitingForDelay = false;
+    try {
+      const url = gamePk ? `${GAME_LOG_URL}?game_pk=${gamePk}` : GAME_LOG_URL;
+      const res = await axios.get(url);
+      if (delayMs > 0 || delayedGameLogBufferRef.current.size > 0) {
+        waitingForDelay = true;
+        delayedGameLogBufferRef.current.enqueue(
+          `${gamePk ?? 'default'}:game-log`,
+          { gamePk, data: res.data },
+          { version: serializeBroadcastDelayValue(res.data), coalesce: true },
+        );
+      } else {
+        setGameLogData(res.data);
+        setGameLogLoading(false);
+      }
+    } catch (err) {
+      console.error('Failed to load game log', err);
+      setGameLogError(err.response?.data?.detail || 'Failed to load game log');
+    } finally {
+      if (!waitingForDelay) setGameLogLoading(false);
+    }
+  }, [delayMs, gameLogOpen, gamePk]);
 
   const toggleBox = useCallback(async () => {
     const next = !boxOpen;
@@ -895,7 +1181,20 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
     ['HR', dash(batterSeason?.hr)],
     ['RBI', dash(batterSeason?.rbi)],
   ];
+  const pitcherGameSummary = nonZeroStats([
+    ['SO', displayState?.pitcherGameLine?.strikeouts],
+    ['BB', displayState?.pitcherGameLine?.walks],
+  ]);
+  // Game extended line shown over the P: count — mirrors the box score's
+  // pitcher hover (strikes, walks, strikeouts) but deliberately omits the
+  // pitch count, which is already printed as the `#` itself.
+  const pitcherGameExtended = nonZeroStats([
+    ['STR', displayState?.pitcherGameLine?.strikesThrown],
+    ['BB', displayState?.pitcherGameLine?.walks],
+    ['SO', displayState?.pitcherGameLine?.strikeouts],
+  ]);
   const pitcherRows = [
+    ...Object.entries(pitcherGameSummary),
     ['ERA', dash(pitcherSeason?.era)],
     ['WHIP', dash(pitcherSeason?.whip)],
     ['W–L', `${dash(pitcherSeason?.wins)}–${dash(pitcherSeason?.losses)}`],
@@ -918,7 +1217,9 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
       bottom: 20,
       right: 20,
       zIndex: 10,
-      background: 'linear-gradient(180deg, rgba(10,14,20,0.92), rgba(6,9,14,0.92))',
+      background: reviewMode && reviewScoreTab === 'replay'
+        ? 'linear-gradient(180deg, rgba(28,82,132,0.98), rgba(15,42,78,0.98))'
+        : 'linear-gradient(180deg, rgba(10,14,20,0.92), rgba(6,9,14,0.92))',
       border: '1px solid rgba(255,255,255,0.18)',
       borderRadius: 10,
       fontFamily: 'monospace',
@@ -941,8 +1242,78 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
         />
       )}
 
+      {/* ── Live / Replay review tabs (above the scoreboard) ──
+          Finished games have no live feed to switch to, so the tabs never
+          render for them: the Replay scoreboard is the default (and only)
+          scoreboard — including while navigating previous plays through the
+          game log. The app-level flag is set synchronously on finished-game
+          selection (no first-poll flash); the feed-derived flag covers games
+          that end while a review is already open. ── */}
+      {reviewMode && !comparisonActive && !gameTerminal && !feedTerminal && (
+        <div
+          role="tablist"
+          aria-label="Scoreboard review mode"
+          style={{ position: 'absolute', top: -28, left: 0, zIndex: 15, display: 'flex', alignItems: 'flex-end' }}
+        >
+          {['live', 'replay'].map((tab) => {
+            const active = reviewScoreTab === tab;
+            return (
+              <button
+                key={tab}
+                role="tab"
+                aria-selected={active}
+                onClick={() => onReviewScoreTabChange?.(tab)}
+                style={{
+                  position: 'relative', zIndex: active ? 2 : 1,
+                  marginLeft: tab === 'live' ? 0 : -4,
+                  padding: '5px 12px 6px',
+                  background: active ? (tab === 'replay' ? '#1c5284' : '#000') : 'rgba(42,46,54,0.96)',
+                  color: active ? '#fff' : '#aab4c0', border: 'none',
+                  borderRadius: '7px 7px 0 0', fontSize: 13,
+                  fontFamily: 'monospace', fontWeight: 'bold', cursor: 'pointer',
+                  letterSpacing: '0.02em', lineHeight: '16px',
+                  boxShadow: active ? '0 -2px 8px rgba(0,0,0,0.35)' : 'none',
+                }}
+              >
+                {tab === 'live' ? 'Live' : 'Replay'}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Game log button (above the scoreboard) ── */}
+      <button
+        ref={gameLogButtonRef}
+        onClick={toggleGameLog}
+        style={{
+          position: 'absolute', top: -28, right: 0, zIndex: 15,
+          background: 'rgba(80,88,100,0.92)',
+          border: `1px solid ${gameLogOpen ? 'rgba(255,209,102,0.6)' : 'rgba(255,255,255,0.45)'}`,
+          color: gameLogOpen ? '#ffd166' : '#fff', borderRadius: 6,
+          padding: '4px 10px', fontSize: 10, letterSpacing: '0.12em', cursor: 'pointer', fontFamily: 'monospace',
+        }}
+      >
+        {gameLogOpen ? 'CLOSE LOG' : 'GAME LOG'}
+      </button>
+
+      {gameLogOpen && (
+        <div ref={gameLogPanelRef} style={{ display: 'contents' }}>
+          <GameLogPanel
+            data={gameLogData}
+            loading={gameLogLoading}
+            error={gameLogError}
+            maxHeight={panelMaxH || '72vh'}
+            onClose={() => setGameLogOpen(false)}
+            onSelectPlay={onSelectGameLogPlay}
+            selectedAtBatIndex={selectedGameLogPlayId}
+          />
+        </div>
+      )}
+
       {/* ── Box score button (top right, on the inning/count row) ── */}
       <button
+        ref={boxButtonRef}
         onClick={toggleBox}
         style={{
           position: 'absolute',
@@ -1051,9 +1422,20 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
           </div>
         </div>
         <div style={{ textAlign: 'right', fontSize: 11, color: '#bbb', lineHeight: 1.5 }}>
-          <div>Pitches <FlipDigits value={pitchesThrown ?? '—'} /></div>
+          <div>
+            <HoverStat rows={Object.entries(pitcherGameExtended)}>
+              P: <FlipDigits value={pitchesThrown ?? '—'} />
+            </HoverStat>
+          </div>
           {batterLine?.atBats != null && (
-            <BatterLine hover={batterSummary} style={{ marginTop: 2, color: '#aaa' }}>
+            <BatterLine hover={batterSummary} style={{
+              marginTop: 2,
+              color: '#aaa',
+              borderBottom: batterSummary && Object.keys(batterSummary).length > 0
+                ? '1px dotted rgba(255,255,255,0.35)'
+                : 'none',
+              display: 'inline-block',
+            }}>
               {batterLine.hits}–{batterLine.atBats}
             </BatterLine>
           )}
@@ -1066,26 +1448,26 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
         display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#aaa',
         marginTop: 6, letterSpacing: '0.04em', alignItems: 'flex-start',
       }}>
-        <FlipValue
+        <RollingStatusText
           value={writtenStatus}
           style={{
-            maxWidth: 220,
             ...(isStatusNotice && (writtenStatus ? { color: '#ffd166', fontWeight: 'bold' } : {})),
           }}
-          renderSplit={splitStatusLabel(writtenStatus)}
         />
         <span style={writtenStatus ? undefined : { marginLeft: 'auto' }}>{venue || '—'}</span>
       </div>
 
       {/* ── Box score panel ── */}
       {boxOpen && (
-        <div style={{
+        <div
+          ref={boxPanelRef}
+          style={{
           position: 'absolute', bottom: '100%', right: 0, marginBottom: 10, zIndex: 30,
           width: 620, maxWidth: '90vw', maxHeight: panelMaxH || '72vh', overflowY: 'auto',
           background: 'rgba(8,12,18,0.97)', border: '1px solid rgba(255,255,255,0.2)',
           borderRadius: 10, fontFamily: 'monospace', color: '#fff',
           padding: '10px 12px 4px', boxShadow: '0 10px 34px rgba(0,0,0,0.6)',
-        }}>
+        }} className="app-scroll">
           {boxLoading ? (
             <div style={{ padding: '12px 8px', fontSize: 12, color: '#aaa' }}>Loading box score…</div>
           ) : boxError ? (

@@ -1,71 +1,131 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  isHitFieldingReady,
-  hitMatchesAtBat,
-  isBattedBallLaunchable,
+  contactCompletionAction,
+  fielderCamNextState,
+  shouldAutoAdvanceStuckPlay,
+  CONTACT_COMPLETE_ARM,
+  CONTACT_COMPLETE_FINISH,
 } from '../src/util/battedBall.js'
 
-// A fully-populated live Statcast hit: matching at-bat, launch data, and the
-// fielding point (hc_x/hc_y) the batted-ball arc needs.
-const readyHit = {
-  playId: 'AB4-EV0',
-  pitchPlayId: 'AB4-P3',
-  atBatIndex: 4,
-  launchSpeed: 95,
-  launchAngle: 14,
-  sprayAngle: 25,
-  totalDistance: 280,
-  coordX: 130,
-  coordY: 160,
-  fielder: 'RF',
-  wasCaught: false,
-  runners: [],
+// Run one completion against a fielder-cam state `{ armed, fired }` and return
+// `{ action, next }`, threading the next state back for the caller — the same
+// shape App.jsx's handlePlayComplete consumes.
+function complete(state, overrides = {}) {
+  const action = contactCompletionAction({
+    isContactPlay: true,
+    armed: state.armed,
+    fired: state.fired,
+    ...overrides,
+  })
+  return { action, next: fielderCamNextState(state, action) }
 }
 
-test('isHitFieldingReady requires coordinates and launch data', () => {
-  assert.equal(isHitFieldingReady(null), false)
-  assert.equal(isHitFieldingReady(undefined), false)
-  assert.equal(isHitFieldingReady(readyHit), true)
+test('a contact play first completion arms the fielder-cam, second finishes', () => {
+  // Fresh play: never armed, never fired.
+  let s = { armed: false, fired: false }
 
-  // Missing any of the arc-critical fields must hold the launch; a null launch
-  // speed or landing point would otherwise produce a NaN/Infinity flight.
-  for (const key of ['coordX', 'coordY', 'launchSpeed', 'launchAngle']) {
-    const missing = { ...readyHit, [key]: null }
-    assert.equal(isHitFieldingReady(missing), false, `expected missing ${key} to block launch`)
-  }
+  const first = complete(s)
+  assert.equal(first.action, CONTACT_COMPLETE_ARM)
+  assert.deepEqual(first.next, { armed: true, fired: true })
+
+  // The play keeps looping in fielder cam; the next completion finishes it.
+  s = first.next
+  const second = complete(s)
+  assert.equal(second.action, CONTACT_COMPLETE_FINISH)
+  // Finish clears the armed flag but leaves the camera marked as fired.
+  assert.deepEqual(second.next, { armed: false, fired: true })
 })
 
-test('hitMatchesAtBat accepts matching, missing, and unknown at-bat indexes', () => {
-  assert.equal(hitMatchesAtBat(null, 4), false)
-  assert.equal(hitMatchesAtBat(readyHit, 4), true)
-  assert.equal(hitMatchesAtBat(readyHit, 5), false)
-
-  // A missing at-bat on either side is a match, so bundled/legacy payloads
-  // without the index still count as belonging to the active pitch.
-  assert.equal(hitMatchesAtBat(readyHit, null), true)
-  assert.equal(hitMatchesAtBat(readyHit, undefined), true)
-  assert.equal(hitMatchesAtBat({ ...readyHit, atBatIndex: null }, 4), true)
+test('contactCompletionAction defaults arm a fresh eligible contact play', () => {
+  const action = contactCompletionAction({ isContactPlay: true, armed: false, fired: false })
+  assert.equal(action, CONTACT_COMPLETE_ARM)
 })
 
-test('isBattedBallLaunchable fires fouls immediately and waits for an in-play fielding point', () => {
-  // A foul synthesizes its own flight, so it launches with no live hit at all.
-  assert.equal(isBattedBallLaunchable({ hit: null, atBatIndex: 4, isFoul: true }), true)
+test('queued plays skip the fielder-cam and finish on the first completion', () => {
+  const { action, next } = complete({ armed: false, fired: false }, { queuedPlays: true })
+  assert.equal(action, CONTACT_COMPLETE_FINISH)
+  assert.deepEqual(next, { armed: false, fired: false })
+})
 
-  // A matching hit with a fielding point launches.
-  assert.equal(isBattedBallLaunchable({ hit: readyHit, atBatIndex: 4, isFoul: false }), true)
+test('comparison mode skips the auto-fielder-cam and finishes at once', () => {
+  const { action } = complete({ armed: false, fired: false }, { compareActive: true })
+  assert.equal(action, CONTACT_COMPLETE_FINISH)
+})
 
-  // The same hit must not launch for a different at-bat (stale hit).
-  assert.equal(isBattedBallLaunchable({ hit: readyHit, atBatIndex: 5, isFoul: false }), false)
+test('auto-fielder-cam disabled finishes on the first completion', () => {
+  const { action, next } = complete({ armed: false, fired: false }, { autoFielderCam: false })
+  assert.equal(action, CONTACT_COMPLETE_FINISH)
+  assert.deepEqual(next, { armed: false, fired: false })
+})
 
-  // A matching hit without a fielding point must wait instead of animating a
-  // reconstructed/wrong trajectory.
-  const noFieldingPoint = { ...readyHit, coordX: null, coordY: null }
+test('an already-fired camera never re-arms', () => {
+  // e.g. the camera fired for an earlier play and wasn't reset.
+  const { action } = complete({ armed: false, fired: true })
+  assert.equal(action, CONTACT_COMPLETE_FINISH)
+})
+
+test('a non-contact play finishes normally and never arms', () => {
+  const state = { armed: false, fired: false }
+  const action = contactCompletionAction({ ...state, isContactPlay: false })
+  assert.equal(action, CONTACT_COMPLETE_FINISH)
+  // fielderCamNextState still just clears armed (no actual state to arm).
+  assert.deepEqual(fielderCamNextState(state, action), { armed: false, fired: false })
+})
+
+// ── Gentle stuck-play auto-advance (missing Statcast hit) ───────────────────
+
+test('stuck-play auto-advance fires only for a contacted, unlaunched play past its deadline', () => {
   assert.equal(
-    isBattedBallLaunchable({ hit: noFieldingPoint, atBatIndex: 4, isFoul: false }),
+    shouldAutoAdvanceStuckPlay({
+      contactSwing: true, launched: false, completeEmitted: false, deadlineExceeded: true,
+    }),
+    true,
+  )
+})
+
+test('stuck-play auto-advance does NOT fire before the deadline (no early spoiling)', () => {
+  // A merely-late Statcast hit hasn't exceeded the 30s window yet.
+  assert.equal(
+    shouldAutoAdvanceStuckPlay({
+      contactSwing: true, launched: false, completeEmitted: false, deadlineExceeded: false,
+    }),
     false,
   )
+})
 
-  // No hit yet: wait for the real hit rather than launching a demo sample.
-  assert.equal(isBattedBallLaunchable({ hit: null, atBatIndex: 4, isFoul: false }), false)
+test('stuck-play auto-advance does NOT fire for a non-contact pitch', () => {
+  assert.equal(
+    shouldAutoAdvanceStuckPlay({
+      contactSwing: false, launched: false, completeEmitted: false, deadlineExceeded: true,
+    }),
+    false,
+  )
+})
+
+test('stuck-play auto-advance does NOT fire once the play already completed', () => {
+  assert.equal(
+    shouldAutoAdvanceStuckPlay({
+      contactSwing: true, launched: false, completeEmitted: true, deadlineExceeded: true,
+    }),
+    false,
+  )
+})
+
+test('stuck-play auto-advance does NOT fire in comparison mode', () => {
+  assert.equal(
+    shouldAutoAdvanceStuckPlay({
+      contactSwing: true, launched: false, completeEmitted: false, deadlineExceeded: true, comparison: true,
+    }),
+    false,
+  )
+})
+
+test('stuck-play auto-advance does NOT fire when the play did launch', () => {
+  assert.equal(
+    shouldAutoAdvanceStuckPlay({
+      contactSwing: true, launched: true, completeEmitted: false, deadlineExceeded: true,
+    }),
+    false,
+  )
 })

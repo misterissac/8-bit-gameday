@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { pitchTypeColor } from '../util/pitchType';
 
 // Tunneling color code, matching the at-bat spec:
 //   red = strike, blue = in play (no outs), purple = in play (outs),
@@ -30,7 +31,7 @@ const OUTCOME_LABELS = {
  * (FF / SL / ...) instead of the pitch number and clicking is disabled, which
  * powers the whole-game "all pitches the batter has faced" view.
  */
-export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchNumber = null, onSelect, selectionMode = false, selectedPlayIds = null, onToggleSelect, showPitchType = false }) {
+export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchNumber = null, onSelect, selectionMode = false, selectedPlayIds = null, onToggleSelect, showPitchType = false, colorBy = 'outcome' }) {
   const W = 200;
   const H = 250;
   const plateWidthFt = 17 / 12; // 1.4167 ft
@@ -116,7 +117,11 @@ export function AtBatZone({ pitches = [], szTop = 3.5, szBot = 1.5, activePitchN
       {/* Pitch location dots, numbered in the order they were thrown */}
       {orderedDots.map((p) => {
         const key = dotKey(p);
-        const color = OUTCOME_COLORS[p.outcome] || OUTCOME_COLORS.other;
+        // ``colorBy='pitchType'`` (the whole-game view's pitch-type filter)
+        // colours the dots by the pitch's type instead of its outcome.
+        const color = colorBy === 'pitchType'
+          ? pitchTypeColor(p.pitch_type ?? (p.pitch || {}).pitch_type ?? null)
+          : OUTCOME_COLORS[p.outcome] || OUTCOME_COLORS.other;
         // The whole-game view shows every pitch as a read-only summary, so
         // replay (and compare selection) are disabled there.
         const clickable = !showPitchType && !!p.replayable;

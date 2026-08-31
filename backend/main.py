@@ -7,6 +7,7 @@ import io
 import json
 import time
 import threading
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 import requests
@@ -585,18 +586,159 @@ def _feed_url(game_pk: str = GAME_PK) -> str:
 # ball) indefinitely. On timeout we raise a clean 502 so the client can retry.
 MLB_FEED_TIMEOUT_SECONDS = 15
 
+# The live frontend polls several endpoints (trajectory, batted-ball,
+# game-state, game-status) on ~1s intervals, and each used to re-fetch and
+# re-parse the full MLB live feed independently. Cache the parsed feed per
+# game for a short TTL so polls that land within the same window share one
+# fetch. App.jsx fires trajectory + batted-ball in the same tick, and the
+# scorebug's game-state/status poll sits on a parallel timer, so this cuts the
+# statsapi.mlb.com request volume dramatically without making the feed any
+# staler than the natural poll cadence (a refreshed feed is at most ~1s old).
+# The trajectory/batted-ball *response* caches only save the simulation build;
+# this feed cache is what stops the repeated external fetches.
+FEED_CACHE_TTL_SECONDS = 1.0
+_FEED_CACHE: dict[str, dict] = {}
+_FEED_CACHE_GUARD = threading.RLock()
+# Per-game single-flight locks so polls for DIFFERENT games' cold fetches
+# aren't serialized, while concurrent polls for the SAME game that all miss the
+# TTL (a slow feed, or a tight cluster of ticks) share one in-flight request
+# instead of each issuing their own. A long session can poll many games, and
+# each distinct game registers a lock, so the window is bounded (mirroring the
+# response-cursor caches) by ``_prune_feed_build_locks``.
+_FEED_BUILD_LOCKS: dict[str, threading.Lock] = {}
+# ``time.monotonic()`` of the last time each game's feed lock was touched, used
+# by the LRU-style eviction below. Kept parallel to ``_FEED_BUILD_LOCKS``.
+_FEED_BUILD_LOCKS_LAST_USED: dict[str, float] = {}
+# Cap on distinct games with a cached feed lock, mirroring the bounded cursor
+# cache window. Kept generous since a live frontend only tracks a handful of
+# games at once.
+_FEED_BUILD_LOCKS_MAX_ENTRIES = 64
+# Hard cap on live parsed-feed entries resident in ``_FEED_CACHE``. The TTL
+# alone only bounds how *old* an entry can be, not how many live entries a
+# burst of polls across many games can hold (each is the full ~1MB parsed
+# feed), and ``_FEED_BUILD_LOCKS_MAX_ENTRIES`` bounds locks, not the payloads
+# they serve. Eviction is LRU-by-fetch-time, run inside the same prune.
+_FEED_CACHE_MAX_ENTRIES = 64
+
+
+def _prune_feed_build_locks() -> None:
+    """Bound the per-game feed single-flight locks AND parsed feeds (LRU).
+
+    Heavy sessions poll many games; without a cap each distinct game_pk would
+    grow a lock entry (and a parsed feed) forever. Mirroring the
+    response-cursor caches, once ``_FEED_BUILD_LOCKS`` passes its max entries
+    the least-recently-used idle locks are evicted. A lock that is currently
+    held (an in-flight fetch) is never evicted, so single-flight correctness is
+    preserved: a later poll just lazily recreates a fresh lock, at worst costing
+    one extra fetch. Expired feed-cache entries are dropped at the same time so
+    stale games no longer pin their (potentially large) parsed feeds, and any
+    remaining live entries over ``_FEED_CACHE_MAX_ENTRIES`` are also evicted
+    (LRU by fetch time) so a burst across many games can't pin unbounded
+    parsed JSON.
+
+    The caller must not hold any feed build lock; only ``_FEED_CACHE_GUARD`` is
+    acquired here.
+    """
+    max_entries = _FEED_BUILD_LOCKS_MAX_ENTRIES
+    if max_entries < 1:
+        return
+    feed_max = _FEED_CACHE_MAX_ENTRIES
+    now = time.monotonic()
+    with _FEED_CACHE_GUARD:
+        # Free already-expired feed payloads first: they can't be served, so
+        # keeping them only wastes the parsed JSON and pins dead game_pks.
+        for game, entry in list(_FEED_CACHE.items()):
+            if now - entry["fetched_at"] >= FEED_CACHE_TTL_SECONDS:
+                _FEED_CACHE.pop(game, None)
+
+        # Hard cap on live entries so many games polled within the same TTL
+        # window can't pin large parsed feeds without bound. Evict the oldest
+        # fetched, skipping a game whose fetch is currently in flight so we
+        # don't discard a feed that just landed.
+        if feed_max >= 1 and len(_FEED_CACHE) > feed_max:
+            feed_candidates = sorted(
+                _FEED_CACHE.keys(),
+                key=lambda g: _FEED_CACHE[g]["fetched_at"],
+            )
+            excess_feed = len(_FEED_CACHE) - feed_max
+            for game in feed_candidates:
+                if excess_feed <= 0:
+                    break
+                lock = _FEED_BUILD_LOCKS.get(game)
+                if lock is not None and lock.locked():
+                    # In-flight fetch for this game; let it finish and land
+                    # before evicting.
+                    continue
+                _FEED_CACHE.pop(game, None)
+                excess_feed -= 1
+
+        excess = len(_FEED_BUILD_LOCKS) - max_entries
+        if excess <= 0:
+            return
+        candidates = sorted(
+            (g for g in _FEED_BUILD_LOCKS if g in _FEED_BUILD_LOCKS_LAST_USED),
+            key=lambda g: _FEED_BUILD_LOCKS_LAST_USED[g],
+        )
+        for game in candidates:
+            if excess <= 0:
+                break
+            lock = _FEED_BUILD_LOCKS.get(game)
+            if lock is None or lock.locked():
+                # An in-flight fetch owns this lock; skip it and try another,
+                # leaving the window slightly over cap until the fetch releases.
+                continue
+            _FEED_BUILD_LOCKS.pop(game, None)
+            _FEED_BUILD_LOCKS_LAST_USED.pop(game, None)
+            excess -= 1
+
+
+def _clear_feed_cache() -> None:
+    """Drop every cached feed and its single-flight lock (test helper)."""
+    with _FEED_CACHE_GUARD:
+        _FEED_CACHE.clear()
+        _FEED_BUILD_LOCKS.clear()
+        _FEED_BUILD_LOCKS_LAST_USED.clear()
+
 
 def _fetch_feed(game_pk: str = GAME_PK) -> dict:
-    """Fetch + parse the MLB live feed with a timeout, raising a clean 502 on
-    a network error/timeout or a non-200 response instead of leaking a raw
-    traceback (which FastAPI would surface as an opaque 500)."""
-    try:
-        response = requests.get(_feed_url(game_pk), timeout=MLB_FEED_TIMEOUT_SECONDS)
-    except requests.RequestException:
-        raise HTTPException(status_code=502, detail="Failed to fetch from MLB API (network error or timeout)")
-    if response.status_code != 200:
-        raise HTTPException(status_code=502, detail="Failed to fetch from MLB API")
-    return response.json()
+    """Return the latest parsed MLB live feed for a game, cached briefly.
+
+    Fetches + parses the MLB live feed with a timeout, raising a clean 502 on a
+    network error/timeout or a non-200 response instead of leaking a raw
+    traceback (which FastAPI would surface as an opaque 500). Serves a cached
+    copy to concurrent polls within ``FEED_CACHE_TTL_SECONDS`` so they don't
+    each hammer statsapi.mlb.com, single-flighting a cold/missed fetch so only
+    one request is issued per game at a time.
+    """
+    # Opportunistically bound the per-game feed locks / expired feed entries.
+    _prune_feed_build_locks()
+    now = time.monotonic()
+    with _FEED_CACHE_GUARD:
+        entry = _FEED_CACHE.get(game_pk)
+        if entry and now - entry["fetched_at"] < FEED_CACHE_TTL_SECONDS:
+            return entry["data"]
+
+    build_lock = _cache_build_lock(
+        _FEED_BUILD_LOCKS, _FEED_CACHE_GUARD, game_pk, _FEED_BUILD_LOCKS_LAST_USED
+    )
+    with build_lock:
+        # Re-check after winning the single-flight lock: the leader may have
+        # populated the cache while we waited on a concurrent cold fetch.
+        now = time.monotonic()
+        with _FEED_CACHE_GUARD:
+            entry = _FEED_CACHE.get(game_pk)
+            if entry and now - entry["fetched_at"] < FEED_CACHE_TTL_SECONDS:
+                return entry["data"]
+        try:
+            response = requests.get(_feed_url(game_pk), timeout=MLB_FEED_TIMEOUT_SECONDS)
+        except requests.RequestException:
+            raise HTTPException(status_code=502, detail="Failed to fetch from MLB API (network error or timeout)")
+        if response.status_code != 200:
+            raise HTTPException(status_code=502, detail="Failed to fetch from MLB API")
+        data = response.json()
+        with _FEED_CACHE_GUARD:
+            _FEED_CACHE[game_pk] = {"data": data, "fetched_at": time.monotonic()}
+        return data
 
 # Pitch ``details.call.code`` values that mean the batter swung. Used to drive
 # the batter-swing animation: "X" = in play, "S" = swinging strike, "F" = foul,
@@ -643,14 +785,23 @@ def _pitch_is_simulatable(pitch_event: dict) -> bool:
 _TRAJECTORY_CACHE: dict[tuple[str, str, str], dict] = {}
 _TRAJECTORY_CACHE_GUARD = threading.RLock()
 _TRAJECTORY_BUILD_LOCKS: dict[tuple[str, str, str], threading.Lock] = {}
+# ``time.monotonic()`` of the last time each trajectory build lock was touched,
+# used by the LRU-style eviction in ``_prune_build_locks``.
+_TRAJECTORY_BUILD_LOCKS_LAST_USED: dict[tuple[str, str, str], float] = {}
 _BATTED_BALL_CACHE: dict[tuple[str, str], dict] = {}
 _BATTED_BALL_CACHE_GUARD = threading.RLock()
 _BATTED_BALL_BUILD_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+_BATTED_BALL_BUILD_LOCKS_LAST_USED: dict[tuple[str, str], float] = {}
 # Cursor-specific responses are useful for a short catch-up window, but keeping
 # every cursor seen during a long game would make the in-memory cache grow once
 # per applied pitch/hit. Keep a bounded LRU-like window per game/environment.
+# The same window caps the per-key single-flight build locks (mirroring
+# ``_prune_feed_build_locks``) so a long session polling many games/cursors
+# doesn't accumulate a lock entry per distinct cursor forever.
 _TRAJECTORY_CURSOR_CACHE_MAX_ENTRIES = 16
 _BATTED_BALL_CURSOR_CACHE_MAX_ENTRIES = 16
+_TRAJECTORY_BUILD_LOCKS_MAX_ENTRIES = 16
+_BATTED_BALL_BUILD_LOCKS_MAX_ENTRIES = 16
 
 
 def _prune_cursor_cache_entries(
@@ -694,14 +845,74 @@ def _prune_cursor_cache_entries(
         cache.pop(key, None)
 
 
-def _cache_build_lock(lock_map: dict, guard: threading.RLock, key):
-    """Return the single-flight lock for one cache key."""
+def _cache_build_lock(
+    lock_map: dict,
+    guard: threading.RLock,
+    key,
+    last_used_map: dict | None = None,
+):
+    """Return the single-flight lock for one cache key.
+
+    When ``last_used_map`` is provided, the key's access time is recorded under
+    the guard so ``_prune_build_locks`` can evict least-recently-used entries.
+    """
     with guard:
         lock = lock_map.get(key)
         if lock is None:
             lock = threading.Lock()
             lock_map[key] = lock
+        if last_used_map is not None:
+            last_used_map[key] = time.monotonic()
         return lock
+
+
+def _prune_build_locks(
+    lock_map: dict,
+    last_used_map: dict,
+    guard: threading.RLock,
+    scope: tuple,
+    max_entries: int,
+) -> None:
+    """Bound the single-flight build locks within one cache scope (LRU).
+
+    Mirrors ``_prune_cursor_cache_entries``: the response caches already cap
+    stale cursor entries per game/environment, but each of those cursor keys
+    also registered a single-flight build lock that otherwise lived forever.
+    Once a scope (e.g. ``(game_pk, env)`` for trajectory, ``(game_pk,)`` for
+    batted-ball) holds more than ``max_entries`` locks, the least-recently-used
+    idle locks are evicted. A lock currently held (an in-flight simulation) is
+    never evicted, so a later request just lazily recreates it — at worst
+    costing one extra rebuild. The caller holds ``guard`` (an RLock, so nested
+    acquisition is fine) and may itself be holding the lock for this request's
+    key, which ``lock.locked()`` protects.
+    """
+    if max_entries < 1 or not isinstance(scope, tuple):
+        return
+    with guard:
+        scoped = [
+            key
+            for key in lock_map
+            if (
+                isinstance(key, tuple)
+                and len(key) == len(scope) + 1
+                and key[:len(scope)] == scope
+            )
+        ]
+        excess = len(scoped) - max_entries
+        if excess <= 0:
+            return
+        scoped.sort(key=lambda key: (last_used_map.get(key, 0.0), str(key)))
+        for key in scoped:
+            if excess <= 0:
+                break
+            lock = lock_map.get(key)
+            if lock is None or lock.locked():
+                # In-flight build; skip it and try another, leaving the window
+                # slightly over cap until the build finishes and releases.
+                continue
+            lock_map.pop(key, None)
+            last_used_map.pop(key, None)
+            excess -= 1
 
 
 def _stable_fingerprint(value) -> str:
@@ -894,20 +1105,84 @@ _NON_PITCH_OUTCOME_EVENTS = {
 # ---------------------------------------------------------------------------
 _SAVANT_SEARCH_URL = "https://baseballsavant.mlb.com/statcast_search/csv"
 _savant_rows_cache: dict[str, list[dict]] = {}
+_savant_rows_building: set[str] = set()
+_savant_rows_next_attempt: dict[str, float] = {}
+# ``time.monotonic()`` of the last access to each game's rows, kept parallel to
+# ``_savant_rows_cache`` so ``_prune_savant_rows_cache`` can evict
+# least-recently-used entries.
+_savant_rows_cache_last_used: dict[str, float] = {}
+_savant_rows_lock = threading.Lock()
+_SAVANT_ROWS_REBUILD_COOLDOWN_SECONDS = 60
+# Cap on distinct games whose parsed Statcast CSV stays resident. Each entry is
+# the full per-pitch CSV for one game (thousands of rows), so it's bounded more
+# tightly than the lock/cursor windows: a live frontend tracks only a handful of
+# games at once, and evicted games are re-scraped lazily on their next visit.
+_SAVANT_ROWS_CACHE_MAX_ENTRIES = 32
+
+
+def _prune_savant_rows_cache() -> None:
+    """Bound the per-game Savant CSV rows cache with an LRU-style window.
+
+    Each entry holds the full parsed Statcast CSV for a game, so a long session
+    touching many games would otherwise grow it (and the process's memory)
+    without bound. Once ``_savant_rows_cache`` passes
+    ``_SAVANT_ROWS_CACHE_MAX_ENTRIES`` the least-recently-used games that are
+    NOT mid-fetch are evicted, dropping their rows, their parallel ``next_attempt``
+    backoff entry, and their last-used stamp. A game whose rebuild thread is
+    still running is never evicted (its ``building`` flag stays set and we skip
+    it), so a later poll doesn't re-scrape mid-build.
+
+    Caller must not hold ``_savant_rows_lock``; it is acquired here.
+    """
+    max_entries = _SAVANT_ROWS_CACHE_MAX_ENTRIES
+    if max_entries < 1:
+        return
+    with _savant_rows_lock:
+        excess = len(_savant_rows_cache) - max_entries
+        if excess <= 0:
+            return
+        candidates = sorted(
+            (g for g in _savant_rows_cache if g in _savant_rows_cache_last_used),
+            key=lambda g: _savant_rows_cache_last_used[g],
+        )
+        for game in candidates:
+            if excess <= 0:
+                break
+            if game in _savant_rows_building:
+                # A rebuild is in flight for this game; keep its rows and flag so
+                # the fetch can land and the rows stay cachable.
+                continue
+            _savant_rows_cache.pop(game, None)
+            _savant_rows_next_attempt.pop(game, None)
+            _savant_rows_cache_last_used.pop(game, None)
+            excess -= 1
 
 
 def _fetch_savant_rows(game_pk: str, game_date: str | None) -> list[dict]:
-    """Fetch and cache the per-pitch Statcast search CSV rows for a game.
+    """Per-pitch Statcast search CSV rows for a game, fetched in the background.
 
     Savant's ``statcast_search`` endpoint has no ``game_pk`` filter, so the
     rows are fetched for a window around the game's official date (exclusive
     bounds, widened by two days to absorb timezone drift) and filtered to this
-    game's ``game_pk`` column. Returns an empty list when the date is unknown
-    or on any failure, so callers fall back to a neutral swing plane without
-    breaking the trajectory endpoint.
+    game's ``game_pk`` column.
+
+    The fetch runs in a background daemon thread so a cold trajectory build is
+    not blocked on the (up to 15s) Savant round-trip — the same treatment as
+    the xBA grid and sprint-speed map. It is single-flighted (at most one
+    in-flight request per game) and a failed/empty fetch backs off for
+    ``_SAVANT_ROWS_REBUILD_COOLDOWN_SECONDS`` so a down Savant can't spawn a
+    fresh scrape on every poll. Until a successful fetch lands, callers get
+    the current (possibly empty) rows and fall back to a neutral swing plane /
+    live formation, so the trajectory endpoint never waits on Savant; the row
+    values (``swing_path_tilt``, ``attack_angle``, formation) enrich the next
+    rebuilt payloads once the fetch completes.
     """
+    _prune_savant_rows_cache()
     key = str(game_pk)
+    now_mono = time.monotonic()
     if key in _savant_rows_cache:
+        with _savant_rows_lock:
+            _savant_rows_cache_last_used[key] = now_mono
         return _savant_rows_cache[key]
     game_day = None
     if game_date:
@@ -916,40 +1191,74 @@ def _fetch_savant_rows(game_pk: str, game_date: str | None) -> list[dict]:
         except ValueError:
             game_day = None
     if game_day is None:
-        _savant_rows_cache[key] = []
+        with _savant_rows_lock:
+            _savant_rows_cache[key] = []
+            _savant_rows_cache_last_used[key] = now_mono
         return []
-    try:
-        resp = requests.get(
-            _SAVANT_SEARCH_URL,
-            params={
-                "all": "true",
-                "type": "details",
-                "game_date_gt": (game_day - timedelta(days=2)).strftime('%Y-%m-%d'),
-                "game_date_lt": (game_day + timedelta(days=2)).strftime('%Y-%m-%d'),
-                "min_pitches": 0,
-                "min_results": 0,
-                "group_by": "name",
-                "sort_col": "pitches",
-                "player_event_sort": "h_launch_speed",
-                "sort_order": "desc",
-                "min_abs": 0,
-                "min_pas": 0,
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-        rows = [
-            row for row in csv.DictReader(io.StringIO(resp.text))
-            if row.get('game_pk') == key
-        ]
-    except Exception:
-        rows = []
-    # Only cache successful fetches: games Savant has not ingested yet return
-    # empty, and caching that would keep the trajectory null forever even after
-    # the data arrives.
-    if rows:
-        _savant_rows_cache[key] = rows
-    return rows
+
+    now = time.time()
+    with _savant_rows_lock:
+        if key in _savant_rows_cache:
+            _savant_rows_cache_last_used[key] = now_mono
+            return _savant_rows_cache[key]
+        if key in _savant_rows_building or now < _savant_rows_next_attempt.get(key, 0.0):
+            _savant_rows_cache_last_used[key] = now_mono
+            return _savant_rows_cache.get(key, [])
+        _savant_rows_building.add(key)
+        _savant_rows_cache_last_used[key] = now_mono
+
+    def _rebuild():
+        try:
+            resp = requests.get(
+                _SAVANT_SEARCH_URL,
+                params={
+                    "all": "true",
+                    "type": "details",
+                    "game_date_gt": (game_day - timedelta(days=2)).strftime('%Y-%m-%d'),
+                    "game_date_lt": (game_day + timedelta(days=2)).strftime('%Y-%m-%d'),
+                    "min_pitches": 0,
+                    "min_results": 0,
+                    "group_by": "name",
+                    "sort_col": "pitches",
+                    "player_event_sort": "h_launch_speed",
+                    "sort_order": "desc",
+                    "min_abs": 0,
+                    "min_pas": 0,
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            rows = [
+                row for row in csv.DictReader(io.StringIO(resp.content.decode("utf-8-sig")))
+                if row.get('game_pk') == key
+            ]
+            # Only cache successful, non-empty fetches: games Savant has not
+            # ingested yet return empty, and caching that would keep the
+            # trajectory null forever even after the data arrives.
+            if rows:
+                with _savant_rows_lock:
+                    _savant_rows_cache[key] = rows
+                    _savant_rows_cache_last_used[key] = time.monotonic()
+                    _savant_rows_next_attempt.pop(key, None)
+                    _savant_rows_building.discard(key)
+                _prune_savant_rows_cache()
+                print(f"[savant-rows] loaded {len(rows):,} rows for game {key}")
+            else:
+                raise ValueError("no statcast rows for game")
+        except Exception:
+            # Back off before the next attempt so rapid polls can't each
+            # re-spawn a scrape while Savant is down / hasn't ingested the game.
+            with _savant_rows_lock:
+                _savant_rows_next_attempt[key] = (
+                    time.time() + _SAVANT_ROWS_REBUILD_COOLDOWN_SECONDS
+                )
+                _savant_rows_cache_last_used[key] = time.monotonic()
+        finally:
+            with _savant_rows_lock:
+                _savant_rows_building.discard(key)
+
+    threading.Thread(target=_rebuild, daemon=True).start()
+    return _savant_rows_cache.get(key, [])
 
 
 def _bat_tracking_for_pitch(game_pk: str, batter_id, at_bat_index, pitch_number, game_date: str | None = None) -> dict:
@@ -978,6 +1287,84 @@ def _bat_tracking_for_pitch(game_pk: str, batter_id, at_bat_index, pitch_number,
                     pass
             return result
     return result
+
+
+def _combine_fielding_alignment(infield: str, outfield: str) -> str:
+    """Combine Statcast infield/outfield alignment labels into one panel label.
+
+    The frontend DefenseDiagram understands Standard / Strategic / Infield In.
+    Savant labels infield alignments as Standard, Infield In, Strategic,
+    Infield Shift (and occasionally "Infield shade" for a mild pull shade), and
+    outfield alignments as Standard, Strategic or 4th Outfielder. The infield
+    label drives the diagram; a shift/shade or a non-standard outfield
+    alignment reads as Strategic.
+    """
+    if infield == 'Infield In':
+        return 'Infield In'
+    if infield in ('Strategic', 'Infield Shift', 'Infield shade'):
+        return 'Strategic'
+    if outfield in ('Strategic', '4th Outfielder'):
+        return 'Strategic'
+    return 'Standard'
+
+
+def _formation_for_pitch(game_pk: str, game_date: str | None,
+                         play: dict, pitch_event: dict) -> str | None:
+    """Look up the defensive formation in effect for one historical pitch.
+
+    The statsapi feed only carries the CURRENT formation (``linescore.defense.
+    defensiveAlignment``, when present at all), so a replayed at-bat would
+    otherwise keep showing today's formation. The per-pitch historical
+    formation (infield in / strategic / shift) lives in Savant's Statcast rows,
+    which the bat-tracking lookup above already fetches for this game — match
+    the same row by batter + at-bat + pitch number. Returns None when the row
+    is unavailable, so callers fall back to the live formation.
+    """
+    batter_id = (play.get('matchup') or {}).get('batter', {}).get('id')
+    at_bat_index = (play.get('about') or {}).get('atBatIndex')
+    pitch_number = pitch_event.get('pitchNumber')
+    if batter_id is None or at_bat_index is None or pitch_number is None:
+        return None
+    target_at_bat = str(int(at_bat_index) + 1)
+    for row in _fetch_savant_rows(game_pk, game_date):
+        if (row.get('batter') == str(batter_id)
+                and row.get('at_bat_number') == target_at_bat
+                and row.get('pitch_number') == str(pitch_number)):
+            return _combine_fielding_alignment(
+                (row.get('if_fielding_alignment') or '').strip(),
+                (row.get('of_fielding_alignment') or '').strip(),
+            )
+    return None
+
+
+def _live_formation_from_savant(game_pk: str, game_date: str | None,
+                                all_plays: list | None) -> str | None:
+    """Return the defensive formation for the newest pitch Statcast knows.
+
+    The statsapi feed stopped carrying a per-pitch defensive alignment (the
+    live feed's ``linescore.defense.defensiveAlignment`` is absent in the
+    current API, so ``_defense_snapshot`` always reports Standard), while
+    Statcast still tracks the real infield-in / strategic setup per pitch.
+
+    The live ``/api/game-state`` and ``/api/game-status`` formation should
+    therefore come from Statcast, not the effectively-dead linescore field.
+    Walk the play log newest-pitch-first and return the alignment of the
+    latest pitch Savant has ingested (reusing the same batter + at-bat +
+    pitch-number match as the trajectory snapshot's historical ``_formation_for_pitch``)
+    so the frontend's live DefenseDiagram reflects the team's actual setup.
+    Returns None when Savant has no data for the game yet, so callers fall
+    back to the live linescore label.
+    """
+    if not all_plays:
+        return None
+    for play in reversed(all_plays):
+        for ev in reversed(play.get('playEvents') or []):
+            if not ev.get('isPitch') or not ev.get('pitchNumber'):
+                continue
+            formation = _formation_for_pitch(game_pk, game_date, play, ev)
+            if formation is not None:
+                return formation
+    return None
 
 
 def _parse_height_inches(height_str) -> int | None:
@@ -1148,6 +1535,37 @@ def _build_trajectory_payload(data: dict, env: EnvironmentParameters, env_meta: 
     """
     last_play, last_pitch, last_pitch_index = _latest_simulatable_pitch(data)
     return _build_pitch_payload(data, last_play, last_pitch, last_pitch_index, env, env_meta, game_pk)
+
+
+def _induced_breaks_inches(pitch_data: dict):
+    """Return (h_break, ivb) in inches for a pitch event, matching Baseball
+    Savant's game feed (and the Savant CSV pfx_x/pfx_z, feet converted).
+
+    The live feed carries three different movement representations; Savant's
+    game feed displays the ``breaks`` object:
+      * IVB      = breaks.breakVerticalInduced
+      * H Break  = -breaks.breakHorizontal   (breakHorizontal is sign-flipped:
+        positive = toward 3B / catcher's left, so negating restores the
+        conventional positive = toward 1B / catcher's right)
+    ``coordinates.pfxX/pfxZ`` are a separate, smaller-magnitude raw
+    measurement that does NOT match Savant, so they only backfill payloads
+    whose ``breaks`` object lacks the induced-break fields (e.g. some
+    historical or cached feeds). Returns (None, None) when neither source has
+    a value. Nothing here comes from the physics simulation.
+    """
+    coordinates = pitch_data.get('coordinates') or {}
+    breaks = pitch_data.get('breaks') or {}
+
+    pfx_ivb = breaks.get('breakVerticalInduced')
+    pfx_h = breaks.get('breakHorizontal')
+    if pfx_ivb is None and coordinates.get('pfxZ') is not None:
+        pfx_ivb = float(coordinates['pfxZ'])
+    if pfx_h is None and coordinates.get('pfxX') is not None:
+        pfx_h = -float(coordinates['pfxX'])
+
+    pfx_z = float(pfx_ivb) if pfx_ivb is not None else None
+    pfx_x = -float(pfx_h) if pfx_h is not None else None
+    return pfx_x, pfx_z
 
 
 def _build_pitch_payload(data: dict, play: dict, pitch_event: dict, pitch_index: Optional[int],
@@ -1335,12 +1753,17 @@ def _build_pitch_payload(data: dict, play: dict, pitch_event: dict, pitch_index:
             break
         t_curr += dt
 
+    # Induced break values (inches) matching Baseball Savant's game feed — see
+    # _induced_breaks_inches for the source-of-truth rules.
+    pfx_x_payload, pfx_z_payload = _induced_breaks_inches(pitch_data)
+
     return {
         "success": True,
         "play_id": play_id,
         "at_bat_index": play.get('about', {}).get('atBatIndex'),
         "play_complete": bool((play.get('about') or {}).get('isComplete')),
         "pitcher": pitcher,
+        "pitcher_id": pitcher_id,
         "batter": batter,
         "batter_id": batter_id,
         "bat_side": bat_side,
@@ -1372,10 +1795,19 @@ def _build_pitch_payload(data: dict, play: dict, pitch_event: dict, pitch_index:
         "statcast_pz": statcast_pz,
         "statcast_px_mid": px_mid,
         "statcast_pz_mid": pz_mid,
-        # Statcast induced break (inches, raw pfxX/pfxZ) for the pitch panel's
-        # H/V Break rows.
-        "pfx_x": float(coordinates['pfxX']) if coordinates.get('pfxX') is not None else None,
-        "pfx_z": float(coordinates['pfxZ']) if coordinates.get('pfxZ') is not None else None,
+        # Statcast induced break (inches) for the pitch panel's H Break / IVB
+        # rows — the same values Baseball Savant's game feed displays. The feed
+        # carries three different movement representations; Savant uses the
+        # ``breaks`` object:
+        #   * IVB      = breaks.breakVerticalInduced
+        #   * H Break  = -breaks.breakHorizontal  (the feed's breakHorizontal
+        #     is sign-flipped: positive = toward 3B / catcher's left)
+        # ``coordinates.pfxX/pfxZ`` are a separate raw measurement with a
+        # different (smaller) magnitude and do NOT match Savant, so they are
+        # only a fallback for payloads whose ``breaks`` object lacks the
+        # induced-break fields. Nothing here comes from the physics simulation.
+        "pfx_x": pfx_x_payload,
+        "pfx_z": pfx_z_payload,
         "xba": xba,
         "batted_ball": batted_ball,
         "spin_efficiency":  sim_params.get('spin_efficiency'),
@@ -1388,7 +1820,9 @@ def _build_pitch_payload(data: dict, play: dict, pitch_event: dict, pitch_index:
         # Snapshot the score/count at this pitch so queued animations can
         # commit scoreboard changes in order instead of reading the feed's
         # already-advanced latest state.
-        "game_state": _game_state_snapshot(data, play, pitch_event, pitch_index),
+        "game_state": _game_state_snapshot(
+            data, play, pitch_event, pitch_index, game_pk=game_pk, game_date=game_date,
+        ),
         "trajectory": sim.trajectory,
         "quadratic_trajectory": quadratic_trajectory,
     }
@@ -1432,7 +1866,10 @@ def get_trajectory(env: str = "live", game_pk: str = GAME_PK,
         cache_key = (str(game_pk), cache_env, str(after_play_id or ""))
         source_key = _trajectory_source_key(data, resolved_env, env_meta)
         build_lock = _cache_build_lock(
-            _TRAJECTORY_BUILD_LOCKS, _TRAJECTORY_CACHE_GUARD, cache_key
+            _TRAJECTORY_BUILD_LOCKS,
+            _TRAJECTORY_CACHE_GUARD,
+            cache_key,
+            _TRAJECTORY_BUILD_LOCKS_LAST_USED,
         )
         with build_lock:
             with _TRAJECTORY_CACHE_GUARD:
@@ -1443,6 +1880,13 @@ def get_trajectory(env: str = "live", game_pk: str = GAME_PK,
                         _TRAJECTORY_CACHE,
                         cache_key,
                         _TRAJECTORY_CURSOR_CACHE_MAX_ENTRIES,
+                    )
+                    _prune_build_locks(
+                        _TRAJECTORY_BUILD_LOCKS,
+                        _TRAJECTORY_BUILD_LOCKS_LAST_USED,
+                        _TRAJECTORY_CACHE_GUARD,
+                        cache_key[:-1],
+                        _TRAJECTORY_BUILD_LOCKS_MAX_ENTRIES,
                     )
             if cached and cached["source_key"] == source_key:
                 print(f"TRAJECTORY CACHE HIT... game {game_pk} (env={cache_env})")
@@ -1520,6 +1964,13 @@ def get_trajectory(env: str = "live", game_pk: str = GAME_PK,
                     cache_key,
                     _TRAJECTORY_CURSOR_CACHE_MAX_ENTRIES,
                 )
+                _prune_build_locks(
+                    _TRAJECTORY_BUILD_LOCKS,
+                    _TRAJECTORY_BUILD_LOCKS_LAST_USED,
+                    _TRAJECTORY_CACHE_GUARD,
+                    cache_key[:-1],
+                    _TRAJECTORY_BUILD_LOCKS_MAX_ENTRIES,
+                )
             return payload
     except HTTPException:
         raise
@@ -1527,6 +1978,41 @@ def get_trajectory(env: str = "live", game_pk: str = GAME_PK,
         raise HTTPException(status_code=500, detail=f"Data parsing error: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Simulation failed: {e}")
+
+
+@app.get("/api/trajectory/prewarm")
+def prewarm_trajectory(game_pk: str = GAME_PK):
+    """Kick off a background trajectory build for a game, fire-and-forget.
+
+    The frontend calls this when it switches to a game so the first real poll
+    hits a warm cache instead of a cold rebuild. The build reuses the normal
+    trajectory logic (``get_trajectory``), so it shares ``get_trajectory``'s
+    build-cache, its single-flight build lock, and ``_fetch_feed``'s cache: a
+    concurrent poll never duplicates the work, an already-warm game is a no-op,
+    and an in-flight prewarm simply blocks the first poll on the shared lock
+    until the warm payload is cached. Failures are swallowed here — the next
+    real poll surfaces them normally.
+
+    Returns immediately with whether the game was already warm at call time.
+    """
+    game_pk = str(game_pk)
+    warm = False
+    with _TRAJECTORY_CACHE_GUARD:
+        cached = _TRAJECTORY_CACHE.get((game_pk, "live", ""))
+        warm = bool(cached)
+
+    if not warm:
+        def _prewarm():
+            try:
+                # after_play_id defaults to None, matching the very first poll
+                # a switching client makes (its cursor is reset to null).
+                get_trajectory(env="live", game_pk=game_pk)
+            except Exception:
+                # Best-effort: the client's next real poll surfaces any error.
+                pass
+
+        threading.Thread(target=_prewarm, daemon=True).start()
+    return {"success": True, "game_pk": game_pk, "warm": warm}
 
 
 @app.get("/api/trajectory/compare")
@@ -1718,6 +2204,23 @@ def _build_hit_payload(batted_play: dict, hit_data: dict, hit_event_index: int, 
 
     location = str(hit_data.get('location') or '8')
     fielder = _HIT_LOCATION_TO_FIELDER.get(location[:1], 'CF')
+    # Name of the fielder who fields this ball, so the fielder-cam's top-left
+    # pill (and any defense-facing label) can show the player instead of '—'.
+    # Recover the defensive alignment in effect at this hit's moment (handles a
+    # historical at-bat replay and half-inning changes) and fall back to the
+    # live alignment; None when the name can't be resolved.
+    fielder_name = None
+    alignment = None
+    try:
+        prefix = _prefix_through_pitch(data, batted_play, hit_event_index)
+        alignment, _ = _historical_defense_snapshot(data, prefix)
+    except Exception:
+        alignment = None
+    if not alignment:
+        alignment, _ = _defense_snapshot(
+            (data.get('liveData') or {}).get('linescore') or {}
+        )
+    fielder_name = ((alignment or {}).get(fielder) or {}).get('name') or None
 
     result = batted_play.get('result', {})
     matchup = batted_play.get('matchup', {})
@@ -1804,6 +2307,10 @@ def _build_hit_payload(batted_play: dict, hit_data: dict, hit_event_index: int, 
         "trajectory": hit_data.get('trajectory'),
         "hardness": hit_data.get('hardness'),
         "fielder": fielder,
+        # Both spellings: the frontend's normalizer prefers ``fielder_name`` but
+        # falls back to ``fielderName`` for older payloads.
+        "fielder_name": fielder_name,
+        "fielderName": fielder_name,
         "was_caught": was_caught,
         "runners": runners,
         "total_outs": total_outs,
@@ -1835,7 +2342,10 @@ def get_batted_ball(game_pk: str = GAME_PK,
         source_key = _batted_ball_source_key(data)
         cache_key = (str(game_pk), str(after_play_id or ""))
         build_lock = _cache_build_lock(
-            _BATTED_BALL_BUILD_LOCKS, _BATTED_BALL_CACHE_GUARD, cache_key
+            _BATTED_BALL_BUILD_LOCKS,
+            _BATTED_BALL_CACHE_GUARD,
+            cache_key,
+            _BATTED_BALL_BUILD_LOCKS_LAST_USED,
         )
         with build_lock:
             with _BATTED_BALL_CACHE_GUARD:
@@ -1846,6 +2356,13 @@ def get_batted_ball(game_pk: str = GAME_PK,
                         _BATTED_BALL_CACHE,
                         cache_key,
                         _BATTED_BALL_CURSOR_CACHE_MAX_ENTRIES,
+                    )
+                    _prune_build_locks(
+                        _BATTED_BALL_BUILD_LOCKS,
+                        _BATTED_BALL_BUILD_LOCKS_LAST_USED,
+                        _BATTED_BALL_CACHE_GUARD,
+                        cache_key[:-1],
+                        _BATTED_BALL_BUILD_LOCKS_MAX_ENTRIES,
                     )
             if cached and cached["source_key"] == source_key:
                 print(f"BATTED BALL CACHE HIT... game {game_pk}")
@@ -1891,6 +2408,13 @@ def get_batted_ball(game_pk: str = GAME_PK,
                     cache_key,
                     _BATTED_BALL_CURSOR_CACHE_MAX_ENTRIES,
                 )
+                _prune_build_locks(
+                    _BATTED_BALL_BUILD_LOCKS,
+                    _BATTED_BALL_BUILD_LOCKS_LAST_USED,
+                    _BATTED_BALL_CACHE_GUARD,
+                    cache_key[:-1],
+                    _BATTED_BALL_BUILD_LOCKS_MAX_ENTRIES,
+                )
             return payload
     except HTTPException:
         raise
@@ -1935,6 +2459,39 @@ def _classify_pitch_outcome(pitch_event: dict, play: dict) -> tuple:
         outcome = 'other'
 
     return outcome, outs, call_code, result_event
+
+
+def _game_state_before_pitch(data: dict, play: dict, pitch_event: dict,
+                             pitch_index: int, game_pk: str = GAME_PK) -> dict:
+    """Build the replay scoreboard state immediately before one pitch.
+
+    The truncated play copy keeps the at-bat's own result and runner movement
+    out of the state: before the pitch is thrown, none of the at-bat's runs or
+    base changes have happened yet, and the scoreboard must show the game as
+    it stood before the pitch, not the feed's final score/bases.
+    """
+    about = {**(play.get('about') or {}), 'isComplete': False}
+    before_play = {
+        **play,
+        'about': about,
+        'result': {},
+        'runners': [],
+        'playEvents': (play.get('playEvents') or [])[:pitch_index],
+    }
+    # _prefix_through_pitch matches plays by object identity, so the truncated
+    # copy would never be found and the whole (already-complete) feed would be
+    # included. Build the prefix explicitly: every play before this at-bat,
+    # then this at-bat with only the events thrown before the target pitch.
+    all_plays = (data.get('liveData') or {}).get('plays', {}).get('allPlays') or []
+    prefix = []
+    for existing in all_plays:
+        if existing is play:
+            prefix.append(before_play)
+            break
+        prefix.append(existing)
+    return _game_state_snapshot(
+        data, before_play, pitch_event, None, prefix=prefix, game_pk=game_pk,
+    )
 
 
 @app.get("/api/at-bat")
@@ -2028,6 +2585,9 @@ def get_at_bat(at_bat_index: Optional[int] = None, game_pk: str = GAME_PK):
             is_final_pitch = final_pitch_number is not None and pitch_number == final_pitch_number
             if pitch_payload is not None:
                 pitch_payload['is_at_bat_final'] = is_final_pitch
+                pitch_payload['game_state_before'] = _game_state_before_pitch(
+                    data, play, event, idx, game_pk=game_pk,
+                )
 
             pitches.append({
                 "pitch_number": pitch_number,
@@ -2191,7 +2751,7 @@ def get_batter_pitches(at_bat_index: Optional[int] = None, game_pk: str = GAME_P
         raise HTTPException(status_code=500, detail=f"Batter pitches parsing failed: {e}")
 
 
-def _occupied_bases(all_plays: list) -> list:
+def _occupied_bases(all_plays: list, game_type: str = None) -> list:
     """Return the bases currently occupied ('1B'/'2B'/'3B'), sorted.
 
     The feed's ``runners`` list only includes runners who moved, scored, or were
@@ -2203,6 +2763,16 @@ def _occupied_bases(all_plays: list) -> list:
     listed in feed order, so a batter reaching first can be listed before the
     runner who vacated first. Each runner's legs are therefore collapsed into a
     single departure/arrival, and all departures are applied before arrivals.
+
+    Extra-innings ghost runner (regular-season rule): each extra half-inning
+    starts with an automatic runner on second. The feed does not model this
+    runner as a persistent base occupant — the placement is implicit in the
+    half-inning start — so a naive replay of runner movements sees an empty
+    diamond even while a runner is standing on second. Seed the replay with
+    the ghost runner when ``game_type`` is "R" (regular season; postseason
+    game types start extra innings empty). When ``game_type`` is unknown the
+    seed still applies — the common case is regular season, and postseason
+    feeds always carry ``gameData.game.type`` so they are never ambiguous.
     """
     if not all_plays:
         return []
@@ -2210,6 +2780,12 @@ def _occupied_bases(all_plays: list) -> list:
     inning = last_about.get('inning')
     half = last_about.get('halfInning')
     bases = set()
+    ghost_active = False
+    if inning is not None and inning > 9 and half in ('top', 'bottom') \
+            and (game_type is None or game_type == 'R'):
+        bases.add('2B')
+        ghost_active = True
+    ghost_accounted = False
     for play in all_plays:
         about = play.get('about') or {}
         if about.get('inning') != inning or about.get('halfInning') != half:
@@ -2234,6 +2810,16 @@ def _occupied_bases(all_plays: list) -> list:
             end, is_out = last_leg_by_runner[rid]
             if not is_out and end in ('1B', '2B', '3B'):
                 arrivals.add(end)
+            elif ghost_active and not ghost_accounted and first_start is None \
+                    and (is_out or end == 'score'):
+                # Ghost runner resolved: the feed lists the automatic runner
+                # with no start base (it was never placed by a play). A
+                # null-start runner that scores or is put out can only be the
+                # ghost — vacate the seeded 2B. Only the first such runner per
+                # half-inning counts (later null-start scorers are batters,
+                # e.g. an inside-the-park home run).
+                departures.add('2B')
+                ghost_accounted = True
         bases -= departures
         bases |= arrivals
     return sorted(bases)
@@ -2331,8 +2917,279 @@ def _inning_ordinal(number) -> str | None:
     return f'{value}{suffix}'
 
 
+# Maps the feed's linescore.defense keys to Statcast position abbreviations.
+_DEFENSE_TO_CODE = {
+    'pitcher': 'P', 'catcher': 'C', 'first': '1B', 'second': '2B',
+    'third': '3B', 'shortstop': 'SS', 'left': 'LF', 'center': 'CF',
+    'right': 'RF',
+}
+
+
+def _defense_snapshot(linescore: dict) -> tuple:
+    """Return (alignment, formation) from a linescore block.
+
+    ``alignment`` maps position code → {id, name} for the nine fielders, from
+    the feed's linescore.defense block (which updates after every defensive
+    substitution). ``formation`` is the defensive alignment label — Standard /
+    Strategic / Infield In / etc. — defaulting to "Standard" when absent.
+    """
+    raw_defense = linescore.get('defense') or {}
+    alignment = {}
+    for key, code in _DEFENSE_TO_CODE.items():
+        player = raw_defense.get(key) or {}
+        if player.get('id'):
+            alignment[code] = {
+                'id': player['id'],
+                'name': player.get('fullName', ''),
+            }
+    formation = (raw_defense.get('defensiveAlignment')
+                 or raw_defense.get('formation')
+                 or 'Standard')
+    return alignment, formation
+
+
+def _historical_defense_snapshot(data: dict, prefix: list) -> tuple:
+    """Reconstruct the defensive alignment in effect for a historical moment.
+
+    The live feed's ``linescore.defense`` only carries the CURRENT alignment,
+    so a replayed at-bat's snapshot would otherwise keep showing today's
+    fielders during rewind mode. Which team was in the field decides how the
+    historical alignment is recovered:
+
+    * The SAME team the linescore currently shows: walk the substitution
+      events that happened after ``prefix``'s moment backwards, undoing each
+      swap, to recover the alignment as it stood then.
+    * The OTHER team (the snapshot's half-inning had the opposite team in the
+      field): the linescore's lineup belongs to the wrong team, so rebuild
+      the fielding team's alignment from its starting lineup and walk its
+      substitutions forward (see ``_forward_defense_walk``).
+
+    Returns ``(alignment, formation)``, or ``(None, None)`` when the current
+    alignment can't be walked to the target (e.g. the boxscore is too sparse
+    to rebuild the other team's starting lineup). Callers then fall back to
+    the live alignment.
+    """
+    live_data = data.get('liveData') or {}
+    linescore = live_data.get('linescore') or {}
+    all_plays = live_data.get('plays', {}).get('allPlays') or []
+    if not all_plays or not prefix:
+        return None, None
+
+    # The linescore's alignment belongs to the team defending the CURRENT
+    # half-inning (the away team in the top, the home team in the bottom).
+    current_half = (linescore.get('inningHalf') or '').lower() \
+        or ('top' if linescore.get('isTopInning') else 'bottom')
+    current_side = ('home' if current_half == 'top'
+                    else 'away' if current_half == 'bottom' else None)
+    target_half = (prefix[-1].get('about') or {}).get('halfInning')
+    target_side = ('home' if target_half == 'top'
+                   else 'away' if target_half == 'bottom' else None)
+
+    # Fallback formation label; the Statcast lookup in _game_state_snapshot
+    # overrides it with the formation actually in effect for the replayed pitch.
+    _, formation = _defense_snapshot(linescore)
+
+    if target_side is not None and current_side is not None and target_side != current_side:
+        # The snapshot's half-inning had the OTHER team in the field, whose
+        # historical lineup can't be derived from the linescore. Rebuild it
+        # from the team's starting lineup and walk forward instead.
+        alignment = _forward_defense_walk(data, prefix, target_side)
+        if not alignment:
+            return None, None
+        return alignment, formation
+
+    alignment, _ = _defense_snapshot(linescore)
+    if not alignment:
+        return None, None
+
+    # fullName lookup for every player who appeared in the game (the boxscore
+    # includes substitutes, whose names the substitution events don't repeat).
+    names = {}
+    box_teams = (live_data.get('boxscore') or {}).get('teams') or {}
+    for side in ('away', 'home'):
+        players = (box_teams.get(side) or {}).get('players') or {}
+        for entry in players.values():
+            person = entry.get('person') or {}
+            pid = person.get('id') or entry.get('id')
+            if pid:
+                names[pid] = person.get('fullName') or entry.get('fullName') or ''
+
+    # Undo every substitution that happened after the prefix's moment, newest
+    # first. The incoming-player id check both skips the other team's events
+    # and guarantees each swap applies to the spot the player actually holds.
+    for play in reversed(all_plays[len(prefix):]):
+        for ev in reversed(play.get('playEvents') or []):
+            event_type = (ev.get('details') or {}).get('eventType')
+            if event_type not in ('defensive_substitution', 'pitching_substitution'):
+                continue
+            new_id = (ev.get('player') or {}).get('id')
+            spot = (ev.get('position') or {}).get('abbreviation')
+            if new_id is None or spot not in alignment:
+                continue
+            if alignment.get(spot, {}).get('id') != new_id:
+                continue
+            description = (ev.get('details') or {}).get('description') or ''
+            old_spot = _extract_old_player_position(description)
+            if event_type == 'pitching_substitution':
+                # The pitcher slot is derived from the target play's matchup
+                # below. A double-switch event's replacedPlayer is a position
+                # player leaving ("…replacing first baseman X"), so restore
+                # him at the position the description names; plain pitching
+                # changes carry no replacedPlayer and stop here.
+                old_id = (ev.get('replacedPlayer') or {}).get('id')
+                if old_spot and old_spot in alignment and old_id:
+                    alignment[old_spot] = {'id': old_id, 'name': names.get(old_id, '')}
+                continue
+            old_id = (ev.get('replacedPlayer') or {}).get('id')
+            if old_id is None:
+                continue
+            old_name = names.get(old_id, '')
+            # A defensive shuffle names a different position for the outgoing
+            # player than the incoming one ("…replaces first baseman X, playing
+            # second base"): whoever was at the incoming player's spot moves to
+            # the outgoing player's vacated spot. Undo both legs; otherwise the
+            # outgoing player simply returns to the spot (same-position swap).
+            if (old_spot and old_spot != spot and old_spot in alignment
+                    and alignment.get(old_spot)):
+                displaced = alignment[old_spot]
+                alignment[old_spot] = {'id': old_id, 'name': old_name}
+                alignment[spot] = displaced
+            else:
+                alignment[spot] = {'id': old_id, 'name': old_name}
+
+    # The pitcher who faced the replayed at-bat comes from its own matchup
+    # (the linescore's pitcher is whoever is on the mound right now).
+    matchup = prefix[-1].get('matchup') or {}
+    pitcher = matchup.get('pitcher') or {}
+    if pitcher.get('id') and 'P' in alignment:
+        alignment['P'] = {
+            'id': pitcher['id'],
+            'name': pitcher.get('fullName', ''),
+        }
+
+    return alignment, formation
+
+
+def _forward_defense_walk(data: dict, prefix: list, side: str) -> dict | None:
+    """Rebuild ``side``'s defensive alignment as of ``prefix`` from the start.
+
+    Mirrors ``_historical_defense_snapshot``'s reverse walk for the team the
+    linescore's current defense does NOT show (the other half-inning's
+    fielders). The starting lineup comes from the boxscore: starters carry a
+    ``battingOrder`` of 100..900, and each player's first ``allPositions``
+    entry is the position they opened the game at (the boxscore's ``position``
+    field only reflects where they are now). Substitution, pitching-change and
+    defensive-switch events through ``prefix`` are then applied forward. The
+    feed lists a shuffle's moves as a chain (a displaced player's switch can
+    precede the move that displaces them), so each event simply assigns the
+    player's new spot and, at the play boundary, a player who moved belongs
+    only at their last-assigned spot.
+
+    Returns the alignment map, or ``None`` when the boxscore is too sparse to
+    rebuild the starting lineup (callers then keep the live alignment).
+    """
+    box_players = (
+        ((data.get('liveData') or {}).get('boxscore') or {})
+        .get('teams', {}).get(side, {}).get('players') or {}
+    )
+    names = {}
+    team_ids = set()
+    for entry in box_players.values():
+        pid = (entry.get('person') or {}).get('id') or entry.get('id')
+        if pid:
+            names[pid] = (entry.get('person') or {}).get('fullName') or entry.get('fullName') or ''
+            team_ids.add(pid)
+
+    alignment = {}
+    for entry in box_players.values():
+        bo = entry.get('battingOrder')
+        try:
+            boval = int(bo)
+        except (TypeError, ValueError):
+            continue
+        if boval % 100 != 0 or not (100 <= boval <= 900):
+            continue  # substitute or pitcher — not part of the starting lineup
+        positions = entry.get('allPositions') or []
+        pos_abbr = (positions[0].get('abbreviation') if positions
+                    else (entry.get('position') or {}).get('abbreviation'))
+        if pos_abbr not in ('P', 'C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF'):
+            continue  # designated hitters and pinch roles don't field
+        pid = (entry.get('person') or {}).get('id') or entry.get('id')
+        if pid is None:
+            continue
+        alignment[pos_abbr] = {'id': pid, 'name': names.get(pid, '')}
+    if len(alignment) < 8:
+        return None
+    # The starting pitcher carries no battingOrder (so the loop above skips
+    # him); the pitcher slot fills from pitching changes and the replayed
+    # at-bat's own matchup below.
+    alignment.setdefault('P', {})
+
+    # Walk the events through the prefix, assigning each moving player their
+    # new spot. Only the target team's players are applied — a play boundary
+    # can also carry the other team's switches.
+    for play in prefix:
+        last_assigned = {}
+        for ev in play.get('playEvents') or []:
+            new_id = (ev.get('player') or {}).get('id')
+            if new_id is None or new_id not in team_ids:
+                continue
+            event_type = (ev.get('details') or {}).get('eventType')
+            spot = (ev.get('position') or {}).get('abbreviation')
+            if event_type == 'defensive_substitution':
+                old_id = (ev.get('replacedPlayer') or {}).get('id')
+                old_spot = _extract_old_player_position(
+                    (ev.get('details') or {}).get('description') or ''
+                )
+                # A shuffle names a different position for the outgoing player
+                # ("…replaces first baseman X, playing second base"): the
+                # player displaced from the incoming spot moves to the vacated
+                # spot. Otherwise the incoming player simply takes the spot.
+                if (old_spot and old_spot != spot and old_spot in alignment
+                        and alignment[old_spot].get('id') == old_id
+                        and alignment.get(spot)):
+                    alignment[old_spot] = alignment[spot]
+                if spot in alignment:
+                    alignment[spot] = {'id': new_id, 'name': names.get(new_id, '')}
+                    last_assigned[new_id] = spot
+            elif event_type == 'defensive_switch':
+                from_spot = _extract_switch_from_position(
+                    (ev.get('details') or {}).get('description') or ''
+                )
+                if (from_spot and from_spot != spot and from_spot in alignment
+                        and alignment[from_spot].get('id') == new_id
+                        and alignment.get(spot)):
+                    alignment[from_spot] = alignment[spot]
+                if spot in alignment:
+                    alignment[spot] = {'id': new_id, 'name': names.get(new_id, '')}
+                    last_assigned[new_id] = spot
+            elif event_type == 'pitching_substitution':
+                alignment['P'] = {'id': new_id, 'name': names.get(new_id, '')}
+                last_assigned[new_id] = 'P'
+        # A player who moved at this boundary belongs only at their
+        # last-assigned spot (the feed lists a shuffle's moves as a chain).
+        for pos in list(alignment):
+            pid = alignment[pos].get('id')
+            if pid in last_assigned and last_assigned[pid] != pos:
+                del alignment[pos]
+
+    # The pitcher who faced the replayed at-bat comes from its own matchup
+    # (the linescore's pitcher is whoever is on the mound right now).
+    matchup = prefix[-1].get('matchup') or {}
+    pitcher = matchup.get('pitcher') or {}
+    if pitcher.get('id'):
+        alignment['P'] = {
+            'id': pitcher['id'],
+            'name': pitcher.get('fullName', ''),
+        }
+    return alignment
+
+
 def _game_state_snapshot(data: dict, target_play: dict,
-                         target_pitch: dict, pitch_index: Optional[int]) -> dict:
+                         target_pitch: dict, pitch_index: Optional[int],
+                         prefix: Optional[list] = None,
+                         game_pk: str = GAME_PK,
+                         game_date: str | None = None) -> dict:
     """Build the scoreboard state as of one pitch, not the newest feed event.
 
     The live feed can contain several completed plays before the frontend has
@@ -2344,7 +3201,10 @@ def _game_state_snapshot(data: dict, target_play: dict,
     live_data = data.get('liveData', {})
     linescore = live_data.get('linescore', {}) or {}
     all_plays = live_data.get('plays', {}).get('allPlays') or []
-    prefix = _prefix_through_pitch(data, target_play, pitch_index)
+    if game_date is None:
+        game_date = data.get('gameData', {}).get('datetime', {}).get('officialDate')
+    if prefix is None:
+        prefix = _prefix_through_pitch(data, target_play, pitch_index)
     about = target_play.get('about') or {}
     matchup = target_play.get('matchup') or {}
     target_count = target_pitch.get('count') or {}
@@ -2375,7 +3235,7 @@ def _game_state_snapshot(data: dict, target_play: dict,
             # an older queued pitch, only runs scored through that pitch belong
             # in the scoreboard state.
             'runs': live.get('runs') if target_is_latest and target_is_final_event
-                    and live.get('runs') is not None else derived_runs[side],
+                    and about.get('isComplete') and live.get('runs') is not None else derived_runs[side],
             'hits': live.get('hits'),
             'errors': live.get('errors'),
         }
@@ -2392,6 +3252,7 @@ def _game_state_snapshot(data: dict, target_play: dict,
     inning_number = about.get('inning', linescore.get('currentInning'))
     half = about.get('halfInning')
     is_top = half == 'top' if half else linescore.get('isTopInning')
+    game_type = (game_data.get('game') or {}).get('type')
     current_pitcher_id = matchup.get('pitcher', {}).get('id')
     pitches_thrown = sum(
         1 for play in prefix
@@ -2413,6 +3274,25 @@ def _game_state_snapshot(data: dict, target_play: dict,
         )
     if outs is None:
         outs = linescore.get('outs') if target_is_latest else None
+
+    # Defensive alignment + formation as of this snapshot's moment, so the
+    # replayed at-bat can drive the defense panel during rewind mode. The
+    # linescore only carries the CURRENT alignment; walk the substitutions
+    # that happened after this moment to recover the historical one (or, when
+    # the other team was in the field, rebuild it from the starting lineup).
+    # Fall back to the live alignment when the reconstruction can't apply.
+    defense_alignment, fallback_formation = _historical_defense_snapshot(data, prefix)
+    if defense_alignment is None:
+        defense_alignment, defense_formation = _defense_snapshot(linescore)
+    else:
+        # The formation for the replayed pitch comes from its Statcast row
+        # (the linescore only knows the CURRENT formation); fall back to the
+        # linescore's label when Savant hasn't ingested the game yet.
+        defense_formation = _formation_for_pitch(
+            game_pk, game_date, target_play, target_pitch,
+        )
+        if defense_formation is None:
+            defense_formation = fallback_formation
 
     # Preserve the same matchup stat fields as /api/game-state so committing a
     # historical snapshot does not blank the scorebug's batter/pitcher popovers.
@@ -2438,6 +3318,26 @@ def _game_state_snapshot(data: dict, target_play: dict,
     batter_summary = _batter_play_summary(matchup.get('batter', {}).get('id'), prefix)
     batter_season_stats = batter_entry.get('seasonStats', {}).get('batting') or {}
     pitcher_season_stats = box_entry(current_pitcher_id).get('seasonStats', {}).get('pitching') or {}
+    # Game-line totals for the pitcher as of this snapshot (mirrors the live
+    # /api/game-state computation), so the frozen/replay scoreboard keeps the
+    # pitcher's SO/BB/strikes/pitches hover populated instead of dropping it.
+    pitcher_game_line = {'strikeouts': 0, 'walks': 0, 'strikesThrown': 0, 'pitchesThrown': 0}
+    for play in prefix:
+        if play.get('matchup', {}).get('pitcher', {}).get('id') != current_pitcher_id:
+            continue
+        play_event = (play.get('result') or {}).get('event') or ''
+        if 'strikeout' in play_event.lower():
+            pitcher_game_line['strikeouts'] += 1
+        if play_event.lower() in ('walk', 'intent walk', 'hit by pitch'):
+            pitcher_game_line['walks'] += 1
+        for event in play.get('playEvents', []):
+            if not event.get('isPitch'):
+                continue
+            pitcher_game_line['pitchesThrown'] += 1
+            if (event.get('count') or {}).get('strikes') is not None:
+                code = ((event.get('details') or {}).get('call') or {}).get('code')
+                if code in ('C', 'S', 'F', 'W', 'T', 'M'):
+                    pitcher_game_line['strikesThrown'] += 1
     status = game_data.get('status', {})
     return {
         'success': True,
@@ -2451,7 +3351,7 @@ def _game_state_snapshot(data: dict, target_play: dict,
         },
         'outs': outs,
         'count': {'balls': balls, 'strikes': strikes},
-        'bases': _occupied_bases(prefix),
+        'bases': _occupied_bases(prefix, game_type),
         'pitcher': matchup.get('pitcher', {}).get('fullName', '—'),
         'pitcherId': matchup.get('pitcher', {}).get('id'),
         'batter': matchup.get('batter', {}).get('fullName', '—'),
@@ -2460,6 +3360,7 @@ def _game_state_snapshot(data: dict, target_play: dict,
         'batterSummary': batter_summary,
         'pitchNumber': target_pitch.get('pitchNumber'),
         'pitchesThrown': pitches_thrown,
+        'pitcherGameLine': pitcher_game_line,
         'gameState': status.get('detailedState'),
         'isLive': status.get('abstractGameState') == 'Live',
         'venue': (game_data.get('venue') or {}).get('name'),
@@ -2478,6 +3379,10 @@ def _game_state_snapshot(data: dict, target_play: dict,
             'so': pitcher_season_stats.get('strikeOuts'),
             'ip': pitcher_season_stats.get('inningsPitched'),
         },
+        # Defensive alignment (position code → player) as of the snapshot.
+        'defenseAlignment': defense_alignment,
+        # Formation type: Standard / Strategic / Infield In / etc.
+        'defenseFormation': defense_formation,
     }
 
 
@@ -2519,6 +3424,38 @@ def _extract_old_player_position(description: str) -> str | None:
     lower = after_replaces.lower()
     for label, abbrev in _POSITION_LABEL_TO_ABBREV.items():
         if label in lower:
+            return abbrev
+    return None
+
+
+# Maps the position labels used in defensive-switch descriptions ("Defensive
+# switch from third base to second base for …") to Statcast abbreviations.
+# These read "third base", not "third baseman", so they need their own table.
+_SWITCH_FROM_LABELS = {
+    'center field': 'CF', 'left field': 'LF', 'right field': 'RF',
+    'first base': '1B', 'second base': '2B', 'third base': '3B',
+    'shortstop': 'SS', 'catcher': 'C', 'pitcher': 'P',
+}
+
+
+def _extract_switch_from_position(description: str) -> str | None:
+    """Pull the position a defensive switch leaves, from its description.
+
+    The feed writes descriptions like:
+      "Defensive switch from third base to second base for Connor Norby."
+
+    Returns the "from" position's abbreviation (3B above), or None when the
+    switch names no from-position — "Luis Vázquez remains in the game as the
+    shortstop." means the player was not previously fielding, so there is no
+    vacated spot to displace anyone into.
+    """
+    if not description:
+        return None
+    lower = description.lower()
+    if ' from ' not in lower or ' to ' not in lower:
+        return None
+    for label, abbrev in _SWITCH_FROM_LABELS.items():
+        if f' from {label} to ' in lower:
             return abbrev
     return None
 
@@ -2621,7 +3558,7 @@ def _parse_sub_event(ev: dict, fallback_new: str = None) -> tuple[str | None, st
     return (new_player or fallback_new, old_player)
 
 
-def _game_status_snapshot(data: dict) -> dict:
+def _game_status_snapshot(data: dict, game_pk: str = GAME_PK) -> dict:
     """Extract only the fields needed while the scoreboard is frozen."""
     game_data = data.get('gameData', {})
     live_data = data.get('liveData', {})
@@ -2730,29 +3667,16 @@ def _game_status_snapshot(data: dict) -> dict:
         review_type = rt
 
     linescore = live_data.get('linescore') or {}
-    # Defensive alignment: position-code → {id, name} for the nine fielders.
-    # Comes from the live feed's linescore.defense block, which updates after
-    # every defensive substitution.
-    DEFENSE_TO_CODE = {
-        'pitcher': 'P', 'catcher': 'C', 'first': '1B', 'second': '2B',
-        'third': '3B', 'shortstop': 'SS', 'left': 'LF', 'center': 'CF',
-        'right': 'RF',
-    }
-    raw_defense = linescore.get('defense') or {}
-    defense_alignment = {}
-    for key, code in DEFENSE_TO_CODE.items():
-        player = raw_defense.get(key) or {}
-        if player.get('id'):
-            defense_alignment[code] = {
-                'id': player['id'],
-                'name': player.get('fullName', ''),
-            }
-    # Formation type from the event feed: Standard / Strategic / Infield In /
-    # Outfield In / No Doubles / etc. Falls back to "Standard" when the
-    # field isn't present in the API response.
-    defense_formation = (raw_defense.get('defensiveAlignment')
-                         or raw_defense.get('formation')
-                         or 'Standard')
+    # Defensive alignment: position-code → {id, name} for the nine fielders,
+    # plus the formation label, from the live feed's linescore.defense block.
+    # The live feed no longer carries a per-pitch defensive alignment, so the
+    # formation resolves from the newest pitch Statcast has ingested; fall
+    # back to the linescore's label when Savant hasn't caught up yet.
+    defense_alignment, fallback_formation = _defense_snapshot(linescore)
+    game_date = data.get('gameData', {}).get('datetime', {}).get('officialDate')
+    defense_formation = _live_formation_from_savant(
+        game_pk, game_date, (plays.get('allPlays') or []),
+    ) or fallback_formation
     status = game_data.get('status') or {}
     abstract_state = status.get('abstractGameState')
     detailed_state = status.get('detailedState')
@@ -2816,7 +3740,7 @@ def get_game_status(game_pk: str = GAME_PK):
     print(f"GAME STATUS... Polling game {game_pk}")
     data = _fetch_feed(game_pk)
     try:
-        return _game_status_snapshot(data)
+        return _game_status_snapshot(data, game_pk)
     except KeyError as e:
         raise HTTPException(status_code=500, detail=f"Data parsing error: {e}")
     except Exception as e:
@@ -2884,15 +3808,33 @@ def get_game_state(game_pk: str = GAME_PK):
 
         # Occupied bases, computed by replaying the current half-inning's
         # runner movements (the feed has no single "runnersOnBase" field).
-        bases = _occupied_bases(all_plays)
+        # game.type gates the extra-innings ghost runner (regular season only).
+        bases = _occupied_bases(
+            all_plays, (game_data.get('game') or {}).get('type'),
+        )
 
         # Pitch total for the current pitcher, mirroring _build_trajectory_payload.
         pitcher_id = matchup.get('pitcher', {}).get('id')
-        pitches_thrown = sum(
-            1 for play in all_plays
-            if play.get('matchup', {}).get('pitcher', {}).get('id') == pitcher_id
-            for event in play.get('playEvents', []) if event.get('isPitch')
-        )
+        pitcher_game_line = {"strikeouts": 0, "walks": 0, "strikesThrown": 0, "pitchesThrown": 0}
+        for play in all_plays:
+            if play.get('matchup', {}).get('pitcher', {}).get('id') != pitcher_id:
+                continue
+            result = play.get('result') or {}
+            event = (result.get('event') or '').lower()
+            if 'strikeout' in event:
+                pitcher_game_line['strikeouts'] += 1
+            if event in ('walk', 'intent walk', 'hit by pitch'):
+                pitcher_game_line['walks'] += 1
+            for event_data in play.get('playEvents', []):
+                if event_data.get('isPitch'):
+                    pitcher_game_line['pitchesThrown'] += 1
+                    if (event_data.get('count') or {}).get('strikes') is not None:
+                        # Count called/swinging/foul strikes from pitch details;
+                        # the final count is not a reliable pitch-level total.
+                        code = ((event_data.get('details') or {}).get('call') or {}).get('code')
+                        if code in ('C', 'S', 'F', 'W', 'T', 'M'):
+                            pitcher_game_line['strikesThrown'] += 1
+        pitches_thrown = pitcher_game_line['pitchesThrown']
 
         # Current batter's game batting line (hits–atBats) for the scorebug.
         # Prefer the official boxscore stats (whose players dict is keyed by
@@ -3046,23 +3988,15 @@ def get_game_state(game_pk: str = GAME_PK):
             review_type = review_details.get('reviewType')
 
         # Defensive alignment: position-code → {id, name} for the nine fielders.
-        raw_defense = linescore.get('defense') or {}
-        defense_alignment = {}
-        for key, code in {
-            'pitcher': 'P', 'catcher': 'C', 'first': '1B', 'second': '2B',
-            'third': '3B', 'shortstop': 'SS', 'left': 'LF', 'center': 'CF',
-            'right': 'RF',
-        }.items():
-            player = raw_defense.get(key) or {}
-            if player.get('id'):
-                defense_alignment[code] = {
-                    'id': player['id'],
-                    'name': player.get('fullName', ''),
-                }
-        # Formation type: Standard / Strategic / Infield In / etc.
-        defense_formation = (raw_defense.get('defensiveAlignment')
-                             or raw_defense.get('formation')
-                             or 'Standard')
+        defense_alignment, fallback_formation = _defense_snapshot(linescore)
+        # The live feed no longer carries a per-pitch defensive alignment, so
+        # resolve the CURRENT formation from the newest pitch Statcast has
+        # ingested (infield-in / strategic / shift); fall back to the
+        # linescore's label when Savant hasn't caught up yet.
+        game_date = data.get('gameData', {}).get('datetime', {}).get('officialDate')
+        defense_formation = _live_formation_from_savant(
+            game_pk, game_date, (live_data.get('plays') or {}).get('allPlays') or [],
+        ) or fallback_formation
 
         status = game_data.get('status', {})
         return {
@@ -3085,6 +4019,7 @@ def get_game_state(game_pk: str = GAME_PK):
             "batterSummary": batter_summary,
             "pitchNumber": current_play.get('pitchNumber'),
             "pitchesThrown": pitches_thrown,
+            "pitcherGameLine": pitcher_game_line,
             "gameState": status.get('detailedState'),
             "isLive": status.get('abstractGameState') == 'Live',
             "venue": (game_data.get('venue') or {}).get('name'),
@@ -3133,6 +4068,243 @@ def get_game_state(game_pk: str = GAME_PK):
         raise HTTPException(status_code=500, detail=f"Data parsing error: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Game-state parsing failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Game-log endpoint
+# ---------------------------------------------------------------------------
+
+
+_GAME_LOG_EVENT_PHRASES = {
+    'Single': 'singles',
+    'Double': 'doubles',
+    'Triple': 'triples',
+    'Home Run': 'homers',
+    'Walk': 'walks',
+    'Intent Walk': 'is intentionally walked',
+    'Hit By Pitch': 'is hit by pitch',
+    'Strikeout': 'strikes out',
+    'Flyout': 'flies out',
+    'Pop Out': 'pops out',
+    'Lineout': 'lines out',
+    'Groundout': 'grounds out',
+    'Forceout': 'grounds into a force out',
+    'Double Play': 'grounds into a double play',
+    'Grounded Into DP': 'grounds into a double play',
+    'Triple Play': 'grounds into a triple play',
+    'Sac Fly': 'hits a sacrifice fly',
+    'Sac Bunt': 'lays down a sacrifice bunt',
+    'Bunt Groundout': 'grounds out on a bunt',
+    'Field Error': 'reaches on an error',
+    'Fielders Choice': "reaches on a fielder's choice",
+    'Catcher Interference': 'reaches on catcher interference',
+}
+
+
+def _game_log_player_name(player: dict, players: dict | None = None) -> str:
+    player = player or {}
+    if players and player.get('id') is not None:
+        entry = players.get(f"ID{player['id']}") or players.get(str(player['id'])) or {}
+        player = {**entry, **player}
+    return (player.get('fullName') or player.get('lastName') or '').strip()
+
+
+def _game_log_base_name(base) -> str:
+    return {
+        '1B': 'first',
+        '2B': 'second',
+        '3B': 'third',
+        'home': 'home',
+        'score': 'home',
+    }.get(base, str(base or '').replace('B', '').lower())
+
+
+def _game_log_base_ordinal(base) -> str:
+    return {
+        '1B': '1st',
+        '2B': '2nd',
+        '3B': '3rd',
+        'home': 'home',
+        'score': 'home',
+    }.get(base, _game_log_base_name(base))
+
+
+def _game_log_runner_name(runner: dict, players: dict | None = None) -> str:
+    return _game_log_player_name(
+        (runner.get('details') or {}).get('runner') or {},
+        players,
+    )
+
+
+def _game_log_text_key(value: str) -> str:
+    normalized = unicodedata.normalize('NFKD', str(value or ''))
+    return ''.join(char for char in normalized if not unicodedata.combining(char)).casefold()
+
+
+def _game_log_runner_actions(
+    play: dict,
+    players: dict | None = None,
+    existing_description: str = '',
+) -> list[str]:
+    result = play.get('result') or {}
+    result_event = (result.get('event') or '').strip()
+    result_lower = result_event.lower()
+    matchup_batter = (play.get('matchup') or {}).get('batter') or {}
+    batter_id = matchup_batter.get('id')
+    batter_name = _game_log_player_name(matchup_batter, players)
+    batter_out = result_event in _BATTER_OUT_EVENTS
+    existing_text = _game_log_text_key(existing_description)
+    actions = []
+    for runner in play.get('runners') or []:
+        details = runner.get('details') or {}
+        movement = runner.get('movement') or {}
+        runner_info = details.get('runner') or {}
+        runner_id = runner_info.get('id')
+        name = _game_log_runner_name(runner, players)
+        # The batter's result already says "Brett Bateman grounds out". The
+        # feed also includes the batter's home-to-first runner movement, which
+        # would otherwise append the redundant "Brett Bateman is out at first".
+        # Keep outs for other runners (e.g. the runner caught stealing in a DP).
+        is_batter_runner = (
+            (batter_id is not None and runner_id == batter_id)
+            or (batter_name and name and name.lower() == batter_name.lower())
+        )
+        if not name or (is_batter_runner and (batter_out or movement.get('start') is None)):
+            continue
+        # Result descriptions can already spell out a runner's outcome, such
+        # as "Luis García Jr. out at 2nd." Do not append the same runner action
+        # a second time from the structured movement data.
+        if _game_log_text_key(name) in existing_text:
+            continue
+
+        end = movement.get('end')
+        out_base = movement.get('outBase') or end
+        detail_event = ' '.join(str(details.get(key) or '') for key in (
+            'event', 'eventType', 'movementReason',
+        )).lower()
+        caught_stealing = 'caught stealing' in result_lower or 'caught stealing' in detail_event
+        if movement.get('isOut'):
+            if caught_stealing:
+                actions.append(f"{name} caught stealing {_game_log_base_ordinal(out_base)}")
+            else:
+                actions.append(f"{name} is out at {_game_log_base_name(out_base)}" if out_base else f"{name} is out")
+        elif end == 'score' or movement.get('isScoringEvent') or details.get('isScoringEvent'):
+            actions.append(f"scoring {name}")
+        elif end in ('1B', '2B', '3B'):
+            if movement.get('start') in ('1B', '2B', '3B'):
+                actions.append(f"{name} advances to {_game_log_base_name(end)}")
+            else:
+                actions.append(f"{name} reaches {_game_log_base_name(end)}")
+    return actions
+
+
+def _game_log_description(play: dict, players: dict | None = None) -> str:
+    result = play.get('result') or {}
+    event = (result.get('event') or '').strip()
+    matchup = play.get('matchup') or {}
+    batter = _game_log_player_name(matchup.get('batter') or {}, players)
+    raw = (result.get('description') or '').strip()
+    runner_actions = _game_log_runner_actions(play, players, raw)
+
+    # Base-running events are often recorded as the result of a play with no
+    # meaningful batter action. Use the named runner as the subject so entries
+    # read "Andreas Gimenez caught stealing second", not "Unknown Player ...".
+    event_lower = event.lower()
+    if any(term in event_lower for term in ('stolen base', 'caught stealing', 'pickoff')):
+        subject = next((action for action in runner_actions if action), None)
+        if subject:
+            remaining = [action for action in runner_actions if action != subject]
+            return ', '.join([subject, *remaining])
+
+    phrase = _GAME_LOG_EVENT_PHRASES.get(event)
+    # Preserve the feed's extra fielding detail (for example, "P Tim Hill to
+    # 1B Ben Rice"), but replace bare descriptions such as "Walk" with the
+    # concise broadcast phrase.
+    use_raw = raw and raw.lower() != event_lower
+    if use_raw:
+        if batter and not raw.lower().startswith(batter.lower()):
+            raw = f"{batter} {raw[0].lower() + raw[1:]}"
+        description = raw
+    elif phrase and batter:
+        description = f"{batter} {phrase}"
+    else:
+        description = raw or f"{batter} {event.lower()}".strip() or 'Play'
+
+    return ', '.join([description, *runner_actions]) if runner_actions else description
+
+
+def _game_log_score_after_play(play: dict, all_plays: list[dict], teams: dict) -> dict | None:
+    """Return the score after a play when that play scored at least one run."""
+    runners = play.get('runners') or []
+    scored = any(
+        (runner.get('movement') or {}).get('isScoringEvent')
+        or (runner.get('details') or {}).get('isScoringEvent')
+        or (runner.get('movement') or {}).get('end') == 'score'
+        for runner in runners
+    )
+    if not scored:
+        return None
+    scores = {'away': 0, 'home': 0}
+    for prior in all_plays:
+        if prior is play:
+            break
+        side = 'away' if (prior.get('about') or {}).get('halfInning') == 'top' else 'home'
+        for runner in prior.get('runners') or []:
+            movement = runner.get('movement') or {}
+            if movement.get('isScoringEvent') or (runner.get('details') or {}).get('isScoringEvent') or movement.get('end') == 'score':
+                scores[side] += 1
+    side = 'away' if (play.get('about') or {}).get('halfInning') == 'top' else 'home'
+    scores[side] += sum(
+        1 for runner in runners
+        if (runner.get('movement') or {}).get('isScoringEvent')
+        or (runner.get('details') or {}).get('isScoringEvent')
+        or (runner.get('movement') or {}).get('end') == 'score'
+    )
+    return {
+        'away': {'abbreviation': teams['away'].get('abbreviation', 'AWAY'), 'runs': scores['away']},
+        'home': {'abbreviation': teams['home'].get('abbreviation', 'HOME'), 'runs': scores['home']},
+        'scoring_side': side,
+    }
+
+
+def _game_log_play(play: dict, players: dict | None = None, score_after: dict | None = None) -> dict:
+    about = play.get('about') or {}
+    half = str(about.get('halfInning') or '').lower()
+    inning = about.get('inning')
+    return {
+        "id": about.get('atBatIndex'),
+        "inning": inning,
+        "half_inning": 'Top' if half == 'top' else 'Bottom' if half == 'bottom' else half.title(),
+        "inning_label": f"{'Top' if half == 'top' else 'Bottom' if half == 'bottom' else half.title()} {_inning_ordinal(inning)}".strip(),
+        "description": _game_log_description(play, players),
+        "event": (play.get('result') or {}).get('event'),
+        "batter": _game_log_player_name((play.get('matchup') or {}).get('batter') or {}, players),
+        "is_complete": bool(about.get('isComplete', True)),
+        "score_after": score_after,
+    }
+
+
+@app.get("/api/game-log")
+def get_game_log(game_pk: str = GAME_PK):
+    """Return completed and in-progress play descriptions grouped by inning."""
+    print(f"GAME LOG... Polling game {game_pk}")
+    data = _fetch_feed(game_pk)
+    try:
+        all_plays = (data.get('liveData', {}).get('plays') or {}).get('allPlays') or []
+        players = data.get('gameData', {}).get('players') or {}
+        teams = data.get('gameData', {}).get('teams') or {}
+        plays = [
+            _game_log_play(
+                play,
+                players,
+                _game_log_score_after_play(play, all_plays, teams),
+            )
+            for play in all_plays
+            if (play.get('about') or {}).get('inning') is not None
+        ]
+        return {"success": True, "plays": plays}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Game-log parsing failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -3201,14 +4373,22 @@ def get_box_score(game_pk: str = GAME_PK):
             team_pitch = team_stats.get('pitching') or {}
 
             batting = []
+            # The feed's batting-order list is already in lineup order and
+            # includes pinch hitters. Preserve that order, then annotate an
+            # incoming hitter with the starter whose lineup slot it replaced.
+            lineup_by_slot = {}
             for pid in bt.get('batters') or []:
                 entry = _entry(pid)
                 stats = entry.get('stats', {}).get('batting') or {}
                 season = entry.get('seasonStats', {}).get('batting') or {}
+                slot = (entry.get('battingOrder') or '')[:2]
+                if slot and slot not in lineup_by_slot:
+                    lineup_by_slot[slot] = (entry.get('person') or {}).get('fullName', '—')
                 batting.append({
                     "id": pid,
                     "name": (entry.get('person') or {}).get('fullName', '—'),
                     "position": (entry.get('position') or {}).get('abbreviation', ''),
+                    "battingOrder": slot,
                     "ab": stats.get('atBats'),
                     "r": stats.get('runs'),
                     "h": stats.get('hits'),
@@ -3216,7 +4396,45 @@ def get_box_score(game_pk: str = GAME_PK):
                     "bb": stats.get('baseOnBalls'),
                     "so": stats.get('strikeOuts'),
                     "avg": season.get('avg'),
+                    # Extended outcomes powering the batter's hover card. Emit
+                    # the primary names the frontend reads (MLB spells the
+                    # sacrifice fields ``sacFlies``/``sacBunts`` and does not
+                    # list singles directly, so singles are derived).
+                    "singles": max(0, (stats.get('hits') or 0)
+                                   - (stats.get('doubles') or 0)
+                                   - (stats.get('triples') or 0)
+                                   - (stats.get('homeRuns') or 0)),
+                    "doubles": stats.get('doubles'),
+                    "triples": stats.get('triples'),
+                    "homeRuns": stats.get('homeRuns'),
+                    "hitByPitch": stats.get('hitByPitch'),
+                    "stolenBases": stats.get('stolenBases'),
+                    "caughtStealing": stats.get('caughtStealing'),
+                    "groundedIntoDoublePlay": stats.get('groundedIntoDoublePlay'),
+                    "groundedIntoTriplePlay": stats.get('groundedIntoTriplePlay'),
+                    "groundOuts": stats.get('groundOuts'),
+                    "flyOuts": stats.get('flyOuts'),
+                    "sacrificeFlies": stats.get('sacFlies'),
+                    "sacrificeBunts": stats.get('sacBunts'),
                 })
+            # Attach replacement metadata from play-by-play substitution
+            # events. This avoids mistaking a same-slot defensive substitute
+            # for a pinch hitter.
+            for play in all_plays:
+                for event in play.get('playEvents') or []:
+                    details = event.get('details') or {}
+                    if details.get('eventType') != 'offensive_substitution':
+                        continue
+                    new_name, old_name = _parse_sub_event(event)
+                    pos_name = (event.get('position') or {}).get('name') or ''
+                    description = details.get('description') or ''
+                    is_hitter = 'Hitter' in pos_name or 'pinch-hitter' in description.lower()
+                    if not is_hitter or not new_name or not old_name:
+                        continue
+                    for row in batting:
+                        if row['name'] == new_name:
+                            row['pinchHitterFor'] = old_name
+                            break
 
             pitching = []
             for pid in bt.get('pitchers') or []:
@@ -3234,6 +4452,18 @@ def get_box_score(game_pk: str = GAME_PK):
                     "so": stats.get('strikeOuts'),
                     "era": season.get('era'),
                     "whip": season.get('whip'),
+                    # Extended pitching stats powering the pitcher's hover
+                    # card (pitches/strikes counts and outcome details not
+                    # already shown in the pitching table columns).
+                    "pitchesThrown": stats.get('numberOfPitches'),
+                    "strikesThrown": stats.get('strikes'),
+                    "wildPitches": stats.get('wildPitches'),
+                    "hitByPitch": stats.get('hitByPitch')
+                        if stats.get('hitByPitch') is not None
+                        else stats.get('hitBatsmen'),
+                    "balks": stats.get('balks'),
+                    "saves": stats.get('saves'),
+                    "blownSaves": stats.get('blownSaves'),
                 })
 
             result["teams"][side] = {
@@ -3306,13 +4536,7 @@ def get_box_score(game_pk: str = GAME_PK):
 
 @app.get("/api/live-games")
 def get_live_games():
-    """List MLB games currently in progress and upcoming.
-
-    Fetches the MLB Stats API schedule for a short window around today (UTC)
-    and returns live games (abstract state "Live") plus not-yet-started games
-    ("Preview"), each with the team/score/inning/venue/start-time summary the
-    frontend's live-games drawer needs.
-    """
+    """List today's live, finished, and upcoming MLB games for the drawer."""
     schedule_url = "https://statsapi.mlb.com/api/v1/schedule"
     today = datetime.now(timezone.utc).date()
     try:
@@ -3332,6 +4556,7 @@ def get_live_games():
         raise HTTPException(status_code=502, detail="Failed to fetch MLB schedule")
 
     live_games = []
+    finished_games = []
     upcoming_games = []
 
     def summarize(game, state):
@@ -3340,11 +4565,14 @@ def get_live_games():
         for side in ("away", "home"):
             t = (game.get("teams") or {}).get(side, {})
             team = t.get("team", {})
+            record = t.get("leagueRecord") or {}
             teams[side] = {
                 "name": team.get("name", "—"),
                 "abbreviation": team.get("abbreviation", side.upper()),
                 "id": team.get("id"),
                 "score": t.get("score"),
+                "wins": record.get("wins"),
+                "losses": record.get("losses"),
             }
         summary = {
             "game_pk": game.get("gamePk"),
@@ -3354,13 +4582,14 @@ def get_live_games():
             "teams": teams,
             "start_time_tbd": bool((game.get("status") or {}).get("startTimeTBD")),
         }
-        if state == "Live":
+        if state in ("Live", "Final"):
             summary["inning"] = {
                 "number": linescore.get("currentInning"),
                 "ordinal": linescore.get("currentInningOrdinal"),
                 "isTop": linescore.get("isTopInning"),
                 "state": linescore.get("inningState"),
             }
+            summary["innings"] = linescore.get("currentInning")
         return summary
 
     for date_block in data.get("dates", []):
@@ -3370,22 +4599,31 @@ def get_live_games():
                 live_games.append(summarize(game, state))
             elif state == "Preview":
                 upcoming_games.append(summarize(game, state))
+            elif state == "Final":
+                finished_games.append(summarize(game, state))
 
     # Upcoming games read like a schedule: soonest first.
     upcoming_games.sort(key=lambda g: g.get("game_date") or "")
+    finished_games.sort(key=lambda g: g.get("game_date") or "")
 
-    return {"success": True, "games": live_games, "upcoming": upcoming_games}
+    return {"success": True, "games": live_games, "finished": finished_games, "upcoming": upcoming_games}
 
 
 # ── League-average pitch break (Baseball Savant Statcast CSV) ─────────────────
-# League-average induced break by pitch type, aggregated from Baseball Savant's
-# statcast_search CSV export (https://baseballsavant.mlb.com/csv-docs). The CSV
-# returns per-pitch rows with pfx_x/pfx_z in FEET; we aggregate the last N days
-# of the current season, mirroring left-handed pitchers' horizontal break to a
-# right-handed convention (pfxX > 0 = glove side for a RHP), convert to inches,
-# and cache for a few hours so the frontend's H/V Break comparison rows don't
-# hammer Savant on every load. The window is short enough to stay light (each
-# daily request is a few thousand pitches, well under Savant's 25k-row CSV cap).
+# League-average induced break by pitch type and pitcher hand, aggregated from
+# Baseball Savant's statcast_search CSV export
+# (https://baseballsavant.mlb.com/csv-docs). The CSV returns per-pitch rows
+# with pfx_x/pfx_z in FEET, already in the fixed Statcast convention the rest
+# of the app uses (positive pfx_x = break toward first base for BOTH hands,
+# positive pfx_z = upward IVB) — so no handedness mirroring is applied here,
+# matching the live-feed payload and the pitcher-movement graph. Because
+# horizontal break is the mirror image across hands (a LHP sinker breaks
+# +17 in toward 1B where a RHP's breaks -17 in), the averages are bucketed per
+# pitcher hand so pooling both hands doesn't cancel H Break toward zero. Values
+# are converted to inches and cached for a few hours so the frontend's H Break /
+# IVB comparison rows don't hammer Savant on every load. The window is short
+# enough to stay light (each daily request is a few thousand pitches, well
+# under Savant's 25k-row CSV cap).
 BREAK_AVERAGES_WINDOW_DAYS = 14
 BREAK_AVERAGES_CACHE_TTL_SECONDS = 6 * 60 * 60
 
@@ -3407,45 +4645,58 @@ def _savant_day_rows(day):
     return list(csv.DictReader(io.StringIO(resp.content.decode("utf-8-sig"))))
 
 
-def _fetch_break_averages():
-    """Aggregate mean pfx_x/pfx_z (inches) by pitch type over the last N days."""
-    today = datetime.now(timezone.utc).date()
-    days = [today - timedelta(days=i) for i in range(BREAK_AVERAGES_WINDOW_DAYS)]
-    sums = {}  # pitch_type -> [count, sum_x, sum_z]
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(_savant_day_rows, day) for day in days]
-        for future in futures:
-            try:
-                rows = future.result()
-            except Exception:
-                # A failed day shouldn't sink the whole average.
-                continue
-            for row in rows:
-                pitch_type = (row.get("pitch_type") or "").strip()
-                if not pitch_type:
-                    continue
-                try:
-                    # Savant's CSV exports pfx in feet; the app displays inches.
-                    x = float(row["pfx_x"]) * 12.0
-                    z = float(row["pfx_z"]) * 12.0
-                except (KeyError, TypeError, ValueError):
-                    continue
-                if row.get("p_throws") == "L":
-                    x = -x
-                acc = sums.setdefault(pitch_type, [0, 0.0, 0.0])
-                acc[0] += 1
-                acc[1] += x
-                acc[2] += z
+def _aggregate_break_averages(rows) -> dict:
+    """Aggregate mean pfx_x/pfx_z (inches) by pitch type and pitcher hand.
+
+    ``rows`` are Savant statcast CSV rows (see ``_savant_day_rows``) whose
+    pfx_x/pfx_z are in FEET, in the fixed Statcast convention (positive pfx_x
+    = break toward first base for both hands, positive pfx_z = upward IVB).
+    No sign mirroring is applied — each hand's values are stored under its
+    ``p_throws`` code (``R``/``L``), and buckets with fewer than 25 pitches
+    are dropped so tiny samples don't skew the average.
+    """
+    sums = {}  # (pitch_type, hand) -> [count, sum_x, sum_z]
+    for row in rows:
+        pitch_type = (row.get("pitch_type") or "").strip()
+        hand = (row.get("p_throws") or "").strip().upper()
+        if not pitch_type or hand not in ("R", "L"):
+            continue
+        try:
+            # Savant's CSV exports pfx in feet; the app displays inches.
+            x = float(row["pfx_x"]) * 12.0
+            z = float(row["pfx_z"]) * 12.0
+        except (KeyError, TypeError, ValueError):
+            continue
+        acc = sums.setdefault((pitch_type, hand), [0, 0.0, 0.0])
+        acc[0] += 1
+        acc[1] += x
+        acc[2] += z
 
     averages = {}
-    for pitch_type, (n, sum_x, sum_z) in sums.items():
+    for (pitch_type, hand), (n, sum_x, sum_z) in sums.items():
         if n >= 25:  # skip tiny samples
-            averages[pitch_type] = {
+            averages.setdefault(pitch_type, {})[hand] = {
                 "x": round(sum_x / n, 2),
                 "z": round(sum_z / n, 2),
                 "n": n,
             }
     return averages
+
+
+def _fetch_break_averages():
+    """Fetch + aggregate mean pfx_x/pfx_z (inches) by pitch type and hand."""
+    today = datetime.now(timezone.utc).date()
+    days = [today - timedelta(days=i) for i in range(BREAK_AVERAGES_WINDOW_DAYS)]
+    rows = []
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(_savant_day_rows, day) for day in days]
+        for future in futures:
+            try:
+                rows.extend(future.result())
+            except Exception:
+                # A failed day shouldn't sink the whole average.
+                continue
+    return _aggregate_break_averages(rows)
 
 
 def _get_cached_break_averages():
@@ -3488,11 +4739,32 @@ _XBA_LA_MIN, _XBA_LA_MAX, _XBA_LA_STEP = -50.0, 80.0, 2.0
 _XBA_SPRINT_LEAGUE_AVG = 27.3  # ft/s
 _XBA_SPRINT_GROUND_SLOPE = 0.0097  # per ft/s on ground balls (OLS-calibrated)
 
+# After a failed grid build, wait this long before spawning another rebuild
+# thread. Without a backoff the ``building`` flag re-arms the moment a build
+# fails, so a down Savant makes every rapid poll spawn a fresh ~1-minute
+# rebuild (each fanning out to 4 worker fetches).
+_XBA_GRID_REBUILD_COOLDOWN_SECONDS = 60
+
 _xba_grid_lock = threading.Lock()
-_xba_grid_cache = {"fetched_at": 0.0, "grid": None, "building": False}
+_xba_grid_cache = {
+    "fetched_at": 0.0,
+    "grid": None,
+    "building": False,
+    "next_attempt_at": 0.0,
+}
+
+# After a failed (or empty) Sprint-Speed fetch, wait this long before the next
+# attempt. Without a backoff a down Savant would make every rapid poll spawn a
+# fresh synchronous fetch, mirroring the xBA-grid rebuild storm.
+_SPRINT_SPEED_REBUILD_COOLDOWN_SECONDS = 60
 
 _sprint_speed_lock = threading.Lock()
-_sprint_speed_cache = {"fetched_at": 0.0, "by_player": {}}
+_sprint_speed_cache = {
+    "fetched_at": 0.0,
+    "by_player": {},
+    "building": False,
+    "next_attempt_at": 0.0,
+}
 _SPRINT_SPEED_TTL_SECONDS = 6 * 60 * 60
 
 
@@ -3556,14 +4828,21 @@ def _xba_grid():
 
     The first build runs in a background thread so the first trajectory poll
     isn't blocked for the ~1-minute statcast fetch; until it's ready the grid
-    is None and xBA simply shows a dash.
+    is None and xBA simply shows a dash. Rebuilds are single-flighted: the
+    ``building`` flag is checked and armed under ``_xba_grid_lock``, so a burst
+    of rapid polls (trajectory + batted-ball + game-state all warm the grid)
+    can only ever start one rebuild thread at a time. A failed build backs off
+    for ``_XBA_GRID_REBUILD_COOLDOWN_SECONDS`` instead of immediately re-arming
+    the flag, so a Savant outage can't turn each poll into a new overlapping
+    ~4-worker scrape.
     """
     now = time.time()
     with _xba_grid_lock:
         if (_xba_grid_cache["grid"] is not None
                 and now - _xba_grid_cache["fetched_at"] < _XBA_GRID_TTL_SECONDS):
             return _xba_grid_cache["grid"]
-        if not _xba_grid_cache["building"]:
+        if (not _xba_grid_cache["building"]
+                and now >= _xba_grid_cache.get("next_attempt_at", 0.0)):
             _xba_grid_cache["building"] = True
 
             def _rebuild():
@@ -3574,6 +4853,12 @@ def _xba_grid():
                         _xba_grid_cache["fetched_at"] = time.time()
                     print(f"[xBA] grid rebuilt — {np.isfinite(grid).sum():,}/{grid.size:,} valid cells")
                 except Exception as e:
+                    # Back off before the next attempt so rapid polls can't
+                    # each re-spawn a rebuild while Savant is down.
+                    with _xba_grid_lock:
+                        _xba_grid_cache["next_attempt_at"] = (
+                            time.time() + _XBA_GRID_REBUILD_COOLDOWN_SECONDS
+                        )
                     print(f"[xBA] grid build failed: {e}")
                 finally:
                     with _xba_grid_lock:
@@ -3584,33 +4869,64 @@ def _xba_grid():
 
 
 def _sprint_speed_by_player():
-    """Return {player_id: sprint_speed} from Savant's leaderboard, cached."""
+    """Return {player_id: sprint_speed} from Savant's leaderboard, cached.
+
+    Same treatment as ``_xba_grid``: the first fetch runs in a background
+    thread so a cold poll isn't blocked for the Savant round-trip; until it
+    completes callers get the (possibly stale) cache, and a missing speed just
+    falls back to the league-average ground-ball slope in ``_compute_xba``.
+    The fetch is single-flighted (the ``building`` flag arms under
+    ``_sprint_speed_lock`` before the thread spawns, so concurrent polls share
+    one request) and a failed or empty fetch backs off for
+    ``_SPRINT_SPEED_REBUILD_COOLDOWN_SECONDS`` so a Savant outage can't spawn
+    a new fetch on every poll.
+    """
     now = time.time()
     with _sprint_speed_lock:
         if (_sprint_speed_cache["by_player"]
                 and now - _sprint_speed_cache["fetched_at"] < _SPRINT_SPEED_TTL_SECONDS):
             return _sprint_speed_cache["by_player"]
-        try:
-            resp = requests.get(
-                "https://baseballsavant.mlb.com/leaderboard/sprint_speed"
-                f"?type=year&year={datetime.now(timezone.utc).year}&min=10"
-                "&sort=1&sortDir=desc&csv=true",
-                timeout=30,
-            )
-            resp.raise_for_status()
-            by_player = {}
-            for row in csv.DictReader(io.StringIO(resp.content.decode("utf-8-sig"))):
-                speed = (row.get("sprint_speed") or "").strip()
-                pid = (row.get("player_id") or "").strip()
-                if speed and pid:
-                    try:
-                        by_player[pid] = float(speed)
-                    except ValueError:
-                        pass
-            if by_player:
-                _sprint_speed_cache.update({"fetched_at": now, "by_player": by_player})
-        except Exception:
-            pass  # serve stale speeds on failure
+        if (not _sprint_speed_cache["building"]
+                and now >= _sprint_speed_cache.get("next_attempt_at", 0.0)):
+            _sprint_speed_cache["building"] = True
+
+            def _rebuild():
+                try:
+                    resp = requests.get(
+                        "https://baseballsavant.mlb.com/leaderboard/sprint_speed"
+                        f"?type=year&year={datetime.now(timezone.utc).year}&min=10"
+                        "&sort=1&sortDir=desc&csv=true",
+                        timeout=30,
+                    )
+                    resp.raise_for_status()
+                    by_player = {}
+                    for row in csv.DictReader(io.StringIO(resp.content.decode("utf-8-sig"))):
+                        speed = (row.get("sprint_speed") or "").strip()
+                        pid = (row.get("player_id") or "").strip()
+                        if speed and pid:
+                            try:
+                                by_player[pid] = float(speed)
+                            except ValueError:
+                                pass
+                    if not by_player:
+                        raise ValueError("no sprint-speed rows in response")
+                    with _sprint_speed_lock:
+                        _sprint_speed_cache["by_player"] = by_player
+                        _sprint_speed_cache["fetched_at"] = time.time()
+                    print(f"[sprint-speed] loaded {len(by_player):,} players")
+                except Exception as e:
+                    # Back off before the next attempt so rapid polls can't
+                    # each re-spawn a fetch while Savant is down/empty.
+                    with _sprint_speed_lock:
+                        _sprint_speed_cache["next_attempt_at"] = (
+                            time.time() + _SPRINT_SPEED_REBUILD_COOLDOWN_SECONDS
+                        )
+                    print(f"[sprint-speed] fetch failed: {e}")
+                finally:
+                    with _sprint_speed_lock:
+                        _sprint_speed_cache["building"] = False
+
+            threading.Thread(target=_rebuild, daemon=True).start()
         return _sprint_speed_cache["by_player"]
 
 
@@ -3723,7 +5039,10 @@ def _compute_xba(launch_speed, launch_angle, sprint_speed=None):
 
 @app.get("/api/break-averages")
 def get_break_averages():
-    """League-average induced break (inches) by pitch type, from Baseball Savant."""
+    """League-average induced break (inches) by pitch type and pitcher hand,
+    from Baseball Savant. H Break / IVB are in the fixed Statcast convention
+    (positive H Break = toward 1B, positive IVB = upward) so they match the
+    pitch panel's pfx_x/pfx_z and the movement graph."""
     averages = _get_cached_break_averages()
     return {
         "success": True,
@@ -3731,6 +5050,146 @@ def get_break_averages():
         "window_days": BREAK_AVERAGES_WINDOW_DAYS,
         "averages": averages,
     }
+
+
+# ── Pitcher Movement Graph ──────────────────────────────────────────────────
+# Per-pitcher pitch movement data from Baseball Savant, grouped by pitch type
+# with 95% confidence ellipse parameters so the frontend can draw the pitch
+# movement scatterplot (H Break vs V Break) with covariance ellipses.
+_PITCHER_MOVEMENT_WINDOW_DAYS = 60  # pull ~2 months of pitches per pitcher
+_PITCHER_MOVEMENT_CACHE_TTL = 6 * 60 * 60  # 6 hours
+
+_pitcher_movement_lock = threading.Lock()
+_pitcher_movement_cache = {}  # (pitcher_id, year) -> {"fetched_at": float, "data": dict}
+
+
+def _fetch_pitcher_movement(pitcher_id: int, year: int) -> dict:
+    """Query Baseball Savant CSV for a pitcher's recent pitches, grouped by
+    pitch type, with per-group covariance ellipse parameters for the frontend's
+    pitch movement scatterplot. Uses a single broad date-range query to avoid
+    firing 60 parallel requests.
+
+    The CSV's pfx_x/pfx_z are kept AS-IS (feet converted to inches). They use
+    the same fixed Statcast convention as the live feed's breaks object and
+    the Savant game feed: positive pfx_x = break toward first base (catcher's
+    right), positive pfx_z = upward IVB. No LHP mirroring, so the ellipses and
+    the current-pitch dot share one convention for both hands.
+    """
+    today = datetime.now(timezone.utc).date()
+    start = today - timedelta(days=_PITCHER_MOVEMENT_WINDOW_DAYS)
+    date_start = start.strftime("%Y-%m-%d")
+    date_end = today.strftime("%Y-%m-%d")
+    url = (
+        "https://baseballsavant.mlb.com/statcast_search/csv"
+        f"?all=true&type=details&player_type=pitcher"
+        f"&pitchers_lookup%5B%5D={pitcher_id}"
+        f"&hfSea={year}%7C"
+        f"&game_date_gt={date_start}&game_date_lt={date_end}"
+    )
+
+    points_by_type = {}  # pitch_type -> [(h_break, v_break), ...]
+    try:
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+        rows = list(csv.DictReader(io.StringIO(resp.content.decode("utf-8-sig"))))
+        for row in rows:
+            pitch_type = (row.get("pitch_type") or "").strip()
+            if not pitch_type:
+                continue
+            try:
+                h_break = float(row["pfx_x"]) * 12.0  # feet → inches
+                v_break = float(row["pfx_z"]) * 12.0
+            except (KeyError, TypeError, ValueError):
+                continue
+            points_by_type.setdefault(pitch_type, []).append((h_break, v_break))
+    except Exception:
+        # A failed fetch shouldn't crash the endpoint; return empty.
+        pass
+
+    return _compute_ellipse_params(points_by_type)
+
+
+def _compute_ellipse_params(points_by_type: dict) -> dict:
+    result = {}
+    for pitch_type, pts in points_by_type.items():
+        if len(pts) < 5:  # skip tiny samples
+            continue
+        xs = [p[0] for p in pts]
+        zs = [p[1] for p in pts]
+        n = len(pts)
+        mean_x = sum(xs) / n
+        mean_z = sum(zs) / n
+
+        # Covariance matrix
+        cov_xx = sum((x - mean_x) ** 2 for x in xs) / (n - 1)
+        cov_zz = sum((z - mean_z) ** 2 for z in zs) / (n - 1)
+        cov_xz = sum((x - mean_x) * (z - mean_z) for x, z in zip(xs, zs)) / (n - 1)
+
+        # Eigen decomposition for ellipse axes
+        # 2x2 symmetric matrix [[cov_xx, cov_xz], [cov_xz, cov_zz]]
+        trace = cov_xx + cov_zz
+        det = cov_xx * cov_zz - cov_xz * cov_xz
+        if det <= 0:
+            continue
+        # Eigenvalues (largest first)
+        disc = max(trace * trace - 4 * det, 0)
+        lambda1 = (trace + math.sqrt(disc)) / 2
+        lambda2 = (trace - math.sqrt(disc)) / 2
+        if lambda1 <= 0 or lambda2 <= 0:
+            continue
+
+        # 95% confidence ellipse scaling: chi-squared with 2 df at p=0.95 ≈ 5.991
+        chi2_95 = 5.991
+        a = math.sqrt(chi2_95 * lambda1)  # semi-major axis
+        b = math.sqrt(chi2_95 * lambda2)  # semi-minor axis
+
+        # Angle of the major axis (from eigenvector of lambda1)
+        # For cov_xz != 0: eigenvector is [cov_xz, lambda1 - cov_xx]
+        if abs(cov_xz) > 1e-10:
+            angle = math.atan2(lambda1 - cov_xx, cov_xz)
+        else:
+            angle = 0.0 if cov_xx >= cov_zz else math.pi / 2
+
+        result[pitch_type] = {
+            "n": n,
+            "center_x": round(mean_x, 2),
+            "center_z": round(mean_z, 2),
+            "a": round(a, 2),  # semi-major axis (in)
+            "b": round(b, 2),  # semi-minor axis (in)
+            "angle": round(angle, 4),  # radians
+        }
+
+    return result
+
+
+@app.get("/api/pitcher-movement")
+def get_pitcher_movement(pitcher_id: int, year: Optional[int] = None):
+    """Pitch movement scatter data (H Break vs V Break) for a specific pitcher,
+    grouped by pitch type with 95% confidence ellipse parameters.
+
+    Queries Baseball Savant's CSV export for the last 60 days of the given
+    season (defaults to the current year). Values keep Statcast's fixed sign
+    convention (positive pfx_x = toward 1B / catcher's right) matching the
+    Savant game feed for both hands.
+    """
+    if year is None:
+        year = datetime.now(timezone.utc).year
+
+    cache_key = (pitcher_id, year)
+    now = time.time()
+
+    with _pitcher_movement_lock:
+        entry = _pitcher_movement_cache.get(cache_key)
+        if entry and now - entry["fetched_at"] < _PITCHER_MOVEMENT_CACHE_TTL:
+            return {"success": True, "data": entry["data"]}
+
+    try:
+        data = _fetch_pitcher_movement(pitcher_id, year)
+        with _pitcher_movement_lock:
+            _pitcher_movement_cache[cache_key] = {"fetched_at": time.time(), "data": data}
+        return {"success": True, "data": data}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch pitcher movement data: {e}")
 
 
 if __name__ == "__main__":

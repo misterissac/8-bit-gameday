@@ -102,6 +102,50 @@ export function findIntersection(
   return undefined
 }
 
+// ---------------------------------------------------------------------------
+// Generalized fielded-ball interception. Same sprint-toward-the-ball model as
+// ``findIntersection`` (the fielder runs from ``catcherPos`` at ``catcherSpeed``
+// and catches the first ball they can reach), but the ball's ground speed is
+// piecewise: it flies at ``airSpeed`` for the first ``airTime`` seconds (the arc
+// to its landing), then rolls at ``rollSpeed``. This is what lets a ground-ball
+// roll-speed tuning knob change how far the ball gets before the fielder fields
+// it while keeping ball and fielder converging on the same catch point/time.
+// When ``rollSpeed === airSpeed`` it degenerates to ``findIntersection`` exactly
+// (``contactDistance`` must then be ``airSpeed * airTime``).
+// ---------------------------------------------------------------------------
+export function resolveFieldedIntercept(
+  ballPos,
+  ballDir,
+  airSpeed,
+  rollSpeed,
+  airTime,
+  contactDistance,
+  catcherPos,
+  catcherSpeed,
+) {
+  let t = 0
+  const deltaT = 0.01
+  const MAX_SECONDS = 5
+  let lastDistance = Infinity
+  while (t < MAX_SECONDS) {
+    // Ground distance from the launch point: air phase then roll phase.
+    const d = t <= airTime
+      ? airSpeed * t
+      : contactDistance + rollSpeed * (t - airTime)
+    const pos = ballPos.clone().add(ballDir.clone().multiplyScalar(d))
+    const dist = pos.distanceTo(catcherPos)
+    const catcherMaxDistance = t * catcherSpeed
+    const currentSpeed = t <= airTime ? airSpeed : rollSpeed
+    const shouldOverrideResolve = lastDistance < dist && currentSpeed > catcherSpeed
+    if (dist < catcherMaxDistance || shouldOverrideResolve) {
+      return { location: pos, t, requiredCatcherSpeed: dist / t }
+    }
+    lastDistance = dist
+    t += deltaT
+  }
+  return undefined
+}
+
 // Horizontal (ground-plane) component of launch speed.
 export function getBallXYSpeed(launchSpeed, elevationAngle) {
   const phiRadians = degToRad(elevationAngle)
