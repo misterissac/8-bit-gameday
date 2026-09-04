@@ -194,6 +194,7 @@ const CONTROL_META = {
     followThrough: ['Follow-through', 0, 1, 0.01, 's'],
     recoveryTime: ['Swing recovery', 0.01, 2, 0.01, 's'],
     loadTime: ['Load time', 0, 1, 0.01, 's'],
+    strideDelayFrac: ['Stride delay', 0, 1, 0.01, '×'],
     bodyOpenMax: ['Body opening', 0, 2, 0.01, 'rad'],
     fullOpenYaw: ['Full open yaw', -3.14, 3.14, 0.01, 'rad'],
     headTiltMax: ['Contact head tilt', -1, 1, 0.01, 'rad'],
@@ -220,9 +221,12 @@ const CONTROL_META = {
     legFrontUnplantLift: ['Unplant lift', 0, 0.4, 0.01, 'm'],
     backFootPivot: ['Back foot pivot', 0, 1, 0.01, '×'],
     frontFootPivot: ['Front foot pivot', 0, 1, 0.01, '×'],
-    hipDriveForward: ['Hip drive forward', 0, 0.5, 0.01, 'm'],
+    hipDriveForward: ['Hip drive forward', 0, 1, 0.01, 'm'],
     swingBackTilt: ['Swing back tilt', 0, 0.6, 0.01, 'rad'],
-    upperDriveForward: ['Upper drive forward', 0, 0.4, 0.01, 'm'],
+    upperDriveForward: ['Upper drive forward', 0, 0.8, 0.01, 'm'],
+    strideEdgeFrac: ['Stride edge forward', 0, 0.5, 0.01, '×'],
+    swingPeakFrac: ['Swing speed peak timing (0=auto)', 0, 0.95, 0.01, '×'],
+    returnPeakFrac: ['Return speed peak timing', 0.15, 0.85, 0.01, '×'],
     pushSettleTime: ['Push settle time', 0, 0.5, 0.01, 's'],
     pushSettleLevel: ['Push settle level', 0, 1, 0.01, '×'],
     legLean: ['Swing lean', 0, 1, 0.01, 'rad'],
@@ -287,7 +291,7 @@ export function DebugDrawer() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'freebuff-debug-tuning.json';
+    link.download = 'playbyplay-debug-tuning.json';
     document.body.appendChild(link);
     link.click();
     link.remove();

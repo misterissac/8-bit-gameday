@@ -1,6 +1,9 @@
 import { useSyncExternalStore } from 'react';
 
-export const TUNING_STORAGE_KEY = 'freebuff-debug-tuning';
+// v12: removed unphysical back foot glide (back foot stays planted in world space);
+// versioned so older saved tunings (which merge over the defaults) don't
+// silently keep the previous values.
+export const TUNING_STORAGE_KEY = 'playbyplay-debug-tuning-v12';
 
 export const DEFAULT_TUNING = {
   playback: {
@@ -236,16 +239,40 @@ export const DEFAULT_TUNING = {
     legBackPushForward: 0.05,
     legFrontPushForward: 0.02,
     legFrontStride: 0.24,
+    // Fraction of the pitcher's windup that plays before the batter's front
+    // leg starts its step (0 = step the moment the windup starts, 1 = step
+    // only at release). The delayed step plants into the swing.
+    strideDelayFrac: 0.72,
     legFrontStrideLift: 0.07,
     legFrontKneeLift: 0.08,
     legFrontUnplantLift: 0.08,
     backFootPivot: 0.75,
     frontFootPivot: 0.2,
-    hipDriveForward: 0.14,
-    swingBackTilt: 0.14,
-    upperDriveForward: 0.07,
-    pushSettleTime: 0.08,
-    pushSettleLevel: 0.6,
+    hipDriveForward: 0.442, // 15% below the last pass (0.52)
+    swingBackTilt: 0.08,
+    upperDriveForward: 0.32,
+    // Fraction of the full drive the hips and upper body edge forward as the
+    // delayed front step begins (30%: a clear forward ride with the foot),
+    // blending into the swing's own gradual ride-up so the lunge launches
+    // from an already-moving body instead of a choppy speed jump.
+    strideEdgeFrac: 0.3,
+    // Where in the swing phase (plant -> settle start) the body's forward
+    // speed peaks (0 = auto: scales with pitch speed so faster pitches peak
+    // later closer to contact, e.g. ~0.60 on 70 mph up to ~0.855 on 104 mph).
+    // Manual values > 0 override the auto behavior. 0.5 = mid-swing; higher
+    // pushes the peak later, so the maximal surge lands closer to contact.
+    swingPeakFrac: 0,
+    // Where, through the post-contact return arc (contact -> stance), the
+    // body's backward speed peaks. Higher pushes the peak of the return
+    // motion closer to the end of recovery, so the body holds its extended
+    // posture longer before flowing back; the whole arc is one continuous
+    // motion either way — no hold, no separate ease-out stage.
+    returnPeakFrac: 0.6,
+    // How long the last pre-contact push takes to snap from full drive down
+    // to the settle level (1 -> pushSettleLevel, landing exactly at contact).
+    // Short: a decisive "snap into the ball" arrival; long: a gradual ease.
+    pushSettleTime: 0.035,
+    pushSettleLevel: 0.65,
     legLean: 0.3,
     setLean: 0.3,
     leanOutTime: 0.3,
@@ -274,10 +301,12 @@ const clampTuningValue = (group, key, value) => {
   if (group === 'battedBall' && ['throwSpeedMph', 'maxRunSpeedMph', 'trailFadeTime', 'traceFadeTime'].includes(key)) return Math.max(0.001, value);
   if (group === 'battedBall' && key === 'groundRollSpeedMph') return Math.max(0, value);
   if (group === 'batter' && ['fadeEndDistance', 'swingLead', 'followThrough', 'recoveryTime', 'loadTime', 'pushSettleTime', 'leanOutTime'].includes(key)) return Math.max(0.001, value);
+  if (group === 'batter' && key === 'swingPeakFrac') return value <= 0 ? 0 : Math.min(0.95, Math.max(0.05, value));
+  if (group === 'batter' && key === 'returnPeakFrac') return Math.min(0.85, Math.max(0.15, value));
   return value;
 };
 
-const mergeTuning = (saved) => {
+export const mergeTuning = (saved) => {
   const merged = cloneTuning(DEFAULT_TUNING);
   if (!saved || typeof saved !== 'object') return merged;
   for (const [group, values] of Object.entries(merged)) {
@@ -286,6 +315,12 @@ const mergeTuning = (saved) => {
       const next = Number(saved[group][key]);
       if (Number.isFinite(next)) merged[group][key] = clampTuningValue(group, key, next);
     }
+  }
+  // Sanitize: if comparison mode previously leaked COMPARE_PLAYBACK_SPEED (0.2)
+  // into saved tuning, revert it to the default timeScale (0.61) so normal playback
+  // speed is never permanently stuck in 5x slow-mo.
+  if (merged.playback && Math.abs(merged.playback.timeScale - 0.2) < 0.001) {
+    merged.playback.timeScale = DEFAULT_TUNING.playback.timeScale;
   }
   return merged;
 };
@@ -302,9 +337,9 @@ const loadTuning = () => {
 let currentTuning = loadTuning();
 const listeners = new Set();
 
-const publish = () => {
+const publish = ({ persist = true } = {}) => {
   for (const listener of listeners) listener();
-  if (typeof window !== 'undefined') {
+  if (persist && typeof window !== 'undefined') {
     try {
       window.localStorage.setItem(TUNING_STORAGE_KEY, JSON.stringify(currentTuning));
     } catch {
@@ -326,14 +361,14 @@ export const useTuning = () => useSyncExternalStore(
   getTuning,
 );
 
-export const setTuningValue = (group, key, value) => {
+export const setTuningValue = (group, key, value, { persist = true } = {}) => {
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || !currentTuning[group] || !(key in currentTuning[group])) return;
   currentTuning = {
     ...currentTuning,
     [group]: { ...currentTuning[group], [key]: clampTuningValue(group, key, numeric) },
   };
-  publish();
+  publish({ persist });
 };
 
 export const saveTuningAsDefault = () => {

@@ -1,10 +1,10 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { useFrame, useLoader } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { TextureLoader } from 'three';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { getCycleDuration, getTimeScale } from '../constants/playback';
+import { getCycleDuration, getTimeScale, stepSimulation } from '../constants/playback';
 import { getTuning, useTuning } from '../constants/tuning';
 
 // ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ const AWAY_TEXTURE_URL = '/textures/AwayPlayer_BaseColor.png';
 // Warm the GLTF cache so the first pitch doesn't suspend for long.
 useGLTF.preload(PLAYER_MODEL_URL);
 
-export const Pitcher = ({ pitchData, overlay = false }) => {
+export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
     const tuning = useTuning();
     const pitcherTuning = tuning.pitcher;
     const gltf = useGLTF(PLAYER_MODEL_URL);
@@ -61,7 +61,6 @@ export const Pitcher = ({ pitchData, overlay = false }) => {
     const mixerRef = useRef();
     const pitchActionRef = useRef();
     const neutralActionRef = useRef();
-    const clockRef = useRef(0);
     const prevPhaseRef = useRef(null);
     const fadeRef = useRef(0);
 
@@ -180,11 +179,12 @@ export const Pitcher = ({ pitchData, overlay = false }) => {
         };
     }, [model, gltf, isRHP]);
 
-    // Restart the playback clock whenever a new pitch arrives, keeping the
-    // windup in phase with the Pitch component (which shares the same cycle).
-    useEffect(() => {
-        clockRef.current = 0;
-    }, [pitchData]);
+    // Reset animation phase whenever a new pitch arrives or replay fires,
+    // keeping the windup in phase with the simulation clock.
+    useLayoutEffect(() => {
+        prevPhaseRef.current = null;
+        fadeRef.current = 0;
+    }, [pitchData, replayKey]);
 
     // Body anchor: the ball's release point (the trajectory's first sample)
     // minus the hand-release offset, clamped so the feet stay on the ground.
@@ -202,7 +202,9 @@ export const Pitcher = ({ pitchData, overlay = false }) => {
         };
     }, [pitchData, isRHP]);
 
-    useFrame((_, delta) => {
+    useFrame((state, delta) => {
+        const { time: t } = stepSimulation(delta, state.clock.elapsedTime);
+
         const group = groupRef.current;
         const mixer = mixerRef.current;
         const pitchAction = pitchActionRef.current;
@@ -216,8 +218,6 @@ export const Pitcher = ({ pitchData, overlay = false }) => {
 
         // Shared cycle clock (same as Pitch/Batter/BattedBall).
         const loopDuration = getCycleDuration();
-        clockRef.current = (clockRef.current + delta * getTimeScale()) % loopDuration;
-        const t = clockRef.current;
 
         // Map the throw clip onto the cycle so the release frame (1.32 s)
         // lands exactly on the wrap (t = 0, when the pitch ball appears at the

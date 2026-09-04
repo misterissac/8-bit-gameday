@@ -10,14 +10,14 @@ import { Scorebug } from './components/Scorebug';
 import { AtBatZone, AtBatLoadingPlaceholder } from './components/AtBatZone';
 import { pitchTypeColor } from './util/pitchType';
 import { defenseFromSnapshot, restoreLiveDefense, defensePositions } from './util/defense';
-import { setTimeScale, setCycleDuration, SLOWEST_SPEED } from './constants/playback';
+import { setTimeScale, setCycleDuration, resetSimulationTime, SLOWEST_SPEED } from './constants/playback';
 import { PitchMovementGraph } from './components/PitchMovementGraph';
-// IMPORTANT FOR FUTURE AGENTS: DebugDrawer is intentionally hidden from the
+// DebugDrawer is intentionally hidden from the
 // production UI for now. Do not remove it, its styles, or the tuning store;
 // continue maintaining them as new features are added so diagnostics can be
 // re-enabled later without reconstruction.
 // import { DebugDrawer } from './components/DebugDrawer';
-import { setTuningValue, useTuning } from './constants/tuning';
+import { setTuningValue, useTuning, DEFAULT_TUNING } from './constants/tuning';
 import {
   BroadcastDelayBuffer,
   BROADCAST_DELAY_OPTIONS,
@@ -61,7 +61,7 @@ const MAX_QUEUED_PLAYS = 5;
 const QUEUE_PLAY_GAP_MS = 700;
 // Broadcast delay is applied at the client boundary: raw live-feed responses
 // are held before they can enter the play queue or any HUD/status surface.
-const BROADCAST_DELAY_STORAGE_KEY = 'freebuff-broadcast-delay-seconds';
+const BROADCAST_DELAY_STORAGE_KEY = 'playbyplay-broadcast-delay-seconds';
 const DEFAULT_BROADCAST_DELAY_SECONDS = 0;
 const HIGH_SPEED_TEST_MPH = 104;
 const HIGH_SPEED_TEST_PLAY_ID = '__high-speed-effect-test__';
@@ -194,6 +194,9 @@ const trajectoryResolutionKey = (d) => JSON.stringify({
   resultEvent: d?.result_event ?? null,
   actionEvent: d?.action_event ?? null,
   battedBall: battedBallResolutionKey(d?.batted_ball),
+  gameState: d?.game_state?.gameState ?? null,
+  score: d?.game_state?.score ?? null,
+  outs: d?.game_state?.outs ?? null,
 });
 
 // Version of a trajectory response used by the broadcast-delay buffer. The
@@ -267,7 +270,7 @@ const resolvePlayOutcomeLabel = (d) => {
 // yellow for big plays (runs / multiple outs), fiery orange for home runs,
 // white for everything else.
 const outcomeColor = (label) => {
-  if (label === 'HOME RUN') return '#ff9f1c';
+  if (label?.startsWith('WALK-OFF') || label === 'HOME RUN') return '#ff9f1c';
   if (label === 'BALL' || label === 'WALK' || label === 'INTENTIONAL WALK' || label === 'HIT BY PITCH' || label === 'STOLEN BASE') return '#7ee0a0';
   if (label === 'STRIKE' || label === 'STRIKEOUT' || label === 'CAUGHT STEALING' || label === 'PICKOFF') return '#ff6b6b';
   if (label === 'FOUL') return '#ffb066';
@@ -866,6 +869,26 @@ function AppContent() {
   const [showBillowParticles, setShowBillowParticles] = useState(true);
   // Selects the >100 mph impact treatment shown at the strike-zone ring.
   const [impactEffect, setImpactEffect] = useState('beams');
+  // Whether the playback-controls panel is unrolled. When open the panel
+  // drops down flush from the handle's top edge and the handle is hidden.
+  const [playbackPanelOpen, setPlaybackPanelOpen] = useState(true);
+  // The ☰ handle only fades in after the panel has fully rolled back up and
+  // is removed the instant the panel starts unrolling again.
+  const [handleVisible, setHandleVisible] = useState(false);
+  // A click anywhere outside the open panel rolls it back up into the handle
+  // (the handle itself is hidden while the panel is open).
+  const playbackPanelRef = useRef(null);
+  useEffect(() => {
+    if (!playbackPanelOpen) return;
+    const onPointerDown = (event) => {
+      const el = playbackPanelRef.current;
+      if (el && event.target instanceof Node && !el.contains(event.target)) {
+        setPlaybackPanelOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [playbackPanelOpen]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   // The feed can publish a new pitch before its coordinates/spin arrive. Keep
@@ -898,9 +921,12 @@ function AppContent() {
     const t = setTimeout(() => setSequenceRevealed(true), SEQUENCE_REVEAL_DELAY_MS);
     return () => clearTimeout(t);
   }, [pitchOutcome]);
-  // Bottom-left pitch panel: collapsed by default so the speed/type don't
-  // spoil the pitch before it animates; expands once the play resolves.
-  const [pitchPanelOpen, setPitchPanelOpen] = useState(false);
+  // Bottom-left pitch panel: open by default. Before a new play is fully
+  // animated for the first time, it slides out of the screen to the left,
+  // and slides back in once the play finishes. Manual expansion/collapsibility
+  // is preserved for when the user wants more space in the interface.
+  const [pitchPanelOpen, setPitchPanelOpen] = useState(true);
+  const [panelSlidOut, setPanelSlidOut] = useState(true);
   // The show/hide toggle stays disabled until the first play has fully
   // animated, so the pitch can't be spoiled by opening the panel early.
   const [toggleUnlocked, setToggleUnlocked] = useState(false);
@@ -962,6 +988,7 @@ function AppContent() {
   const [showComparisonRingLabels, setShowComparisonRingLabels] = useState(true);
   // Playback settings to restore when leaving comparison (0.2x is forced on enter).
   const [preComparisonSpeed, setPreComparisonSpeed] = useState(null);
+  const preComparisonSpeedRef = useRef(null);
   const preComparisonVisualsRef = useRef(null);
   // Bumped each time a pitch/play resolves so the at-bat zone adds that pitch
   // only after its animation finishes (instead of spoiling it on arrival).
@@ -1100,6 +1127,27 @@ function AppContent() {
   const gamesListRef = useRef(null);
   const [drawerMaxHeight, setDrawerMaxHeight] = useState(null);
   const [gamesListMaxHeight, setGamesListMaxHeight] = useState(null);
+  // Whether the Games drawer is unrolled. It rolls down/up with a coordinated
+  // two-phase sequence: expand width first -> unroll height, roll up height first -> shrink width.
+  const [gamesDrawerOpen, setGamesDrawerOpen] = useState(true);
+  const [drawerWidthExpanded, setDrawerWidthExpanded] = useState(true);
+  const [drawerHeightExpanded, setDrawerHeightExpanded] = useState(true);
+
+  useEffect(() => {
+    let timer;
+    if (gamesDrawerOpen) {
+      setDrawerWidthExpanded(true);
+      timer = setTimeout(() => {
+        setDrawerHeightExpanded(true);
+      }, 260);
+    } else {
+      setDrawerHeightExpanded(false);
+      timer = setTimeout(() => {
+        setDrawerWidthExpanded(false);
+      }, 310);
+    }
+    return () => clearTimeout(timer);
+  }, [gamesDrawerOpen]);
   // Rendered width of the bottom-left pitch/at-bat panel, so the live-games
   // drawer can match it exactly.
   const pitchPanelRef = useRef(null);
@@ -1504,6 +1552,22 @@ function AppContent() {
 
       if (d?.play_id === lastTrajectoryPlayId.current) {
         if (d?.game_state) currentPitchScoreSnapshotRef.current = d.game_state;
+        if (
+          isGameTerminal(d?.game_state?.gameState) ||
+          isGameTerminal(d?.game_state?.detailedState) ||
+          d?.game_state?.abstractGameState === 'Final'
+        ) {
+          setGameTerminal(true);
+        }
+        // Late-resolution guard: a play can gain its run/out/result or terminal
+        // game state after its animation already finished. Commit the enriched
+        // snapshot immediately if the play has finished, so the scoreboard
+        // reflects the final score and terminal state even if trajectory flight
+        // resolution keys match.
+        if (playFinishedRef.current && d?.game_state) {
+          completedPlaySnapshotRef.current = d.game_state;
+          setScorebugStateOverride(d.game_state);
+        }
         // Do not replace pitchData here: BattedBall uses that object as the
         // animation identity, and replacing it would restart a long play.
         // A newly-completed hit is applied independently so its pending OUT /
@@ -1800,11 +1864,12 @@ function AppContent() {
     if (!autoFielderCamRef.current && nextBattedBall?.fielder) {
       fielderCamAvailable.current = true;
     }
-    // A new pitch is about to animate: clear the previous outcome and collapse
-    // the panel in the same update as the pitch swap, so the scorebug remains
-    // frozen on the last completed snapshot until this pitch finishes.
+    // A new pitch is about to animate: clear the previous outcome and slide
+    // the panel out of the screen to the left until this pitch finishes, so
+    // the scorebug remains frozen on the last completed snapshot and the pitch
+    // details do not spoil the play before it animates.
     setPitchOutcome(null);
-    setPitchPanelOpen(false);
+    setPanelSlidOut(true);
     // Every new pitch resolves onto the pitch panel, not whatever view was
     // left open (the Defense tab previously auto-opened after every play).
     // At-Bat and Defense stay available through their tabs; Defense only
@@ -2027,7 +2092,7 @@ function AppContent() {
     outcomeShownPlayId.current = null;
     setBattedBallData(null);
     setPitchOutcome(null);
-    setPitchPanelOpen(false);
+    setPanelSlidOut(true);
     setAtBatOpen(false);
     setDefenseOpen(false);
     setPitchData(testPitch);
@@ -2051,6 +2116,7 @@ function AppContent() {
     liveDefenseRef.current = defenseData;
     setNewLivePlayAvailable(false);
     setScorebugStateOverride(null);
+    setPanelSlidOut(false);
     if (atBatIndex == null) {
       setPitchPanelOpen(false);
       setAtBatOpen(false);
@@ -2240,6 +2306,7 @@ function AppContent() {
     setAtBatOpen(true);
     setDefenseOpen(false);
     setPitchPanelOpen(true);
+    setPanelSlidOut(false);
   };
 
   const exitReview = () => {
@@ -2370,14 +2437,21 @@ function AppContent() {
       const t = traj?.[traj.length - 1]?.t ?? 0;
       if (t > maxPitchFlight) maxPitchFlight = t;
     }
-    setCycleDuration(
-      Math.max(0.5, maxPitchFlight)
-        + tuning.playback.cyclePause + tuning.playback.ballReleaseTime
-        + (tuning.playback.comparisonFinishPause ?? 0),
-    );
+    const duration = Math.max(0.5, maxPitchFlight)
+      + tuning.playback.cyclePause + tuning.playback.ballReleaseTime
+      + (tuning.playback.comparisonFinishPause ?? 0);
 
-    setPreComparisonSpeed(playbackSpeed);
-    setTuningValue('playback', 'timeScale', COMPARE_PLAYBACK_SPEED);
+    setCycleDuration(duration, { force: true });
+    resetSimulationTime();
+
+    if (preComparisonSpeedRef.current == null) {
+      const baseSpeed = (playbackSpeed != null && Math.abs(playbackSpeed - COMPARE_PLAYBACK_SPEED) > 0.001)
+        ? playbackSpeed
+        : (DEFAULT_TUNING.playback.timeScale ?? 0.61);
+      preComparisonSpeedRef.current = baseSpeed;
+    }
+    setPreComparisonSpeed(preComparisonSpeedRef.current);
+    setTuningValue('playback', 'timeScale', COMPARE_PLAYBACK_SPEED, { persist: false });
     setTimeScale(COMPARE_PLAYBACK_SPEED);
     setComparisonPlays(plays);
     setCompareMode('active');
@@ -2403,10 +2477,13 @@ function AppContent() {
     setCompareSelectedIds([]);
     comparisonBaselinePlayIdRef.current = null;
     setNewLivePlayAvailable(false);
-    if (preComparisonSpeed != null) {
-      setTuningValue('playback', 'timeScale', preComparisonSpeed);
-      setTimeScale(preComparisonSpeed);
+    resetSimulationTime();
+    const restoredSpeed = preComparisonSpeedRef.current ?? preComparisonSpeed;
+    if (restoredSpeed != null) {
+      setTuningValue('playback', 'timeScale', restoredSpeed);
+      setTimeScale(restoredSpeed);
     }
+    preComparisonSpeedRef.current = null;
     setPreComparisonSpeed(null);
     // Returning to the live feed: discard any queued-but-unrendered plays and
     // animate only the newest live play, same as Back to Live and switching
@@ -2507,7 +2584,11 @@ function AppContent() {
     outcomeShownPlayId.current = null;
     playFinishedRef.current = false;
     setPitchOutcome(null);
-    setPitchPanelOpen(reviewRef.current.active);
+    if (!reviewRef.current.active) {
+      setPanelSlidOut(true);
+    } else {
+      setPanelSlidOut(false);
+    }
     lastTrajectoryPlayId.current = p.play_id ?? null;
     lastTrajectoryResolutionKey.current = trajectoryResolutionKey(p.pitch);
     lastBattedPlayId.current = p.hit?.play_id ?? null;
@@ -2724,7 +2805,13 @@ const playSequence = useMemo(() => {
       return;
     }
     if (text === 'SINGLE' || text === 'DOUBLE' || text === 'TRIPLE' || text === 'HOME RUN') {
-      showOutcome(text);
+      const isWalkOff = (
+        isGameTerminal(pitchData?.game_state?.gameState) ||
+        isGameTerminal(currentPitchScoreSnapshotRef.current?.gameState) ||
+        isGameTerminal(pitchData?.game_state?.detailedState) ||
+        isGameTerminal(currentPitchScoreSnapshotRef.current?.detailedState)
+      );
+      showOutcome(isWalkOff ? `WALK-OFF ${text}` : text);
       return;
     }
     const scored = battedBallData?.runners?.some((r) => r.end === 'score');
@@ -2952,10 +3039,10 @@ const playSequence = useMemo(() => {
   useEffect(() => {
     if (playCompletion === 0) return;
 
-    setPitchPanelOpen(true);
+    setPanelSlidOut(false);
     setToggleUnlocked(true);
-    // Every new play that auto-expands the panel resets to the pitch model
-    // view so the movement graph doesn't persist from the previous pitch.
+    // When the play finishes and the panel slides back in, reset to the
+    // pitch model view so the movement graph doesn't persist from the previous pitch.
     setGraphMode(false);
     // Commit the state captured for THIS completed play before starting the
     // next queued animation. Scorebug's frozen override prevents its own
@@ -3072,6 +3159,10 @@ const playSequence = useMemo(() => {
     spinPopupHideTimer.current = setTimeout(() => setSpinPopupAnchor(null), 120);
   };
 
+  useEffect(() => {
+    if (panelSlidOut) setSpinPopupAnchor(null);
+  }, [panelSlidOut]);
+
   // Cap the live-games drawer so its expanded bottom sits just above the
   // bottom-left pitch panel (or the WASD hint when no pitch is loaded) instead
   // of extending out of the window. A ResizeObserver re-measures whenever the
@@ -3119,7 +3210,7 @@ const playSequence = useMemo(() => {
       ro.disconnect();
       window.removeEventListener('resize', compute);
     };
-  }, [pitchData, pitchPanelOpen, loading, error, waitingForPitchData, pendingPitchNumber, newLivePlayAvailable]);
+  }, [pitchData, pitchPanelOpen, panelSlidOut, loading, error, waitingForPitchData, pendingPitchNumber, newLivePlayAvailable]);
 
   // Track the debug-overlays drawer's rendered width so the playback panel
   // above it matches exactly (the drawer only mounts once overlay data exists,
@@ -3151,8 +3242,8 @@ const playSequence = useMemo(() => {
   }, [pitchData]);
 
   return (
-    <div style={{ width: '100vw', height: '100vh', position: 'relative' }}>
-      {/* IMPORTANT FOR FUTURE AGENTS: DebugDrawer intentionally remains hidden
+    <div style={{ width: '100vw', height: '100vh', position: 'relative', overflow: 'hidden' }}>
+      {/* DebugDrawer intentionally remains hidden
           for now. Do not remove this component or its supporting code; keep it
           maintained as new features are added so diagnostics can be re-enabled
           later. */}
@@ -3283,24 +3374,59 @@ const playSequence = useMemo(() => {
         <div
           ref={drawerRef}
           style={{
-            background: 'rgba(0,0,0,0.75)',
+            background: 'linear-gradient(180deg, rgba(10,14,20,0.92), rgba(6,9,14,0.92))',
             color: 'white',
             padding: '10px 14px',
-            borderRadius: '8px',
+            borderRadius: 10,
             fontFamily: 'monospace',
             fontSize: '11px',
-            width: pitchPanelWidth ?? 280,
+            width: drawerWidthExpanded ? (pitchPanelWidth ?? 280) : 108,
+            alignSelf: 'flex-start',
             boxSizing: 'border-box',
             backdropFilter: 'blur(6px)',
-            border: '1px solid rgba(255,255,255,0.1)',
+            border: '1px solid rgba(255,255,255,0.18)',
+            boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
+            userSelect: 'none',
             maxHeight: drawerMaxHeight ?? 'none',
             overflow: 'hidden',
+            transition: 'width 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
           }}
         >
-          <details>
-            <summary ref={summaryRef} style={{ cursor: 'pointer', fontWeight: 'bold', fontSize: '12px', opacity: 0.9, outline: 'none', userSelect: 'none' }}>
-              📡 Live Games
-            </summary>
+          <button
+            ref={summaryRef}
+            onClick={() => setGamesDrawerOpen((v) => !v)}
+            aria-expanded={gamesDrawerOpen}
+            title={gamesDrawerOpen ? 'Roll the games list back up' : 'Unroll the games list'}
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: drawerWidthExpanded ? 'space-between' : 'center',
+              gap: drawerWidthExpanded ? 0 : 6,
+              padding: 0,
+              background: 'transparent',
+              border: 'none',
+              color: 'white',
+              cursor: 'pointer',
+              fontWeight: 'bold',
+              fontSize: '12px',
+              opacity: 0.9,
+              outline: 'none',
+              userSelect: 'none',
+              fontFamily: 'monospace',
+              letterSpacing: '0.02em',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span>Games</span>
+            <span style={{ opacity: 0.7, fontSize: 10 }}>{drawerHeightExpanded ? '▾' : '▸'}</span>
+          </button>
+          <div style={{
+            maxHeight: drawerHeightExpanded ? (drawerMaxHeight ?? 700) : 0,
+            opacity: drawerHeightExpanded ? 1 : 0,
+            overflow: 'hidden',
+            transition: 'max-height 0.35s ease-in-out, opacity 0.25s ease-in-out',
+          }}>
             <div ref={gamesListRef} className="app-scroll" style={{ marginTop: 8, overflowY: 'auto', maxHeight: gamesListMaxHeight ?? 'none' }}>
               {(finishedGames ?? []).length > 0 && (
                 <div style={{ marginBottom: 10 }}>
@@ -3366,7 +3492,10 @@ const playSequence = useMemo(() => {
                 const inningState = g.inning?.state;
                 let inningLabel = null;
                 if (ord) {
-                  if (inningState === 'Middle') inningLabel = `Mid ${ord}`;
+                  if (g.status === 'Final' || g.status === 'Game Over' || isGameTerminal(g.status)) {
+                    const innNum = Number(g.innings || g.inning?.number);
+                    inningLabel = innNum && innNum > 9 ? `Final/${innNum}` : 'Final';
+                  } else if (inningState === 'Middle') inningLabel = `Mid ${ord}`;
                   else if (inningState === 'End') inningLabel = `End ${ord}`;
                   else inningLabel = `${g.inning.isTop ? '▲' : '▼'}${ord}`;
                 }
@@ -3458,7 +3587,7 @@ const playSequence = useMemo(() => {
                 </>
               )}
             </div>
-          </details>
+          </div>
         </div>
       </div>
 
@@ -3488,13 +3617,40 @@ const playSequence = useMemo(() => {
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'flex-end',
-        gap: 10,
+        gap: 0,
       }}>
 
-        {/* ── PLAYBACK CONTROLS PANEL (camera snap + speed slider). Width
-            matches the overlays drawer below it exactly. ── */}
+        {/* ── PLAYBACK CONTROLS PANEL (camera snap + speed slider). Drops
+            down flush from the ☰ handle's top edge when opened; a click
+            anywhere outside rolls it back up into the handle. ── */}
+        {/* In-flow wrapper clips the panel so it unrolls/rolls from zero
+            height. Because it is the topmost flex item, its top edge lines up
+            exactly with the collapsed handle's top edge (no gap, no overlap)
+            and it pushes the overlays drawer below it while open. ── */}
+        <div
+          id="playback-controls-panel"
+          ref={playbackPanelRef}
+          onTransitionEnd={(event) => {
+            // Show the ☰ handle (with a fade-in) only once the roll-up
+            // transition has fully completed.
+            if (
+              event.target === event.currentTarget &&
+              event.propertyName === 'max-height' &&
+              !playbackPanelOpen
+            ) {
+              setHandleVisible(true);
+            }
+          }}
+          style={{
+            width: overlaysWidth ?? 210,
+            boxSizing: 'border-box',
+            maxHeight: playbackPanelOpen ? 700 : 0,
+            overflow: 'hidden',
+            transition: 'max-height 0.35s ease-in-out',
+          }}
+        >
         <div style={{
-          width: overlaysWidth ?? 210,
+          width: '100%',
           boxSizing: 'border-box',
           background: 'linear-gradient(180deg, rgba(10,14,20,0.92), rgba(6,9,14,0.92))',
           border: '1px solid rgba(255,255,255,0.18)',
@@ -3506,30 +3662,6 @@ const playSequence = useMemo(() => {
           boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
           userSelect: 'none',
         }}>
-          <button
-            onClick={startHighSpeedTest}
-            disabled={!pitchData || !pitchData.trajectory?.length}
-            title={highSpeedTestActive
-              ? 'Stop the >100 mph effects test and return to live playback'
-              : `Replay the current pitch at ${HIGH_SPEED_TEST_MPH} mph to test the high-speed effects`}
-            style={{
-              width: '100%',
-              marginBottom: 8,
-              padding: '5px 8px',
-              background: highSpeedTestActive ? 'rgba(255,107,107,0.16)' : 'rgba(255,159,28,0.16)',
-              border: highSpeedTestActive ? '1px solid rgba(255,107,107,0.7)' : '1px solid rgba(255,159,28,0.7)',
-              color: highSpeedTestActive ? '#ff9e9e' : '#ffb347',
-              borderRadius: 4,
-              fontSize: 11,
-              fontFamily: 'monospace',
-              fontWeight: 'bold',
-              letterSpacing: '0.05em',
-              cursor: pitchData?.trajectory?.length ? 'pointer' : 'not-allowed',
-              opacity: pitchData?.trajectory?.length ? 1 : 0.45,
-            }}
-          >
-            {highSpeedTestActive ? '■ Stop >100 mph Test' : `⚡ Test ${HIGH_SPEED_TEST_MPH} mph Effects`}
-          </button>
           <button
             onClick={() => setImpactEffect((current) => current === 'beams' ? 'ripple' : 'beams')}
             title={impactEffect === 'beams'
@@ -3667,7 +3799,8 @@ const playSequence = useMemo(() => {
               value={playbackSpeed}
               onChange={(e) => {
                 const next = parseFloat(e.target.value);
-                setTuningValue('playback', 'timeScale', next);
+                const inComparison = compareMode === 'active';
+                setTuningValue('playback', 'timeScale', next, { persist: !inComparison });
                 setTimeScale(next);
               }}
               style={{ width: '100%', cursor: 'pointer', accentColor: '#ffd166' }}
@@ -3776,10 +3909,50 @@ const playSequence = useMemo(() => {
             </button>
           )}
         </div>
+        </div>
+
+        {/* ☰ Handle: fades in only after the panel has fully rolled back up,
+            and is removed the instant the panel starts unrolling. Sits flush
+            at the top edge, so the unrolled panel shares its top edge. ── */}
+        {handleVisible && (
+          <button
+            onClick={() => {
+              // Remove the handle first, then start the unroll.
+              setHandleVisible(false);
+              setPlaybackPanelOpen(true);
+            }}
+            className="playback-handle-in"
+            aria-expanded={false}
+            aria-controls="playback-controls-panel"
+            aria-label="Expand playback controls"
+            title="Unroll the playback controls"
+            style={{
+              width: 40,
+              height: 40,
+              boxSizing: 'border-box',
+              borderRadius: 10,
+              background: 'linear-gradient(180deg, rgba(10,14,20,0.92), rgba(6,9,14,0.92))',
+              border: '1px solid rgba(255,255,255,0.18)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
+              backdropFilter: 'blur(6px)',
+            }}
+          >
+            <span style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ width: 16, height: 2, background: '#fff', borderRadius: 1, opacity: 0.9 }} />
+              <span style={{ width: 16, height: 2, background: '#fff', borderRadius: 1, opacity: 0.9 }} />
+              <span style={{ width: 16, height: 2, background: '#fff', borderRadius: 1, opacity: 0.9 }} />
+            </span>
+          </button>
+        )}
 
         {/* ── DEBUG OVERLAYS DRAWER (collapsible) ── */}
         {(crossings || (pitchData && pitchData.statcast_px != null && pitchData.statcast_pz != null) || battedBallData) && (
         <div ref={overlaysRef} style={{
+          marginTop: 10,
           background: 'rgba(0,0,0,0.75)',
           color: 'white',
           padding: '10px 14px',
@@ -3794,6 +3967,32 @@ const playSequence = useMemo(() => {
             <summary style={{ cursor: 'pointer', fontWeight: 'bold', fontSize: '12px', opacity: 0.9, outline: 'none', userSelect: 'none' }}>
               🛠 Overlays
             </summary>
+
+            {/* ── >100 mph effects test (top of the debug drawer) ── */}
+            <button
+              onClick={startHighSpeedTest}
+              disabled={!pitchData || !pitchData.trajectory?.length}
+              title={highSpeedTestActive
+                ? 'Stop the >100 mph effects test and return to live playback'
+                : `Replay the current pitch at ${HIGH_SPEED_TEST_MPH} mph to test the high-speed effects`}
+              style={{
+                width: '100%',
+                marginTop: 8,
+                padding: '5px 8px',
+                background: highSpeedTestActive ? 'rgba(255,107,107,0.16)' : 'rgba(255,159,28,0.16)',
+                border: highSpeedTestActive ? '1px solid rgba(255,107,107,0.7)' : '1px solid rgba(255,159,28,0.7)',
+                color: highSpeedTestActive ? '#ff9e9e' : '#ffb347',
+                borderRadius: 4,
+                fontSize: 11,
+                fontFamily: 'monospace',
+                fontWeight: 'bold',
+                letterSpacing: '0.05em',
+                cursor: pitchData?.trajectory?.length ? 'pointer' : 'not-allowed',
+                opacity: pitchData?.trajectory?.length ? 1 : 0.45,
+              }}
+            >
+              {highSpeedTestActive ? '■ Stop >100 mph Test' : `⚡ Test ${HIGH_SPEED_TEST_MPH} mph Effects`}
+            </button>
 
             {/* ── Play completion source ── */}
             <div style={{ marginTop: '8px', paddingBottom: 6, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
@@ -3905,31 +4104,51 @@ const playSequence = useMemo(() => {
         gap: 10,
       }}>
         {pitchData && (
-          <div ref={pitchPanelRef} style={{
-            position: 'relative',
-            background: 'linear-gradient(180deg, rgba(10,14,20,0.92), rgba(6,9,14,0.92))',
-            color: 'white',
-            padding: '10px 14px',
-            borderRadius: '10px',
-            fontFamily: 'monospace',
-            fontSize: '11px',
-            minWidth: atBatOpen && !atBatData
-              ? (atBatSnapshotWidth ? `${atBatSnapshotWidth}px` : '280px')
-              : '280px',
-            minHeight: atBatSnapshotHeight ? `${atBatSnapshotHeight}px` : undefined,
-            backdropFilter: 'blur(6px)',
-            border: '1px solid rgba(255,255,255,0.18)',
-            boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
-            transition: 'min-width 0.3s ease, min-height 0.3s ease',
-          }}>
+          <div
+            ref={pitchPanelRef}
+            aria-hidden={panelSlidOut}
+            style={{
+              position: 'relative',
+              background: 'linear-gradient(180deg, rgba(10,14,20,0.92), rgba(6,9,14,0.92))',
+              color: 'white',
+              padding: pitchPanelOpen ? '10px 14px' : '4px 12px',
+              borderRadius: '10px',
+              fontFamily: 'monospace',
+              fontSize: '11px',
+              minWidth: atBatOpen && !atBatData
+                ? (atBatSnapshotWidth ? `${atBatSnapshotWidth}px` : '280px')
+                : '280px',
+              minHeight: pitchPanelOpen ? (atBatSnapshotHeight ? `${atBatSnapshotHeight}px` : undefined) : 19,
+              backdropFilter: 'blur(6px)',
+              border: '1px solid rgba(255,255,255,0.18)',
+              boxShadow: '0 6px 24px rgba(0,0,0,0.55)',
+              transform: panelSlidOut ? 'translateX(calc(-100% - 40px))' : 'translateX(0)',
+              transition: 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), min-width 0.3s ease, min-height 0.3s ease, padding 0.3s ease',
+              pointerEvents: panelSlidOut ? 'none' : 'auto',
+            }}
+          >
             {/* Browser-style view tabs sit above the panel: the selected tab
                 is flush with the panel and the other tab sits slightly behind
                 it instead of cycling through views from one button. */}
-            <div style={{
-              minHeight: 24,
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              marginBottom: 8, userSelect: 'none',
-            }}>
+            {/* The header row doubles as the collapse/expand toggle, in the
+                style of the Games drawer: clicking the top strip (the part
+                that stays visible when collapsed) flips the panel, with a
+                ▾/▸ triangle showing the state. Interactive controls inside
+                stop the click so they don't collapse the panel. */}
+            <div
+              onClick={toggleUnlocked ? () => setPitchPanelOpen((open) => !open) : undefined}
+              title={toggleUnlocked
+                ? (pitchPanelOpen ? 'Collapse the pitch details' : 'Expand the pitch details')
+                : 'Available once the play has finished'}
+              style={{
+                minHeight: pitchPanelOpen ? 24 : 19,
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                marginBottom: pitchPanelOpen ? 8 : 0,
+                userSelect: 'none',
+                cursor: toggleUnlocked ? 'pointer' : 'default',
+                transition: 'min-height 0.3s ease, margin-bottom 0.3s ease',
+              }}
+            >
               <span
                 ref={tabsRef}
                 role="tablist"
@@ -3951,7 +4170,7 @@ const playSequence = useMemo(() => {
                     key={tab.label}
                     role="tab"
                     aria-selected={tab.active}
-                    onClick={tab.onClick}
+                    onClick={(e) => { e.stopPropagation(); tab.onClick(); }}
                     disabled={!pitchData}
                     title={tab.title}
                     style={{
@@ -3979,16 +4198,16 @@ const playSequence = useMemo(() => {
                   </button>
                 ))}
               </span>
-              {/* Comparison controls share the header row (left) with the
-                  Hide toggle so they don't take a full-width row out of the
-                  at-bat body. The empty slot keeps Hide right-aligned in the
-                  pitch view. */}
+              {/* Comparison controls share the header row (left) and the
+                  triangle sits right-aligned in the pitch view. The empty
+                  slot keeps the triangle on the right. */}
               {/* Model/Graph toggle: switches between the 3D baseball model
                   and the pitch movement scatterplot. Shown in the Pitch view
-                  only. Disabled until the first play finishes. */}
-              {!atBatOpen && !defenseOpen && (
+                  only, and only while the panel is expanded. Disabled until
+                  the first play finishes. */}
+              {pitchPanelOpen && !atBatOpen && !defenseOpen && (
                 <button
-                  onClick={() => setGraphMode((v) => !v)}
+                  onClick={(e) => { e.stopPropagation(); setGraphMode((v) => !v); }}
                   disabled={!toggleUnlocked}
                   title={toggleUnlocked
                     ? (graphMode ? 'Switch to 3D baseball model' : 'Switch to pitch movement graph')
@@ -4006,14 +4225,14 @@ const playSequence = useMemo(() => {
                     cursor: toggleUnlocked ? 'pointer' : 'not-allowed',
                   }}
                 >
-                  {graphMode ? '📊 Graph' : '⚾ Model'}
+                  {graphMode ? 'Model' : 'Graph'}
                 </button>
               )}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 {/* The compare flow operates on the current at-bat's replayable
                     pitches, so its controls are hidden in the read-only game
                     view (and entering that view drops any pending selection). */}
-                {atBatOpen && atBatData && !batterGameOpen && (
+                {pitchPanelOpen && atBatOpen && atBatData && !batterGameOpen && (
                   compareMode === 'active' ? (
                     <>
                       <button
@@ -4094,21 +4313,16 @@ const playSequence = useMemo(() => {
                   )
                 )}
               </div>
-              <button
-                onClick={() => setPitchPanelOpen((open) => !open)}
-                disabled={!toggleUnlocked}
-                title={toggleUnlocked
-                  ? (pitchPanelOpen ? 'Hide pitch details' : 'Show pitch details')
-                  : 'Available once the play has finished'}
+              <span
+                aria-hidden="true"
                 style={{
-                  padding: '2px 8px', background: '#333', color: 'white',
-                  border: 'none', borderRadius: 4, fontSize: 11, fontFamily: 'monospace',
-                  opacity: toggleUnlocked ? 1 : 0.4,
-                  cursor: toggleUnlocked ? 'pointer' : 'not-allowed',
+                  fontSize: 11, fontFamily: 'monospace', fontWeight: 'bold',
+                  color: 'white', opacity: 0.85,
+                  lineHeight: pitchPanelOpen ? 'normal' : '19px',
                 }}
               >
-                {pitchPanelOpen ? '▾ Hide' : '▸ Show'}
-              </button>
+                {pitchPanelOpen ? '▾' : '▸'}
+              </span>
             </div>
 
             {/* Animated collapsible body: stays mounted so the height (CSS grid
@@ -4366,7 +4580,7 @@ const playSequence = useMemo(() => {
                             cursor: 'pointer',
                           }}
                         >
-                          {batterGameOpen ? '◀ At-bat' : '⚾ Game'}
+                          {batterGameOpen ? '◀ At-bat' : 'Game'}
                         </button>
                       </div>
                     )}

@@ -60,6 +60,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
             main._BATTED_BALL_CACHE.clear()
             main._BATTED_BALL_BUILD_LOCKS.clear()
             main._BATTED_BALL_BUILD_LOCKS_LAST_USED.clear()
+        main._clear_feed_cache()
 
     def test_fixture_contains_the_latest_simulatable_pitch_and_hit(self):
         play, pitch, pitch_index = main._latest_simulatable_pitch(self.feed)
@@ -91,6 +92,10 @@ class LiveFeedFixtureTests(unittest.TestCase):
         delayed_feed = copy.deepcopy(self.feed)
         delayed_feed["gameData"]["status"]["detailedState"] = "Rain Delay"
         delayed_feed["liveData"]["plays"]["currentPlay"]["matchup"] = {}
+        # Drop the just-cached feed so the next poll (same game key, within the
+        # 1s FEED_CACHE_TTL) re-fetches and sees the Rain Delay, mirroring a
+        # real poll landing after the cache has expired.
+        main._clear_feed_cache()
         with mock.patch.object(
             main.requests,
             "get",
@@ -984,6 +989,132 @@ class LiveFeedFixtureTests(unittest.TestCase):
 
         self.assertEqual(snapshot["bases"], ["2B"])
 
+    def test_extra_innings_flyout_retains_ghost_runner_on_second(self):
+        # A flyout by the batter where the ghost runner holds at 2B must NOT
+        # vacate second base.
+        feed = copy.deepcopy(self.feed)
+        feed["gameData"]["game"] = {"type": "R"}
+        flyout_play = {
+            "about": {"atBatIndex": 50, "inning": 10, "halfInning": "top", "isComplete": True},
+            "matchup": {
+                "pitcher": {"id": 200, "fullName": "Fixture Pitcher"},
+                "batter": {"id": 101, "fullName": "Fixture Batter"},
+            },
+            "result": {"type": "atBat", "event": "Flyout", "eventType": "field_out"},
+            # Only the batter is in runners, with start=None and isOut=True.
+            "runners": [
+                {
+                    "details": {"runner": {"id": 101}, "isBatter": True},
+                    "movement": {"start": None, "end": None, "isOut": True},
+                },
+            ],
+            "playEvents": [],
+        }
+        feed["liveData"]["plays"]["allPlays"] = [flyout_play]
+
+        with mock.patch.object(main, "_fetch_savant_rows", return_value=[]):
+            snapshot = main._game_state_snapshot(
+                feed, flyout_play, {}, pitch_index=None,
+            )
+
+        # Ghost runner at 2B must still be on second!
+        self.assertEqual(snapshot["bases"], ["2B"])
+
+        # Follow-up at-bat: next batter walks. Diamond should be 1B + 2B.
+        walk_play = {
+            "about": {"atBatIndex": 51, "inning": 10, "halfInning": "top", "isComplete": True},
+            "matchup": {
+                "pitcher": {"id": 200, "fullName": "Fixture Pitcher"},
+                "batter": {"id": 102, "fullName": "Second Batter"},
+            },
+            "result": {"type": "atBat", "event": "Walk", "eventType": "walk"},
+            "runners": [
+                {
+                    "details": {"runner": {"id": 102}, "isBatter": True},
+                    "movement": {"start": None, "end": "1B", "isOut": False},
+                },
+            ],
+            "playEvents": [],
+        }
+        feed["liveData"]["plays"]["allPlays"] = [flyout_play, walk_play]
+
+        with mock.patch.object(main, "_fetch_savant_rows", return_value=[]):
+            snapshot2 = main._game_state_snapshot(
+                feed, walk_play, {}, pitch_index=None,
+            )
+
+        self.assertEqual(snapshot2["bases"], ["1B", "2B"])
+
+    def test_extra_innings_strikeout_retains_ghost_runner_on_second(self):
+        # A strikeout by the batter must also keep the ghost runner on 2B.
+        feed = copy.deepcopy(self.feed)
+        feed["gameData"]["game"] = {"type": "R"}
+        strikeout_play = {
+            "about": {"atBatIndex": 50, "inning": 10, "halfInning": "bottom", "isComplete": True},
+            "matchup": {
+                "pitcher": {"id": 200, "fullName": "Fixture Pitcher"},
+                "batter": {"id": 101, "fullName": "Fixture Batter"},
+            },
+            "result": {"type": "atBat", "event": "Strikeout", "eventType": "strikeout"},
+            "runners": [
+                {
+                    "details": {"runner": {"id": 101}, "isBatter": True},
+                    "movement": {"start": None, "end": None, "isOut": True},
+                },
+            ],
+            "playEvents": [],
+        }
+        feed["liveData"]["plays"]["allPlays"] = [strikeout_play]
+
+        with mock.patch.object(main, "_fetch_savant_rows", return_value=[]):
+            snapshot = main._game_state_snapshot(
+                feed, strikeout_play, {}, pitch_index=None,
+            )
+
+        self.assertEqual(snapshot["bases"], ["2B"])
+
+    def test_walk_off_game_terminal_normalizes_inning_state_to_end(self):
+        # When a game ends on a walk-off, the inning ends abruptly with < 3 outs,
+        # so MLB StatsAPI leaves linescore.inningState as 'Bottom'. Our backend
+        # must normalize this to 'End' when abstractGameState is 'Final' or
+        # detailedState is 'Game Over'.
+        feed = copy.deepcopy(self.feed)
+        feed["gameData"]["status"] = {
+            "abstractGameState": "Final",
+            "codedGameState": "O",
+            "detailedState": "Game Over",
+            "statusCode": "O",
+        }
+        feed["liveData"]["linescore"]["currentInning"] = 11
+        feed["liveData"]["linescore"]["currentInningOrdinal"] = "11th"
+        feed["liveData"]["linescore"]["inningState"] = "Bottom"
+        feed["liveData"]["linescore"]["isTopInning"] = False
+
+        walk_off_play = {
+            "about": {"atBatIndex": 89, "inning": 11, "halfInning": "bottom", "isComplete": True},
+            "matchup": {
+                "pitcher": {"id": 200, "fullName": "Grant Wolfram"},
+                "batter": {"id": 101, "fullName": "Brett Sullivan"},
+            },
+            "result": {"type": "atBat", "event": "Single", "eventType": "single"},
+            "runners": [],
+            "playEvents": [{"isPitch": True, "pitchNumber": 1}],
+        }
+        feed["liveData"]["plays"]["allPlays"] = [walk_off_play]
+
+        with mock.patch.object(main, "_fetch_savant_rows", return_value=[]):
+            snapshot = main._game_state_snapshot(feed, walk_off_play, walk_off_play["playEvents"][0], pitch_index=0)
+            status_snap = main._game_status_snapshot(feed)
+
+        self.assertEqual(snapshot["inning"]["state"], "End")
+        self.assertEqual(snapshot["gameState"], "Game Over")
+        self.assertFalse(snapshot["isLive"])
+        self.assertEqual(snapshot["abstractGameState"], "Final")
+
+        self.assertEqual(status_snap["inningState"], "End")
+        self.assertEqual(status_snap["gameState"], "Game Over")
+        self.assertFalse(status_snap["isLive"])
+
     def test_extra_innings_postseason_has_no_ghost_runner(self):
         # Postseason games (game.type != "R") start extra innings with the
         # bases empty — no automatic runner.
@@ -1312,6 +1443,165 @@ class LiveFeedFixtureTests(unittest.TestCase):
         self.assertEqual(pitcher["strikesThrown"], 61)
         self.assertEqual(pitcher["wildPitches"], 1)
         self.assertEqual(pitcher["balks"], 1)
+
+    def test_calculate_challenges_starts_with_two_and_deducts_on_unsuccessful(self):
+        # Regulation: away starts with 2, home starts with 2
+        res = main._calculate_challenges([], current_inning=1)
+        self.assertEqual(res, {"away": 2, "home": 2})
+
+        # Away team challenges and fails (call stands, isOverturned=False)
+        play_away_failed = {
+            "about": {"inning": 2, "isTopInning": True},
+            "matchup": {"batter": {"id": 101, "fullName": "Away Batter"}},
+            "reviewDetails": {
+                "isOverturned": False,
+                "reviewType": "MJ",
+                "player": {"id": 101, "fullName": "Away Batter"},
+            },
+        }
+        res2 = main._calculate_challenges([play_away_failed], current_inning=2)
+        self.assertEqual(res2, {"away": 1, "home": 2})
+
+        # Away team challenges again and succeeds (overturned=True): retains challenge
+        play_away_success = {
+            "about": {"inning": 4, "isTopInning": True},
+            "matchup": {"batter": {"id": 102, "fullName": "Away Batter 2"}},
+            "reviewDetails": {
+                "isOverturned": True,
+                "reviewType": "MJ",
+                "player": {"id": 102, "fullName": "Away Batter 2"},
+            },
+        }
+        res3 = main._calculate_challenges([play_away_failed, play_away_success], current_inning=4)
+        self.assertEqual(res3, {"away": 1, "home": 2})
+
+        # Home team challenges and fails
+        play_home_failed = {
+            "about": {"inning": 5, "isTopInning": False},
+            "matchup": {"batter": {"id": 201, "fullName": "Home Batter"}},
+            "reviewDetails": {
+                "isOverturned": False,
+                "reviewType": "MJ",
+                "player": {"id": 201, "fullName": "Home Batter"},
+            },
+        }
+        res4 = main._calculate_challenges(
+            [play_away_failed, play_away_success, play_home_failed], current_inning=5
+        )
+        self.assertEqual(res4, {"away": 1, "home": 1})
+
+    def test_calculate_challenges_refills_in_extra_innings(self):
+        # Suppose away used both challenges in regulation (innings 1-9)
+        play1 = {
+            "about": {"inning": 2, "isTopInning": True},
+            "matchup": {"batter": {"id": 101}},
+            "reviewDetails": {"isOverturned": False, "player": {"id": 101}},
+        }
+        play2 = {
+            "about": {"inning": 6, "isTopInning": True},
+            "matchup": {"batter": {"id": 102}},
+            "reviewDetails": {"isOverturned": False, "player": {"id": 102}},
+        }
+        res_reg = main._calculate_challenges([play1, play2], current_inning=9)
+        self.assertEqual(res_reg, {"away": 0, "home": 2})
+
+        # Entering extra innings (inning 10): refilled to 2!
+        res_extras = main._calculate_challenges([play1, play2], current_inning=10)
+        self.assertEqual(res_extras, {"away": 2, "home": 2})
+
+        # Inning 10 play where away fails a challenge
+        play10 = {
+            "about": {"inning": 10, "isTopInning": True},
+            "matchup": {"batter": {"id": 103}},
+            "reviewDetails": {"isOverturned": False, "player": {"id": 103}},
+        }
+        res_inn10 = main._calculate_challenges([play1, play2, play10], current_inning=10)
+        self.assertEqual(res_inn10, {"away": 1, "home": 2})
+
+        # Inning 11 (next extra inning): refilled back to 2!
+        res_inn11 = main._calculate_challenges([play1, play2, play10], current_inning=11)
+        self.assertEqual(res_inn11, {"away": 2, "home": 2})
+
+    def test_game_state_snapshot_and_endpoint_include_challenges(self):
+        feed = copy.deepcopy(self.feed)
+        plays = feed["liveData"]["plays"]["allPlays"]
+        target_play = plays[0]
+        target_pitch = target_play["playEvents"][0]
+
+        with mock.patch.object(main, "_fetch_savant_rows", return_value=[]):
+            snapshot = main._game_state_snapshot(
+                feed, target_play, target_pitch, pitch_index=0
+            )
+
+        self.assertIn("challenges", snapshot)
+        self.assertEqual(snapshot["challenges"], {"away": 2, "home": 2})
+
+    def test_parse_review_info_abs_and_managerial_challenges(self):
+        # Empty review
+        res_empty = main._parse_review_info({})
+        self.assertEqual(res_empty, (False, None, None, None, None, None))
+
+        # ABS challenge on called strike
+        play_abs = {
+            "matchup": {"batter": {"id": 101, "fullName": "Ronald Acuña Jr."}},
+            "playEvents": [
+                {
+                    "isPitch": True,
+                    "details": {"call": {"code": "C", "description": "Called Strike"}},
+                }
+            ],
+            "reviewDetails": {
+                "isOverturned": True,
+                "reviewType": "MJ",
+                "player": {"id": 101, "fullName": "Ronald Acuña Jr."},
+            },
+        }
+        review, overturned, challenger, r_type, target, team = main._parse_review_info(play_abs)
+        self.assertTrue(review)
+        self.assertTrue(overturned)
+        self.assertEqual(challenger, "Ronald Acuña Jr.")
+        self.assertEqual(target, "Called Strike")
+        self.assertEqual(r_type, "MJ")
+
+        # ABS challenge on called ball by catcher/pitcher
+        play_ball = {
+            "matchup": {"pitcher": {"id": 202, "fullName": "Gerrit Cole"}},
+            "playEvents": [
+                {
+                    "isPitch": True,
+                    "details": {"call": {"code": "B", "description": "Ball"}},
+                }
+            ],
+            "reviewDetails": {
+                "isOverturned": False,
+                "reviewType": "MJ",
+                "player": {"id": 202, "fullName": "Gerrit Cole"},
+            },
+        }
+        review, overturned, challenger, r_type, target, team = main._parse_review_info(play_ball)
+        self.assertTrue(review)
+        self.assertFalse(overturned)
+        self.assertEqual(challenger, "Gerrit Cole")
+        self.assertEqual(target, "Called Ball")
+
+        # Managerial challenge
+        play_mgr = {
+            "reviewDetails": {
+                "isOverturned": False,
+                "reviewType": "Manager",
+                "challenger": "Dave Roberts",
+                "description": "Safe call at 1B",
+                "team": {"triCode": "LAD"},
+            },
+        }
+        review, overturned, challenger, r_type, target, team = main._parse_review_info(play_mgr)
+        self.assertTrue(review)
+        self.assertFalse(overturned)
+        self.assertEqual(challenger, "Dave Roberts")
+        self.assertEqual(target, "Safe call at 1B")
+        self.assertEqual(team, "LAD")
+
+
 
 
 class InducedBreaksRegressionTests(unittest.TestCase):
@@ -1917,3 +2207,5 @@ class SavantRowsCacheTests(unittest.TestCase):
         # The in-flight game kept both its rows and its building flag.
         self.assertIn("9005", main._savant_rows_building)
         self.assertIn("9005", main._savant_rows_cache)
+
+

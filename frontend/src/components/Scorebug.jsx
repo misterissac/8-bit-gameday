@@ -1,15 +1,20 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
-import { scorebugStatusLabel, isGameTerminal } from '../util/scorebug';
+import {
+  scorebugStatusLabel,
+  isGameTerminal,
+  resolveInningLabel,
+  resolveABSChallenges,
+  STATUS_ROLL_CONFIG,
+  computeStatusRollDuration,
+  isOutsideClick,
+} from '../util/scorebug';
 import {
   BroadcastDelayBuffer,
   normalizeBroadcastDelaySeconds,
   serializeBroadcastDelayValue,
 } from '../util/broadcastDelay';
 import { groupGameLogPlays } from '../util/gameLog';
-
-const STATUS_ROLL_DELAY_MS = 2200;
-const STATUS_ROLL_SPEED_PX_PER_SECOND = 42;
 
 const GAME_STATE_URL = 'http://localhost:8000/api/game-state';
 const GAME_STATUS_URL = 'http://localhost:8000/api/game-status';
@@ -37,6 +42,8 @@ const statusSnapshot = (data) => ({
   reviewIsOverturned: data?.reviewIsOverturned ?? null,
   reviewChallenger: data?.reviewChallenger ?? null,
   reviewType: data?.reviewType ?? null,
+  reviewTarget: data?.reviewTarget ?? null,
+  reviewTeam: data?.reviewTeam ?? null,
   offensiveSub: data?.offensiveSub ?? false,
   offensiveSubRole: data?.offensiveSubRole ?? null,
   offensiveSubNew: data?.offensiveSubNew ?? null,
@@ -60,35 +67,118 @@ const statusSnapshot = (data) => ({
 // Status labels that should stay sticky in the bottom-left row after their
 // tab animation finishes, persisting until the next pitch is thrown rather
 // than vanishing the moment the feed's action event clears.
-const STICKY_STATUS_PATTERN = /Mound Visit|Pitching Change|Pinch Hitter|Pinch Runner|Defensive Sub/i;
+const STICKY_STATUS_PATTERN = /Mound Visit|Pitching Change|Pinch Hitter|Pinch Runner|Defensive Sub|Challenge|Review/i;
 
 function RollingStatusText({ value, style }) {
   const viewportRef = useRef(null);
   const textRef = useRef(null);
-  const [rolling, setRolling] = useState(false);
+  const [overflow, setOverflow] = useState(0);
+  const [phase, setPhase] = useState('idle'); // 'idle' | 'rolling' | 'paused_end'
 
+  // Measure overflow whenever value changes, or whenever layout/font shifts
   useEffect(() => {
-    setRolling(false);
-    const viewport = viewportRef.current;
-    const text = textRef.current;
-    if (!value || !viewport || !text) return undefined;
-    const overflow = text.scrollWidth - viewport.clientWidth;
-    if (overflow <= 0) return undefined;
-    const start = setTimeout(() => setRolling(true), STATUS_ROLL_DELAY_MS);
-    return () => clearTimeout(start);
+    setPhase('idle');
+    const vp = viewportRef.current;
+    const txt = textRef.current;
+    if (!value || !vp || !txt) {
+      setOverflow(0);
+      return undefined;
+    }
+
+    const measure = () => {
+      if (!viewportRef.current || !textRef.current) return;
+      const diff = Math.max(0, textRef.current.scrollWidth - viewportRef.current.clientWidth);
+      setOverflow(diff);
+    };
+
+    measure();
+
+    let ro = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => {
+        measure();
+      });
+      ro.observe(vp);
+      ro.observe(txt);
+    }
+
+    return () => {
+      if (ro) ro.disconnect();
+    };
   }, [value]);
 
-  const overflow = viewportRef.current && textRef.current
-    ? Math.max(0, textRef.current.scrollWidth - viewportRef.current.clientWidth)
-    : 0;
-  const duration = overflow > 0 ? Math.max(1.2, overflow / STATUS_ROLL_SPEED_PX_PER_SECOND) : 0;
+  // Repeating animation cycle:
+  // 1. idle: pause 2s at the beginning of the text
+  // 2. rolling: roll slowly to the end of the text
+  // 3. paused_end: pause 2s at the end of the text
+  // 4. reset to beginning (idle) and repeat until status expires
+  useEffect(() => {
+    if (overflow <= 0 || !value) {
+      if (phase !== 'idle') setPhase('idle');
+      return undefined;
+    }
+
+    const durationSec = computeStatusRollDuration(overflow, STATUS_ROLL_CONFIG.speedPxPerSecond);
+    const durationMs = durationSec * 1000;
+
+    if (phase === 'idle') {
+      const timer = setTimeout(() => {
+        setPhase('rolling');
+      }, STATUS_ROLL_CONFIG.startPauseMs);
+      return () => clearTimeout(timer);
+    }
+
+    if (phase === 'rolling') {
+      // Set a fallback timer slightly after transition end so the cycle advances
+      // even if onTransitionEnd is throttled or interrupted (e.g. background tab)
+      const timer = setTimeout(() => {
+        setPhase('paused_end');
+      }, durationMs + 50);
+      return () => clearTimeout(timer);
+    }
+
+    if (phase === 'paused_end') {
+      const timer = setTimeout(() => {
+        setPhase('idle');
+      }, STATUS_ROLL_CONFIG.endPauseMs);
+      return () => clearTimeout(timer);
+    }
+
+    return undefined;
+  }, [phase, overflow, value]);
+
+  const handleTransitionEnd = (e) => {
+    if (e.target === textRef.current && phase === 'rolling') {
+      setPhase('paused_end');
+    }
+  };
+
+  const durationSec = computeStatusRollDuration(overflow, STATUS_ROLL_CONFIG.speedPxPerSecond);
 
   return (
-    <span ref={viewportRef} style={{ display: 'block', width: '220px', maxWidth: '220px', overflow: 'hidden', whiteSpace: 'nowrap', textAlign: 'left', ...style }}>
+    <span
+      ref={viewportRef}
+      title={value || undefined}
+      style={{
+        display: 'block',
+        width: '220px',
+        maxWidth: '220px',
+        overflow: 'hidden',
+        whiteSpace: 'nowrap',
+        textAlign: 'left',
+        ...style,
+      }}
+    >
       <span
         ref={textRef}
-        style={{ display: 'inline-block', whiteSpace: 'nowrap', transform: rolling ? `translateX(-${overflow}px)` : 'translateX(0)', transition: rolling ? `transform ${duration}s linear` : 'none' }}
-        onTransitionEnd={() => setRolling(false)}
+        style={{
+          display: 'inline-block',
+          whiteSpace: 'nowrap',
+          transform: phase === 'idle' ? 'translateX(0px)' : `translateX(-${overflow}px)`,
+          transition: phase === 'rolling' ? `transform ${durationSec}s linear` : 'none',
+          willChange: overflow > 0 ? 'transform' : 'auto',
+        }}
+        onTransitionEnd={handleTransitionEnd}
       >
         {value || ''}
       </span>
@@ -768,6 +858,12 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
         pitcherId: displayState.pitcherId,
         frozen,
         inning: displayState.inning,
+        review: displayState.review,
+        reviewIsOverturned: displayState.reviewIsOverturned,
+        reviewChallenger: displayState.reviewChallenger,
+        reviewType: displayState.reviewType,
+        reviewTarget: displayState.reviewTarget,
+        reviewTeam: displayState.reviewTeam,
       })
     : null;
 
@@ -830,6 +926,14 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   // (not the app-level gameTerminal prop) so it stays true for a finished game
   // even while the app-level flag is briefly toggled during navigation.
   const feedTerminal = isGameTerminal(liveStatus?.gameState);
+  const isTerminal = (
+    gameTerminal ||
+    feedTerminal ||
+    isGameTerminal(displayState?.gameState) ||
+    isGameTerminal(displayState?.detailedState) ||
+    displayState?.abstractGameState === 'Final' ||
+    (displayState?.isLive === false && (displayState?.gameState === 'Game Over' || displayState?.gameState === 'Final'))
+  );
 
   // Propagate the current defensive alignment + formation to the parent so the
   // 3D scene can render position labels under each fielder, and the Defense
@@ -1031,31 +1135,51 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   }, [state, liveStatus]);
 
   // Close the game log when the user clicks anywhere outside the button or
-  // the panel itself. pointerdown (not click) so a click that starts inside
-  // the panel — e.g. selecting a play — never bubbles to a close.
+  // the panel itself. Uses capture phase across pointerdown and click so
+  // stopping propagation in child elements or canvas controls cannot block
+  // dismissal. Also closes on Escape.
   useEffect(() => {
     if (!gameLogOpen) return;
-    const handlePointerDown = (e) => {
-      if (gameLogButtonRef.current?.contains(e.target)) return;
-      if (gameLogPanelRef.current?.contains(e.target)) return;
-      setGameLogOpen(false);
+    const handleOutside = (e) => {
+      if (isOutsideClick(e, gameLogButtonRef.current, gameLogPanelRef.current)) {
+        setGameLogOpen(false);
+      }
     };
-    document.addEventListener('pointerdown', handlePointerDown);
-    return () => document.removeEventListener('pointerdown', handlePointerDown);
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') setGameLogOpen(false);
+    };
+    document.addEventListener('pointerdown', handleOutside, true);
+    document.addEventListener('click', handleOutside, true);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handleOutside, true);
+      document.removeEventListener('click', handleOutside, true);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
   }, [gameLogOpen]);
 
   // Close the box score when the user clicks anywhere outside the button or
-  // the panel itself (pointerdown so a click that starts inside the panel —
-  // e.g. toggling a team tab — never closes it).
+  // the panel itself. Uses capture phase across pointerdown and click so
+  // stopping propagation in child elements or canvas controls cannot block
+  // dismissal. Also closes on Escape.
   useEffect(() => {
     if (!boxOpen) return;
-    const handlePointerDown = (e) => {
-      if (boxButtonRef.current?.contains(e.target)) return;
-      if (boxPanelRef.current?.contains(e.target)) return;
-      setBoxOpen(false);
+    const handleOutside = (e) => {
+      if (isOutsideClick(e, boxButtonRef.current, boxPanelRef.current)) {
+        setBoxOpen(false);
+      }
     };
-    document.addEventListener('pointerdown', handlePointerDown);
-    return () => document.removeEventListener('pointerdown', handlePointerDown);
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') setBoxOpen(false);
+    };
+    document.addEventListener('pointerdown', handleOutside, true);
+    document.addEventListener('click', handleOutside, true);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handleOutside, true);
+      document.removeEventListener('click', handleOutside, true);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
   }, [boxOpen]);
 
   // Keep the box-score panel within the window: cap its height to the space
@@ -1075,6 +1199,7 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   const toggleGameLog = useCallback(async () => {
     const next = !gameLogOpen;
     setGameLogOpen(next);
+    if (next) setBoxOpen(false);
     if (!next) return;
     setGameLogLoading(true);
     setGameLogError(null);
@@ -1104,6 +1229,7 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   const toggleBox = useCallback(async () => {
     const next = !boxOpen;
     setBoxOpen(next);
+    if (next) setGameLogOpen(false);
     if (!next) return;
     // Default to the team currently at bat so the most relevant box is shown.
     setBoxSide(state?.inning?.isTop ? 'away' : 'home');
@@ -1156,23 +1282,20 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
   const homeScore = score?.home?.runs ?? '—';
   const baseSet = new Set(bases || []);
   const outsVal = outs ?? 0;
+  const { away: awayChallenges, home: homeChallenges } = resolveABSChallenges(displayState);
   // Bottom-left game status is written only after the status tab has finished
   // its slide-out (see the status-change effect above), so a change isn't
   // spoiled by the old row while the new tab plays.
   const isStatusNotice =
-    /Delay|Review|Change|Pinch|Mound|Defensive/i.test(writtenStatus || '');
+    /Delay|Review|Change|Pinch|Mound|Defensive|Challenge/i.test(writtenStatus || '');
   // The red LIVE marker shows while the feed reports the game as live and
   // clears on its own once the game ends (abstractGameState flips to Final).
-  const liveIsLive = liveStatus?.isLive ?? isLive;
+  const liveIsLive = !isTerminal && (liveStatus?.isLive ?? isLive);
   const hasCount = count?.balls != null && count?.strikes != null;
 
-  // "▼ 10th" / "▲ 7th" (down = bottom of the inning, up = top); "Mid 7th" /
-  // "End 7th" between innings; plain ordinal when game over.
-  const inningLabel =
-    !inning?.ordinal ? '—'
-    : inning.state === 'Middle' ? `Mid ${inning.ordinal}`
-    : inning.state === 'End' ? `End ${inning.ordinal}`
-    : `${inning.isTop ? '▲' : '▼'} ${inning.ordinal}`;
+  // Inning label: "Final" or "Final/<innings>" when the game has ended,
+  // "Mid 7th" / "End 7th" between halves, and "▲/▼ 7th" while in progress.
+  const inningLabel = resolveInningLabel(inning, isTerminal);
 
   const batterRows = [
     ['AVG', dash(batterSeason?.avg)],
@@ -1209,6 +1332,16 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
     background: occupied ? '#ffd166' : 'transparent',
     border: `1.5px solid ${occupied ? '#ffd166' : 'rgba(255,255,255,0.3)'}`,
     boxShadow: occupied ? '0 0 6px rgba(255,209,102,0.7)' : 'none',
+  });
+
+  const challengeBarStyle = (active) => ({
+    width: 14,
+    height: 1.5,
+    borderRadius: 1,
+    background: active ? '#ffffff' : 'rgba(255, 255, 255, 0.2)',
+    boxShadow: active ? '0 0 4px rgba(255, 255, 255, 0.8)' : 'none',
+    border: active ? '0.5px solid rgba(255, 255, 255, 0.95)' : '0.5px solid rgba(255, 255, 255, 0.12)',
+    transition: 'background 0.25s ease, box-shadow 0.25s ease',
   });
 
   return (
@@ -1360,10 +1493,20 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
       {/* ── Score row ── */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         {/* Away */}
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flex: 1 }}>
-          <span style={{ fontSize: 18, fontWeight: 'bold', letterSpacing: '0.08em' }}>
-            {teams?.away?.abbreviation ?? 'AWAY'}
-          </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+            <span style={{ fontSize: 18, fontWeight: 'bold', letterSpacing: '0.08em', lineHeight: 1 }}>
+              {teams?.away?.abbreviation ?? 'AWAY'}
+            </span>
+            <div
+              style={{ display: 'flex', gap: 3, alignItems: 'center' }}
+              title={`${teams?.away?.abbreviation ?? 'Away'} ABS challenges: ${awayChallenges} remaining`}
+              aria-label={`${teams?.away?.abbreviation ?? 'Away'} ABS challenges: ${awayChallenges} remaining`}
+            >
+              <div style={challengeBarStyle(1 <= awayChallenges)} />
+              <div style={challengeBarStyle(2 <= awayChallenges)} />
+            </div>
+          </div>
           <FlipDigits value={awayScore} style={{ fontSize: 26, fontWeight: 'bold', lineHeight: 1 }} />
         </div>
 
@@ -1373,16 +1516,17 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
             <FlipValue value={inningLabel} style={{ fontSize: 13, fontWeight: 'bold', color: '#ffd166' }} />
             {/* The ball–strike count renders as two independent FlipValues so a
                 count change flips only the digit that actually changed (e.g. a
-                ball makes 1–2 → 2–2 flip just the left digit). */}
-            {hasCount ? (
+                ball makes 1–2 → 2–2 flip just the left digit). Hidden when the
+                game is final. */}
+            {hasCount && !isTerminal ? (
               <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 4, fontSize: 13, color: '#aaa' }}>
                 <FlipValue value={count?.balls} />
                 <span>–</span>
                 <FlipValue value={count?.strikes} />
               </span>
-            ) : (
+            ) : !isTerminal ? (
               <span style={{ fontSize: 13, color: '#aaa' }}>—</span>
-            )}
+            ) : null}
           </div>
           <div style={{ position: 'relative', width: 54, height: 32 }}>
             <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', ...dot(baseSet.has('2B')) }} title="2B" />
@@ -1398,11 +1542,21 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
         </div>
 
         {/* Home */}
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flex: 1, justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, justifyContent: 'flex-end' }}>
           <FlipDigits value={homeScore} style={{ fontSize: 26, fontWeight: 'bold', lineHeight: 1 }} />
-          <span style={{ fontSize: 18, fontWeight: 'bold', letterSpacing: '0.08em' }}>
-            {teams?.home?.abbreviation ?? 'HOME'}
-          </span>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+            <span style={{ fontSize: 18, fontWeight: 'bold', letterSpacing: '0.08em', lineHeight: 1 }}>
+              {teams?.home?.abbreviation ?? 'HOME'}
+            </span>
+            <div
+              style={{ display: 'flex', gap: 3, alignItems: 'center' }}
+              title={`${teams?.home?.abbreviation ?? 'Home'} ABS challenges: ${homeChallenges} remaining`}
+              aria-label={`${teams?.home?.abbreviation ?? 'Home'} ABS challenges: ${homeChallenges} remaining`}
+            >
+              <div style={challengeBarStyle(1 <= homeChallenges)} />
+              <div style={challengeBarStyle(2 <= homeChallenges)} />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1468,6 +1622,17 @@ export function Scorebug({ refreshKey = 0, outcomeRefresh = 0, gamePk = null, fr
           borderRadius: 10, fontFamily: 'monospace', color: '#fff',
           padding: '10px 12px 4px', boxShadow: '0 10px 34px rgba(0,0,0,0.6)',
         }} className="app-scroll">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <strong style={{ color: '#ffd166', letterSpacing: '0.12em', fontSize: 12 }}>BOX SCORE</strong>
+            <button
+              type="button"
+              onClick={() => setBoxOpen(false)}
+              aria-label="Close box score"
+              style={{ background: 'transparent', border: 0, color: '#aaa', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: '0 4px' }}
+            >
+              ×
+            </button>
+          </div>
           {boxLoading ? (
             <div style={{ padding: '12px 8px', fontSize: 12, color: '#aaa' }}>Loading box score…</div>
           ) : boxError ? (

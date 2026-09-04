@@ -321,3 +321,19 @@
     opacity: 0;
   }
 }
+
+/* ── Playback-panel handle (the ☰ button in App.jsx) ────────────────────
+   The handle only appears after the panel has fully rolled back up; this
+   fades it in instead of popping it in over the shrinking panel. */
+@keyframes playback-handle-in {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.playback-handle-in {
+  animation: playback-handle-in 0.25s ease-out;
+}

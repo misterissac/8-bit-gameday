@@ -4,7 +4,7 @@ import { OrbitControls, Sky, Environment } from '@react-three/drei';
 import * as THREE from 'three';
 import { Spherical, Vector3 } from 'three';
 import { feetToM } from '../util/MathUtil';
-import { getBattedBallPosition, getChaserPosition, getPlayBallPosition, setFielderCamActive } from '../constants/playback';
+import { getBattedBallPosition, getChaserPosition, getPlayBallPosition, getFielderCamLookTarget, setFielderCamActive, stepSimulation, resetSimulationTime } from '../constants/playback';
 import { FIELD } from '../constants/field';
 import { getTuning } from '../constants/tuning';
 import { impactDistortion, SHOCK_SWEEP_FACTOR } from '../util/impactDistortion';
@@ -14,6 +14,22 @@ import { Batter } from './Batter';
 import { Catcher } from './Catcher';
 import { Pitcher } from './Pitcher';
 import { BattedBall } from './BattedBall';
+import { shouldFielderCamFollow, shouldFielderCamRestore } from '../util/battedBall';
+
+// Authoritative simulation clock driver: mounted inside <Canvas> at the top of the scene.
+// Steps the shared simulation clock on every frame tick (with state.clock.elapsedTime
+// for idempotency), and resets it synchronously on a new pitch or replay.
+function SimulationClock({ pitchData, replayKey, comparisonActive }) {
+    useLayoutEffect(() => {
+        resetSimulationTime();
+    }, [pitchData, replayKey, comparisonActive]);
+
+    useFrame((state, delta) => {
+        stepSimulation(delta, state.clock.elapsedTime);
+    });
+
+    return null;
+}
 
 // Tracks which keys are currently held down (lowercased), the same pattern
 // used by the reference ballpark app's free-cam controls.
@@ -47,7 +63,7 @@ const GRASS_RADIUS = feetToM(400); // field extent, matches Ballpark.jsx
 // those two vectors is enough to restore any view angle. Saved to
 // localStorage (throttled, and on page unload) and restored on mount, so the
 // view survives page reloads.
-const CAMERA_STORAGE_KEY = 'freebuff-camera-state';
+const CAMERA_STORAGE_KEY = 'playbyplay-camera-state';
 const CAMERA_SAVE_INTERVAL_MS = 1000;
 
 const loadCameraState = () => {
@@ -492,7 +508,10 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
             // the batted ball launched).
             const playId = pitchData?.play_id ?? null;
             const chaser = getChaserPosition();
-            const ball = getPlayBallPosition() || getBattedBallPosition();
+            const lookTarget = getFielderCamLookTarget();
+            const ball = (lookTarget && lookTarget.playId === playId)
+                ? lookTarget
+                : (getPlayBallPosition() || getBattedBallPosition());
             const home = fielderPosition ? FIELD.DEFENSE[fielderPosition] : null;
             let snapped = false;
             if (chaser && chaser.playId === playId) {
@@ -512,13 +531,18 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
                 if (camPos.y < getTuning().camera.minHeight) camPos.y = getTuning().camera.minHeight;
                 camera.position.copy(camPos);
                 if (controls) {
-                    // Pitcher: look at the plate / strike zone.
-                    // Other fielders: look toward the pitcher on the mound.
-                    const look = fielderPosition === 'P'
-                        ? { x: 0, y: 1.0, z: -1 }
-                        : { x: FIELD.DEFENSE.P.x, y: 1.8, z: FIELD.DEFENSE.P.z };
-                    controls.target.set(look.x, look.y, look.z);
-                    camera.lookAt(look.x, look.y, look.z);
+                    if (ball && ball.playId === playId) {
+                        controls.target.set(ball.x, ball.y, ball.z);
+                        camera.lookAt(ball.x, ball.y, ball.z);
+                    } else {
+                        // Pitcher: look at the plate / strike zone.
+                        // Other fielders: look toward the pitcher on the mound.
+                        const look = fielderPosition === 'P'
+                            ? { x: 0, y: 1.0, z: -1 }
+                            : { x: FIELD.DEFENSE.P.x, y: 1.8, z: FIELD.DEFENSE.P.z };
+                        controls.target.set(look.x, look.y, look.z);
+                        camera.lookAt(look.x, look.y, look.z);
+                    }
                     controls.enabled = false;
                 }
                 snapped = true;
@@ -536,11 +560,13 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
                 camera.lookAt(look.x, look.y, look.z);
             }
 
-            // If we snapped to the chaser and there's a play in progress
+            // If we snapped to the fielder and there's a play in progress
             // (ball is flying), go straight to 'following' so the completion
             // tracking is armed. Otherwise stay in 'waiting' until the next
             // cycle's launch moves us to 'following'.
-            if (snapped && chaser && chaser.playId === playId) {
+            const hasChaser = !!(chaser && chaser.playId === playId);
+            const hasBall = !!(ball && ball.playId === playId);
+            if (shouldFielderCamFollow({ snapped, hasChaser, hasBall, fielderPosition })) {
                 modeRef.current = 'following';
                 setVisibleMode('following');
             } else {
@@ -583,7 +609,10 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
 
         if (isActive) {
             if (!controls) return;
-            const ball = getPlayBallPosition() || getBattedBallPosition();
+            const lookTarget = getFielderCamLookTarget();
+            const ball = (lookTarget && lookTarget.playId === playId)
+                ? lookTarget
+                : (getPlayBallPosition() || getBattedBallPosition());
             const chaser = getChaserPosition();
             const home = fielderPosition ? FIELD.DEFENSE[fielderPosition] : null;
 
@@ -625,24 +654,37 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
             } else if (home) {
                 // No chaser position yet (windup, or the brief gap while the
                 // fielders are reset to their defensive spots between cycles
-                // of the looped play): keep the camera glued to the fielder's
-                // defensive spot so the view never jumps — the chaser group
-                // itself is reset there, so this stays continuous.
+                // of the looped play, or catchers without moving chasers):
+                // keep the camera glued to the fielder's defensive spot so the view
+                // never jumps.
                 camPos.set(home.x, getTuning().camera.fielderHeadHeight, home.z);
                 if (camPos.y < getTuning().camera.minHeight) camPos.y = getTuning().camera.minHeight;
                 camera.position.copy(camPos);
-                // Pitcher: look at the plate / strike zone.
-                // Other fielders: look toward the pitcher on the mound.
-                const look = fielderPosition === 'P'
-                    ? { x: 0, y: 1.0, z: -1 }
-                    : { x: FIELD.DEFENSE.P.x, y: 1.8, z: FIELD.DEFENSE.P.z };
-                controls.target.set(look.x, look.y, look.z);
-                camera.lookAt(look.x, look.y, look.z);
+
+                // Look at the ball if in flight, else look at pitcher/plate
+                if (ball && ball.playId === playId) {
+                    controls.target.set(ball.x, ball.y, ball.z);
+                    camera.lookAt(ball.x, ball.y, ball.z);
+                } else {
+                    const look = fielderPosition === 'P'
+                        ? { x: 0, y: 1.0, z: -1 }
+                        : { x: FIELD.DEFENSE.P.x, y: 1.8, z: FIELD.DEFENSE.P.z };
+                    controls.target.set(look.x, look.y, look.z);
+                    camera.lookAt(look.x, look.y, look.z);
+                }
                 controls.enabled = false;
+
+                // Arm following when ball is in flight even without a dynamic chaser (e.g. Catcher)
+                if (modeRef.current === 'waiting' && shouldFielderCamFollow({ snapped: true, hasChaser: false, hasBall: !!(ball && ball.playId === playId), fielderPosition })) {
+                    modeRef.current = 'following';
+                    setVisibleMode('following');
+                    lastCompleteSignal.current = completeSignalRef.current;
+                }
             }
 
             // The play completed this cycle: begin easing back to the original view.
-            if (modeRef.current === 'following' && completeSignalRef.current !== lastCompleteSignal.current) {
+            const completeSignalChanged = completeSignalRef.current !== lastCompleteSignal.current;
+            if (shouldFielderCamRestore(modeRef.current, completeSignalChanged)) {
                 lastCompleteSignal.current = completeSignalRef.current;
                 if (originalPositionRef.current && originalTargetRef.current && controls) {
                     restoreStartRef.current = {
@@ -971,6 +1013,9 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
             {/* Diamond / ballpark sprites */}
             <Ballpark />
             
+            {/* Central simulation clock driver */}
+            <SimulationClock pitchData={pitchData} replayKey={replayKey} comparisonActive={comparisonActive} />
+
             {/* Pitch Visualization Component. In comparison mode the single
                 live pitch/batter is replaced by every selected pitch overlaid
                 together (plus the overlaid pitcher(s) above and each contact
@@ -981,10 +1026,10 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
                         pitching change between the selected pitches is still
                         legible. Each winds up on the shared cycle. */}
                     {comparisonPitchers.map(([key, pitch]) => (
-                        <Pitcher key={`compare-pitcher-${replayKey}-${key}`} pitchData={pitch} overlay />
+                        <Pitcher key={`compare-pitcher-${replayKey}-${key}`} pitchData={pitch} replayKey={replayKey} overlay />
                     ))}
                     {comparisonPlays.map((play, i) => (
-                        <Pitch key={`compare-pitch-${replayKey}-${i}`} pitchData={play.pitch} overlay showRingLabel={showComparisonRingLabels} showColoredTail={showColoredTails} showBillows={showBillowParticles} impactEffect={impactEffect} />
+                        <Pitch key={`compare-pitch-${replayKey}-${i}`} pitchData={play.pitch} replayKey={replayKey} overlay showRingLabel={showComparisonRingLabels} showColoredTail={showColoredTails} showBillows={showBillowParticles} impactEffect={impactEffect} />
                     ))}
                     {comparisonPlays
                         .filter((play) => play.pitch?.is_contact === true)
@@ -992,6 +1037,7 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
                             <BattedBall
                                 key={`compare-hit-${replayKey}-${i}`}
                                 pitchData={play.pitch}
+                                replayKey={replayKey}
                                 hit={play.hit}
                                 comparison
                             />
@@ -999,19 +1045,19 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
                 </>
             ) : (
                 <>
-                    <Pitch pitchData={pitchData} defaultPitchData={defaultPitchData} crossingPlane={crossingPlane} onCrossings={onCrossings} onArrival={onArrival} showColoredTail={showColoredTails} showBillows={showBillowParticles} impactEffect={impactEffect} />
+                    <Pitch pitchData={pitchData} replayKey={replayKey} defaultPitchData={defaultPitchData} crossingPlane={crossingPlane} onCrossings={onCrossings} onArrival={onArrival} showColoredTail={showColoredTails} showBillows={showBillowParticles} impactEffect={impactEffect} />
 
                     {/* Batter at the plate, swinging with the live at-bat data */}
-                    <Batter pitchData={pitchData} />
+                    <Batter pitchData={pitchData} replayKey={replayKey} />
 
                     {/* Pitcher at the mound (ported player.glb): winds up and throws
                         on the shared playback cycle, releasing exactly when the pitch
                         ball starts flying */}
-                    <Pitcher pitchData={pitchData} />
+                    <Pitcher pitchData={pitchData} replayKey={replayKey} />
 
                     {/* Batted-ball + fielder trajectory (driven by Statcast hit data),
                         launched when the pitch reaches the spot it is hit */}
-                    <BattedBall pitchData={pitchData} hit={battedBall} onPlayResult={onPlayResult} onComplete={handleBattedComplete} defenseAlignment={defenseAlignment} />
+                    <BattedBall pitchData={pitchData} replayKey={replayKey} hit={battedBall} onPlayResult={onPlayResult} onComplete={handleBattedComplete} defenseAlignment={defenseAlignment} />
                 </>
             )}
 

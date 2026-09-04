@@ -14,9 +14,9 @@ import {
   resolveFieldedIntercept,
   statcastHitToWorld,
 } from '../util/MathUtil'
-import { isHitFieldingReady, hitMatchesAtBat, isBattedBallLaunchable, shouldAutoAdvanceStuckPlay } from '../util/battedBall'
+import { isHitFieldingReady, hitMatchesAtBat, isBattedBallLaunchable, shouldAutoAdvanceStuckPlay, getBaseTargetLocation, resolveFielderCamTarget } from '../util/battedBall'
 import { FIELD } from '../constants/field'
-import { setCycleDuration, getCycleDuration, getTimeScale, getCyclePause, getBallReleaseTime, setBattedBallPosition, setChaserPosition, setPlayBallPosition, getFielderCamActive } from '../constants/playback'
+import { setCycleDuration, getCycleDuration, getTimeScale, getCyclePause, getBallReleaseTime, setBattedBallPosition, setChaserPosition, setPlayBallPosition, setFielderCamLookTarget, getFielderCamActive, stepSimulation, getSimulationTime } from '../constants/playback'
 import { getTuning, useTuning } from '../constants/tuning'
 import { ConfettiBurst } from './ConfettiBurst'
 
@@ -459,6 +459,12 @@ function buildPlan(hit, launchPoint, settings = getTuning().battedBall) {
     else if (hit.eventType === 'home_run') resultText = 'HOME RUN'
   }
 
+  const stepOnBagTarget = chaserPutoutBase
+    ? getBaseTargetLocation(chaserPutoutBase)
+    : (chaserSegments.length > 1
+      ? getBaseTargetLocation(null, chaserSegments[chaserSegments.length - 1].to)
+      : null)
+
   return {
     arc, ballAirTime, ballCatch, catchLocation, timeUntilChaserReaches,
     chaser, chaserHome, landing, wallExit,
@@ -468,6 +474,7 @@ function buildPlan(hit, launchPoint, settings = getTuning().battedBall) {
     // knob is 0, rollSpeedXY === airXY and this reduces to the arc's own x/z.
     flatLaunch, ballDir, rollSpeedXY: rollXY, contactDistance,
     chaserSegments, putoutMoves, throws, outs, resultText, endTime,
+    chaserPutoutBase, stepOnBagTarget,
     // Where the ball ends up at the end of the play (glove of the final
     // receiver, the chaser at the base, or the catch point).
     finalBallPos: throws.length
@@ -515,7 +522,7 @@ const Fielder = React.forwardRef(({ position, leanRef, opacity = 1 }, ref) => {
 });
 Fielder.displayName = 'Fielder'
 
-export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayResult, onComplete, comparison = false }) => {
+export const BattedBall = ({ pitchData, replayKey = 0, hit = null, hits = SAMPLE_HITS, onPlayResult, onComplete, comparison = false }) => {
   const tuning = useTuning()
   const battedTuning = tuning.battedBall
   const playbackTuning = tuning.playback
@@ -529,9 +536,7 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
   const ballRef = useRef()
   // Position-code -> { group, lean } refs for the fielders that can move.
   const fielderRefs = useRef({})
-  // Shared playback clock (same loop as Pitch/Batter) plus the batted-ball's
-  // own flight clock, which starts the moment the pitch reaches the plate.
-  const playback = useRef(0)
+  // Flight clock starting from 0 the moment the ball is launched at contact.
   const flightClock = useRef(0)
   const firedThisCycle = useRef(false)
   const launched = useRef(false)
@@ -545,6 +550,13 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
   // timeout: the hit normally lands a poll or two after contact, so this never
   // fires early — it only rescues a genuinely missing hit.
   const noLaunchDeadlineRef = useRef(null)
+  // Fielding-choreography restart: true from the moment the pitcher starts his
+  // windup (when the fielders snap back to their defensive spots) through the
+  // cycle wrap, so the chaser/putout blocks stay parked and the fielder cam
+  // re-acquires the ready alignment instead of riding the reset. Cleared when
+  // the batted ball launches (each play re-runs the choreography) and on a new
+  // pitch.
+  const fieldersReset = useRef(false)
   // Home-run confetti: fires once per cycle at the wall-crossing spot.
   const confettiFiredRef = useRef(false)
   // Pitch object that owned the current cycle duration. A live hit can arrive
@@ -684,14 +696,15 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
   // allowed for a new pitch or right at the cycle wrap, when the clocks are
   // already back at ~0 — never mid-flight.
   useEffect(() => {
-    if (!contact || !plan) return
+    if (!contact) return
     if (comparison && !launchable) return
     // Comparison flies only until the ball hits the ground; no fielding.
-    const playEnd = comparison ? plan.ballAirTime : plan.endTime
+    const isContactPitch = contact.swing && launchable
+    const playEnd = isContactPitch && plan ? (comparison ? plan.ballAirTime : plan.endTime) : 0
     const duration = contact.simDuration + playEnd + getCyclePause() + getBallReleaseTime()
-      + (comparison ? (playbackTuning.comparisonFinishPause ?? 0) : 0)
+      + (comparison && isContactPitch ? (playbackTuning.comparisonFinishPause ?? 0) : 0)
     const isNewPitch = durationOwnerPitch.current !== pitchData
-    const justWrapped = playback.current < 0.05
+    const justWrapped = getSimulationTime() < 0.05
     // In comparison many hits share one cycle: only ever lengthen it (skip the
     // isNewPitch / justWrapped resets), so the longest flight wins regardless
     // of mount order.
@@ -736,7 +749,6 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
   // pitch's first frame (re-firing the launch gate / leaving the batted ball
   // visible).
   useLayoutEffect(() => {
-    playback.current = 0
     firedThisCycle.current = false
     launched.current = false
     flightClock.current = 0
@@ -744,12 +756,14 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     resultEmitted.current = false
     completeEmitted.current = false
     confettiFiredRef.current = false
+    fieldersReset.current = false
     setConfetti(null)
     setBattedBallPosition(null)
     setChaserPosition(null)
     setPlayBallPosition(null)
+    setFielderCamLookTarget(null)
     noLaunchDeadlineRef.current = null
-  }, [pitchData])
+  }, [pitchData, replayKey])
 
   // Clear the shared batted-ball position when this component unmounts (e.g.
   // entering/exiting comparison mode, where the whole live branch is swapped
@@ -759,14 +773,16 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
   // the follow camera lock onto a vanished ball and capture a wrong "original"
   // view for the first animation after returning to live.
   useEffect(() => {
-    return () => { setBattedBallPosition(null); setChaserPosition(null); setPlayBallPosition(null); }
+    return () => { setBattedBallPosition(null); setChaserPosition(null); setPlayBallPosition(null); setFielderCamLookTarget(null); }
   }, [])
 
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
     // Sync fielder opacity from the module-level fielder-cam flag so the
     // chaser re-renders translucent during the replay.
     const camActive = getFielderCamActive()
     if ((camActive ? 0 : 1) !== fielderOpacity) setFielderOpacity(camActive ? 0 : 1)
+
+    const { time: currentPlayback, wrapped } = stepSimulation(delta, state.clock.elapsedTime)
 
     if (!battedGroupRef.current || !ballRef.current) return
     if (!contact || !plan) {
@@ -789,40 +805,66 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     // and the whole play stay in sync at any playback speed.
     const speed = getTimeScale()
     const loopDuration = getCycleDuration()
-    const prevPlayback = playback.current
-    playback.current = (playback.current + delta * speed) % loopDuration
+    const contactWallTime = contact.time
+    // The instant the pitcher begins his windup (the shared cycle's windup
+    // window ends with the release at the wrap — the same timing Pitcher.jsx
+    // and the trail fade use).
+    const windupStart = Math.max(contactWallTime, loopDuration - getBallReleaseTime())
 
     // The cycle wrapped (all three components' clocks wrap at the same
     // getCycleDuration(), so Pitch and Batter reset in lockstep here too).
     // Reset the batted ball to its pre-launch state and, in demo mode, advance
     // to the next sample hit so the *next* cycle plays it — never mid-cycle.
-    if (playback.current < prevPlayback) {
+    // (The fielders themselves were already returned to their defensive spots
+    // at the windup start — see the restart below — so the wrap no longer
+    // cuts them back while the camera may be locked onto the chaser.)
+    if (wrapped) {
       launched.current = false
       flightClock.current = 0
       confettiFiredRef.current = false
       setBattedBallPosition(null)
       setChaserPosition(null)
       setPlayBallPosition(null)
-      // Move any fielders that ran last cycle back to their defensive spots so
-      // the next pitch starts from a clean alignment.
-      const chaserRefs = fielderRefs.current[plan.chaser]
-      if (chaserRefs?.group) chaserRefs.group.position.copy(plan.chaserHome)
-      if (chaserRefs?.lean) chaserRefs.lean.rotation.x = 0
-      for (const move of plan.putoutMoves) {
-        const refs = fielderRefs.current[move.fielder]
-        if (refs?.group) refs.group.position.copy(move.from)
-        if (refs?.lean) refs.lean.rotation.x = 0
-      }
+      setFielderCamLookTarget(null)
       if (!hit) setHitIndex((i) => (i + 1) % hits.length)
     }
 
-    const contactWallTime = contact.time
+    // Fielding-choreography restart: the moment the pitcher starts his windup
+    // — before the next pitch cycle — drop the fielder-cam publications and
+    // snap any fielders that ran during the play back onto their defensive
+    // spots (position AND facing, i.e. a complete restart), so the fielder cam
+    // re-acquires the ready alignment instead of teleporting with the fielder
+    // when the choreography resets. They stay parked through the windup;
+    // launching the batted ball (including a late-arriving live hit, which
+    // lengthens the cycle and moves windupStart later) clears the park and
+    // re-arms this restart for the new windup.
+    if (currentPlayback >= windupStart && !fieldersReset.current && launched.current) {
+      fieldersReset.current = true
+      setChaserPosition(null)
+      setPlayBallPosition(null)
+      setBattedBallPosition(null)
+      setFielderCamLookTarget(null)
+      const chaserRefs = fielderRefs.current[plan.chaser]
+      if (chaserRefs?.group) {
+        chaserRefs.group.position.copy(plan.chaserHome)
+        chaserRefs.group.rotation.set(0, 0, 0)
+      }
+      if (chaserRefs?.lean) chaserRefs.lean.rotation.x = 0
+      for (const move of plan.putoutMoves) {
+        const refs = fielderRefs.current[move.fielder]
+        if (refs?.group) {
+          refs.group.position.copy(move.from)
+          refs.group.rotation.set(0, 0, 0)
+        }
+        if (refs?.lean) refs.lean.rotation.x = 0
+      }
+    }
 
     // Fire the batted ball the moment the pitch reaches the contact spot. The
     // flag resets once the cycle wraps back before the contact moment, so each
     // pitch that reaches the plate AND was actually contacted re-launches the
     // hit (a swing-and-miss leaves the ball flying through the zone).
-    if (playback.current < contactWallTime) {
+    if (currentPlayback < contactWallTime) {
       firedThisCycle.current = false
     }
     // Launch only once the matching live hit's fielding point is ready: a real
@@ -831,7 +873,7 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     // arrive after contact time (its own feed event), so the gate waits for it
     // and then fires from the contact point as soon as it lands. Fouls skip
     // that wait and launch their synthesized flight immediately.
-    if (contact.swing && launchable && !firedThisCycle.current && playback.current >= contactWallTime) {
+    if (contact.swing && launchable && !firedThisCycle.current && currentPlayback >= contactWallTime) {
       firedThisCycle.current = true
       launched.current = true
       flightClock.current = 0
@@ -839,12 +881,15 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
       resultEmitted.current = false
       completeEmitted.current = false
       noLaunchDeadlineRef.current = null
+      // A launch re-arms the fielding choreography (and, for a late-arriving
+      // live hit, re-arms the windup-start restart for the lengthened cycle).
+      fieldersReset.current = false
       // The hit data can land after the pitch reached the plate, so this launch
       // may start later than contact. Lengthen the shared cycle so the ball's
       // full flight plus the pause plus the pitcher's windup still fit before
       // the wrap. Every shared clock is still below the old duration here, so
       // lengthening never jumps the pitch/batter/pitcher animations mid-play.
-      const needed = playback.current + plan.endTime + getCyclePause() + getBallReleaseTime()
+      const needed = currentPlayback + plan.endTime + getCyclePause() + getBallReleaseTime()
       if (needed > getCycleDuration()) setCycleDuration(needed)
     }
 
@@ -861,7 +906,7 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
       // Only count wall-clock time while the ball has actually reached the
       // plate un-launched; before that the deadline is left untouched so it
       // persists (not reset) across the looping cycles a missing hit produces.
-      if (playback.current >= contactWallTime) {
+      if (currentPlayback >= contactWallTime) {
         const now = performance.now()
         if (noLaunchDeadlineRef.current == null) {
           noLaunchDeadlineRef.current = now + battedTuning.noLaunchTimeoutMs
@@ -885,6 +930,8 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
       battedGroupRef.current.visible = false
       setBattedBallPosition(null)
       setChaserPosition(null)
+      setPlayBallPosition(null)
+      setFielderCamLookTarget(null)
       return
     }
 
@@ -903,8 +950,7 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
     // moment the pitch's white trajectory trace clears — the instant the
     // pitcher restarts his windup — so the tail of the play is gone the moment
     // the windup begins, never lingering into the cycle wrap.
-    const windupStart = Math.max(contactWallTime, loopDuration - getBallReleaseTime())
-    const trailFade = playback.current >= windupStart ? 0 : 1
+    const trailFade = currentPlayback >= windupStart ? 0 : 1
     if (tailMeshRef.current || traceMeshRef.current) {
       const tailAlphaAttr = trailGeometry.getAttribute('aAlpha')
       const yellowAlphaAttr = traceGeometry.getAttribute('aAlpha')
@@ -1031,15 +1077,35 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
         ballRef.current?.visible ? ballRef.current.position : null,
         pitchData?.play_id ?? null,
       );
+
+      // When the fielder receives the ball and is advancing to step on the bag
+      // (e.g. unassisted putout), point the camera at the bag instead of staring
+      // straight down at the ball and the ground beneath his feet.
+      if (plan.stepOnBagTarget && t >= plan.ballCatch.t) {
+        const lookTarget = resolveFielderCamTarget({
+          t,
+          ballCatchTime: plan.ballCatch.t,
+          stepOnBagTarget: plan.stepOnBagTarget,
+          catchLocation: plan.catchLocation,
+          duration: plan.endTime - plan.ballCatch.t,
+        });
+        setFielderCamLookTarget(lookTarget, pitchData?.play_id ?? null);
+      } else {
+        setFielderCamLookTarget(null);
+      }
     }
 
 
     // ── Chaser: sprint from their defensive spot to the fielding point, then
     //    (for an unassisted putout) on to the base. ──────────────────────
+    // Suppressed once the fielding choreography has restarted at the windup
+    // start — the chaser is parked on his defensive spot through the windup and
+    // the fielder cam (which follows the published position) re-acquires the
+    // ready alignment there.
     const chaserRefs = fielderRefs.current[plan.chaser]
-    if (chaserRefs?.group) {
-      const pos = evalSegments(plan.chaserSegments, t)
-      if (pos) {
+    if (!fieldersReset.current && (chaserRefs?.group || plan.chaser === 'C')) {
+      const pos = evalSegments(plan.chaserSegments, t) || plan.chaserHome
+      if (chaserRefs?.group && pos) {
         chaserRefs.group.position.copy(pos)
         // ``activeSeg`` is only defined while the chaser is actually running
         // (t inside [start, start+duration)), so the lean + facing drop as soon
@@ -1052,19 +1118,22 @@ export const BattedBall = ({ pitchData, hit = null, hits = SAMPLE_HITS, onPlayRe
       }
       // Publish the chaser's live world position so the fielder camera can
       // follow along during the replay.
-      setChaserPosition(chaserRefs.group.position, pitchData?.play_id ?? null)
+      const publishedPos = chaserRefs?.group?.position || pos
+      setChaserPosition(publishedPos, pitchData?.play_id ?? null)
     } else {
       setChaserPosition(null)
     }
 
     // ── Putout fielders sprint to their out base while the ball is in flight ──
-    for (const move of plan.putoutMoves) {
-      const refs = fielderRefs.current[move.fielder]
-      if (!refs?.group) continue
-      const progress = clamp(t / move.duration, 0, 1)
-      refs.group.position.lerpVectors(move.from, move.to, progress)
-      refs.group.lookAt(move.to.x, refs.group.position.y, move.to.z)
-      if (refs.lean) refs.lean.rotation.x = progress < 1 ? 0.22 : 0
+    if (!fieldersReset.current) {
+      for (const move of plan.putoutMoves) {
+        const refs = fielderRefs.current[move.fielder]
+        if (!refs?.group) continue
+        const progress = clamp(t / move.duration, 0, 1)
+        refs.group.position.lerpVectors(move.from, move.to, progress)
+        refs.group.lookAt(move.to.x, refs.group.position.y, move.to.z)
+        if (refs.lean) refs.lean.rotation.x = progress < 1 ? 0.22 : 0
+      }
     }
 
     // ── Emit OUT / DOUBLE PLAY / TRIPLE PLAY as each out is recorded ─────

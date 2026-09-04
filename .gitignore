@@ -17,8 +17,7 @@ build/
 skill-vis:MyTrajectorySimulator-main/
 solomon-gumball:baseball-sim-main/
 
-# Freebuff workspace state
-.freebuff/
+*.log
 
 # IDE / local libs
 .local_libs/

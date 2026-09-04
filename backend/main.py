@@ -2792,32 +2792,60 @@ def _occupied_bases(all_plays: list, game_type: str = None) -> list:
             continue
         first_start_by_runner = {}
         last_leg_by_runner = {}
+        is_batter_by_runner = {}
         anon = 0
-        for runner in play.get('runners') or []:
+        matchup = play.get('matchup') or {}
+        batter_info = matchup.get('batter') or {}
+        batter_id = batter_info.get('id')
+        batter_name = batter_info.get('fullName')
+
+        runners_list = play.get('runners') or []
+        for runner in runners_list:
             mv = runner.get('movement') or {}
-            rid = ((runner.get('details') or {}).get('runner') or {}).get('id')
+            details = runner.get('details') or {}
+            r_info = details.get('runner') or {}
+            rid = r_info.get('id')
             if rid is None:
                 rid = ('anon', anon)
                 anon += 1
             if rid not in first_start_by_runner:
                 first_start_by_runner[rid] = mv.get('start')
             last_leg_by_runner[rid] = (mv.get('end'), bool(mv.get('isOut')))
+
+            # Check if this runner is the batter. The batter always starts at
+            # home plate (start=None), but must never be mistaken for the
+            # extra-innings ghost runner seeded at 2B.
+            is_b = bool(details.get('isBatter'))
+            if not is_b and batter_id is not None and rid == batter_id:
+                is_b = True
+            if not is_b and batter_name and r_info.get('fullName') == batter_name:
+                is_b = True
+            if not is_b and mv.get('start') is None and len(runners_list) == 1:
+                is_b = True
+            is_batter_by_runner[rid] = is_b
+
         departures = set()
         arrivals = set()
         for rid, first_start in first_start_by_runner.items():
             if first_start in ('1B', '2B', '3B'):
                 departures.add(first_start)
+                if first_start == '2B':
+                    ghost_accounted = True
             end, is_out = last_leg_by_runner[rid]
             if not is_out and end in ('1B', '2B', '3B'):
                 arrivals.add(end)
-            elif ghost_active and not ghost_accounted and first_start is None \
-                    and (is_out or end == 'score'):
+            elif (
+                ghost_active
+                and not ghost_accounted
+                and not is_batter_by_runner.get(rid, False)
+                and first_start is None
+                and (is_out or end == 'score')
+            ):
                 # Ghost runner resolved: the feed lists the automatic runner
                 # with no start base (it was never placed by a play). A
-                # null-start runner that scores or is put out can only be the
-                # ghost — vacate the seeded 2B. Only the first such runner per
-                # half-inning counts (later null-start scorers are batters,
-                # e.g. an inside-the-park home run).
+                # null-start runner that is NOT the batter and that scores or
+                # is put out can only be the ghost — vacate the seeded 2B.
+                # Only the first such runner per half-inning counts.
                 departures.add('2B')
                 ghost_accounted = True
         bases -= departures
@@ -3185,6 +3213,91 @@ def _forward_defense_walk(data: dict, prefix: list, side: str) -> dict | None:
     return alignment
 
 
+def _calculate_challenges(plays: list, current_inning: Optional[int] = 1,
+                          away_id: Optional[int] = None, home_id: Optional[int] = None) -> dict:
+    """Calculate ABS challenges remaining for away and home teams (max 2).
+
+    Rules:
+    - Each team starts regulation (innings 1-9) with 2 challenges.
+    - A successful challenge (isOverturned=True) is retained.
+    - An unsuccessful challenge (isOverturned=False) deducts 1 challenge.
+    - In extra innings (inning >= 10), each team's challenges are refilled to 2.
+      Any new extra inning (e.g. 10th, 11th, etc.) also resets/refills challenges to 2.
+    """
+    away_challenges = 2
+    home_challenges = 2
+    last_inning = 1
+
+    for play in plays:
+        about = play.get('about') or {}
+        inning = about.get('inning', 1)
+        if inning is None:
+            inning = 1
+
+        # Refill challenges upon entering extra innings (inning >= 10) or each subsequent extra inning
+        if inning >= 10 and inning > last_inning:
+            away_challenges = 2
+            home_challenges = 2
+        last_inning = max(last_inning, inning)
+
+        # Collect unique reviewDetails objects on this play (both play-level and event-level)
+        reviews = []
+        play_rd = play.get('reviewDetails')
+        if play_rd and isinstance(play_rd, dict):
+            reviews.append(play_rd)
+
+        for ev in play.get('playEvents') or []:
+            ev_rd = ev.get('reviewDetails')
+            if ev_rd and isinstance(ev_rd, dict) and ev_rd not in reviews:
+                reviews.append(ev_rd)
+
+        for rd in reviews:
+            is_overturned = rd.get('isOverturned')
+            # Only an unsuccessful challenge (stands/confirmed, isOverturned=False) costs a challenge
+            if is_overturned is False:
+                team_challenged = None
+                challenger_team_id = rd.get('challengeTeamId') or (rd.get('team') or {}).get('id')
+                if challenger_team_id:
+                    if away_id and challenger_team_id == away_id:
+                        team_challenged = 'away'
+                    elif home_id and challenger_team_id == home_id:
+                        team_challenged = 'home'
+
+                if not team_challenged:
+                    player = rd.get('player') or {}
+                    p_id = player.get('id')
+                    p_name = player.get('fullName')
+                    matchup = play.get('matchup') or {}
+                    batter = matchup.get('batter') or {}
+                    pitcher = matchup.get('pitcher') or {}
+                    is_top = about.get('isTopInning', True)
+                    batting_side = 'away' if is_top else 'home'
+                    fielding_side = 'home' if is_top else 'away'
+
+                    if (p_id and p_id == batter.get('id')) or (p_name and p_name == batter.get('fullName')):
+                        team_challenged = batting_side
+                    elif (p_id and p_id == pitcher.get('id')) or (p_name and p_name == pitcher.get('fullName')):
+                        team_challenged = fielding_side
+                    else:
+                        # Fallback for batter vs catcher/pitcher ball-strike challenges
+                        team_challenged = batting_side
+
+                if team_challenged == 'away':
+                    away_challenges = max(0, away_challenges - 1)
+                elif team_challenged == 'home':
+                    home_challenges = max(0, home_challenges - 1)
+
+    # Refill if the current inning is in extra innings and advances past the plays seen
+    if current_inning and current_inning >= 10 and current_inning > last_inning:
+        away_challenges = 2
+        home_challenges = 2
+
+    return {
+        'away': away_challenges,
+        'home': home_challenges,
+    }
+
+
 def _game_state_snapshot(data: dict, target_play: dict,
                          target_pitch: dict, pitch_index: Optional[int],
                          prefix: Optional[list] = None,
@@ -3339,14 +3452,37 @@ def _game_state_snapshot(data: dict, target_play: dict,
                 if code in ('C', 'S', 'F', 'W', 'T', 'M'):
                     pitcher_game_line['strikesThrown'] += 1
     status = game_data.get('status', {})
+    away_id = (game_data.get('teams') or {}).get('away', {}).get('id')
+    home_id = (game_data.get('teams') or {}).get('home', {}).get('id')
+    challenges = _calculate_challenges(prefix, inning_number, away_id, home_id)
+    (review, review_is_overturned, review_challenger,
+     review_type, review_target, review_team) = _parse_review_info(target_play)
+    target_terminal = (
+        target_is_latest
+        and (
+            status.get('abstractGameState') == 'Final'
+            or status.get('detailedState') in ('Final', 'Game Over', 'Completed Early')
+        )
+    )
+    resolved_state = (
+        'End' if target_terminal
+        else ('Top' if is_top else 'Bottom' if half else linescore.get('inningState'))
+    )
     return {
         'success': True,
         'teams': teams,
         'score': score,
+        'challenges': challenges,
+        'review': review,
+        'reviewIsOverturned': review_is_overturned,
+        'reviewChallenger': review_challenger,
+        'reviewType': review_type,
+        'reviewTarget': review_target,
+        'reviewTeam': review_team,
         'inning': {
             'number': inning_number,
             'ordinal': about.get('inningOrdinal') or _inning_ordinal(inning_number),
-            'state': 'Top' if is_top else 'Bottom' if half else linescore.get('inningState'),
+            'state': resolved_state,
             'isTop': is_top,
         },
         'outs': outs,
@@ -3363,6 +3499,7 @@ def _game_state_snapshot(data: dict, target_play: dict,
         'pitcherGameLine': pitcher_game_line,
         'gameState': status.get('detailedState'),
         'isLive': status.get('abstractGameState') == 'Live',
+        'abstractGameState': status.get('abstractGameState'),
         'venue': (game_data.get('venue') or {}).get('name'),
         'batterSeason': {
             'avg': batter_season_stats.get('avg'),
@@ -3391,28 +3528,38 @@ def _game_state_snapshot(data: dict, target_play: dict,
 # ---------------------------------------------------------------------------
 
 # Maps the feed's descriptive position labels (lowercase, as they appear in
-# defensive-substitution descriptions) to the standard Statcast position
-# abbreviations. Used to include a position code in substitution notices.
+# substitution descriptions) to the standard Statcast position abbreviations.
+# Used to include a position code in substitution notices.
 _POSITION_LABEL_TO_ABBREV = {
     'center fielder': 'CF',
+    'center field': 'CF',
     'left fielder': 'LF',
+    'left field': 'LF',
     'right fielder': 'RF',
+    'right field': 'RF',
     'first baseman': '1B',
+    'first base': '1B',
     'second baseman': '2B',
+    'second base': '2B',
     'third baseman': '3B',
+    'third base': '3B',
     'shortstop': 'SS',
     'catcher': 'C',
     'pitcher': 'P',
     'designated hitter': 'DH',
+    'outfielder': 'OF',
+    'infielder': 'IF',
 }
 
 
 def _extract_old_player_position(description: str) -> str | None:
-    """Pull the position abbreviation from a defensive-substitution description.
+    """Pull the position abbreviation from a substitution description.
 
     The feed writes descriptions like:
       "Defensive Substitution: Enrique Hernandez replaces center fielder
        Andy Pages, batting 3rd, playing center field."
+      "Offensive Substitution: Pinch-hitter David Hensley replaces center fielder
+       Trent Grisham."
 
     We scan for known position labels in the "replaces ..." portion and map
     them to their abbreviation. Returns None when no position is recognized.
@@ -3425,6 +3572,51 @@ def _extract_old_player_position(description: str) -> str | None:
     for label, abbrev in _POSITION_LABEL_TO_ABBREV.items():
         if label in lower:
             return abbrev
+    words = after_replaces.split()
+    for w in words[:3]:
+        clean_w = w.strip('(),.:;').upper()
+        if clean_w in ('CF', 'LF', 'RF', '1B', '2B', '3B', 'SS', 'C', 'P', 'DH', 'OF', 'IF'):
+            return clean_w
+    return None
+
+
+def _find_player_position(data: dict, player_name: str | None) -> str | None:
+    """Find a player's position abbreviation by searching boxscore, gameData, and defense."""
+    if not data or not player_name:
+        return None
+    name_clean = player_name.strip().lower()
+    if not name_clean:
+        return None
+
+    # 1. Search boxscore players for both teams
+    box_teams = (data.get('liveData') or {}).get('boxscore', {}).get('teams') or {}
+    for side in ('away', 'home'):
+        for p in (box_teams.get(side) or {}).get('players', {}).values():
+            p_name = ((p.get('person') or {}).get('fullName') or '').strip().lower()
+            if p_name == name_clean:
+                pos = (p.get('position') or {}).get('abbreviation')
+                if pos and not pos.isdigit():
+                    return pos
+                all_pos = p.get('allPositions') or []
+                if all_pos and all_pos[0].get('abbreviation'):
+                    return all_pos[0].get('abbreviation')
+
+    # 2. Search gameData players
+    for p in (data.get('gameData') or {}).get('players', {}).values():
+        p_name = (p.get('fullName') or '').strip().lower()
+        if p_name == name_clean:
+            pos = (p.get('primaryPosition') or {}).get('abbreviation')
+            if pos and not pos.isdigit():
+                return pos
+
+    # 3. Search linescore defense
+    raw_defense = ((data.get('liveData') or {}).get('linescore') or {}).get('defense') or {}
+    for key, code in _DEFENSE_TO_CODE.items():
+        p = raw_defense.get(key) or {}
+        p_name = (p.get('fullName') or '').strip().lower()
+        if p_name == name_clean:
+            return code
+
     return None
 
 
@@ -3558,6 +3750,83 @@ def _parse_sub_event(ev: dict, fallback_new: str = None) -> tuple[str | None, st
     return (new_player or fallback_new, old_player)
 
 
+def _parse_review_info(current_play: dict) -> tuple:
+    """Extract review fields: (review, review_is_overturned, review_challenger,
+    review_type, review_target, review_team) from a play.
+    """
+    review_details = current_play.get('reviewDetails') or {}
+    if not review_details:
+        for ev in reversed(current_play.get('playEvents') or []):
+            if ev.get('reviewDetails'):
+                review_details = ev.get('reviewDetails')
+                break
+
+    if not review_details:
+        return False, None, None, None, None, None
+
+    review = True
+    review_is_overturned = review_details.get('isOverturned')
+    review_type = review_details.get('reviewType')
+
+    # Who challenged
+    player = review_details.get('player') or {}
+    challenger = player.get('fullName')
+    if not challenger:
+        challenger = review_details.get('challenger') or (review_details.get('team') or {}).get('name')
+
+    team = (
+        (review_details.get('team') or {}).get('triCode')
+        or (review_details.get('team') or {}).get('abbreviation')
+    )
+
+    # What was challenged (target)
+    target = review_details.get('call') or review_details.get('challengeType')
+    desc = review_details.get('description') or ''
+
+    if not target and desc:
+        desc_lower = desc.lower()
+        if 'strike' in desc_lower:
+            target = 'Called Strike'
+        elif 'ball' in desc_lower:
+            target = 'Called Ball'
+        elif any(k in desc_lower for k in ('safe', 'out', 'tag', 'force', 'catch', 'foul', 'fair')):
+            target = desc
+
+    if not target:
+        # Check the play's pitch events for pitch call description (ABS challenge)
+        pitch_events = [ev for ev in (current_play.get('playEvents') or []) if ev.get('isPitch')]
+        if pitch_events:
+            last_pitch = pitch_events[-1]
+            call = (last_pitch.get('details') or {}).get('call') or {}
+            call_desc = call.get('description') or (last_pitch.get('details') or {}).get('description') or ''
+            call_code = call.get('code')
+            if 'strike' in call_desc.lower() or call_code in ('C', 'S'):
+                target = 'Called Strike'
+            elif 'ball' in call_desc.lower() or call_code == 'B':
+                target = 'Called Ball'
+            elif call_desc:
+                target = call_desc
+
+    if not target:
+        matchup = current_play.get('matchup') or {}
+        batter_id = matchup.get('batter', {}).get('id')
+        pitcher_id = matchup.get('pitcher', {}).get('id')
+        p_id = player.get('id')
+        if p_id and p_id == batter_id:
+            target = 'Called Strike'
+        elif p_id and p_id == pitcher_id:
+            target = 'Called Ball'
+        elif review_type == 'MJ' or not review_type:
+            target = 'Called Strike'
+        else:
+            target = 'Call on Field'
+
+    if not challenger:
+        challenger = 'Batter' if (target in ('Called Strike', 'Called Ball') or review_type == 'MJ') else 'Manager'
+
+    return review, review_is_overturned, challenger, review_type, target, team
+
+
 def _game_status_snapshot(data: dict, game_pk: str = GAME_PK) -> dict:
     """Extract only the fields needed while the scoreboard is frozen."""
     game_data = data.get('gameData', {})
@@ -3625,10 +3894,14 @@ def _game_status_snapshot(data: dict, game_pk: str = GAME_PK) -> dict:
             new_name, old_name = _parse_sub_event(ev)
             offensive_sub_new = new_name
             offensive_sub_old = old_name
-            # Pull the old player's position abbreviation from the description.
+            # Pull the old player's position abbreviation from the description or data lookup.
             desc = details.get('description') or ''
             offensive_sub_position = _extract_old_player_position(desc)
+            if not offensive_sub_position and old_name:
+                offensive_sub_position = _find_player_position(data, old_name)
             offensive_sub_new_position = _extract_new_player_position(desc, ev, et)
+            if not offensive_sub_new_position and new_name:
+                offensive_sub_new_position = _find_player_position(data, new_name)
             # Determine if pinch hitter or pinch runner from the position.
             pos_name = (ev.get('position') or {}).get('name') or ''
             if 'Runner' in pos_name:
@@ -3651,20 +3924,15 @@ def _game_status_snapshot(data: dict, game_pk: str = GAME_PK) -> dict:
             defensive_sub_old = old_name
             desc = details.get('description') or ''
             defensive_sub_position = _extract_old_player_position(desc)
+            if not defensive_sub_position and old_name:
+                defensive_sub_position = _find_player_position(data, old_name)
             defensive_sub_new_position = _extract_new_player_position(desc, ev, et)
+            if not defensive_sub_new_position and new_name:
+                defensive_sub_new_position = _find_player_position(data, new_name)
 
     # Check for an ABS challenge or umpire review on the current play.
-    # The feed stores these in ``reviewDetails``, present after a challenge
-    # resolves (or while it's in progress).
-    review_details = current_play.get('reviewDetails') or {}
-    if review_details:
-        review = True
-        review_is_overturned = review_details.get('isOverturned')
-        review_challenger = (review_details.get('player') or {}).get('fullName')
-        # Map reviewType to a human-readable label.
-        # Known values: 'MJ' (ABS/challenge), other codes for replay.
-        rt = review_details.get('reviewType')
-        review_type = rt
+    (review, review_is_overturned, review_challenger,
+     review_type, review_target, review_team) = _parse_review_info(current_play)
 
     linescore = live_data.get('linescore') or {}
     # Defensive alignment: position-code → {id, name} for the nine fielders,
@@ -3680,6 +3948,15 @@ def _game_status_snapshot(data: dict, game_pk: str = GAME_PK) -> dict:
     status = game_data.get('status') or {}
     abstract_state = status.get('abstractGameState')
     detailed_state = status.get('detailedState')
+    is_terminal_game = (
+        abstract_state == 'Final'
+        or detailed_state in ('Final', 'Game Over', 'Completed Early')
+    )
+    raw_inning_state = linescore.get('inningState')
+    resolved_inning_state = (
+        'End' if (is_terminal_game and raw_inning_state not in ('Middle', 'End'))
+        else raw_inning_state
+    )
     return {
         "success": True,
         "gameState": detailed_state,
@@ -3693,7 +3970,7 @@ def _game_status_snapshot(data: dict, game_pk: str = GAME_PK) -> dict:
         # an inning turns over (which must NOT read as a pitching change).
         "inningNumber": linescore.get('currentInning'),
         "isTopInning": linescore.get('isTopInning'),
-        "inningState": linescore.get('inningState'),
+        "inningState": resolved_inning_state,
         # Action-event flags from the current play's playEvents so the
         # scorebug can surface them without inferring from pitcher identity.
         "moundVisit": mound_visit,
@@ -3722,6 +3999,8 @@ def _game_status_snapshot(data: dict, game_pk: str = GAME_PK) -> dict:
         "reviewIsOverturned": review_is_overturned,
         "reviewChallenger": review_challenger,
         "reviewType": review_type,
+        "reviewTarget": review_target,
+        "reviewTeam": review_team,
         # Current defensive alignment (position code → player name).
         "defenseAlignment": defense_alignment,
         # Formation type: Standard / Strategic / Infield In / etc.
@@ -3956,7 +4235,11 @@ def get_game_state(game_pk: str = GAME_PK):
                 offensive_sub_old = old_name
                 pos_desc = details.get('description') or ''
                 offensive_sub_position = _extract_old_player_position(pos_desc)
+                if not offensive_sub_position and old_name:
+                    offensive_sub_position = _find_player_position(data, old_name)
                 offensive_sub_new_position = _extract_new_player_position(pos_desc, ev, et)
+                if not offensive_sub_new_position and new_name:
+                    offensive_sub_new_position = _find_player_position(data, new_name)
                 pos_name = (ev.get('position') or {}).get('name') or ''
                 if 'Runner' in pos_name:
                     offensive_sub_role = 'Pinch Runner'
@@ -3977,15 +4260,15 @@ def get_game_state(game_pk: str = GAME_PK):
                 defensive_sub_old = old_name
                 ddesc = details.get('description') or ''
                 defensive_sub_position = _extract_old_player_position(ddesc)
+                if not defensive_sub_position and old_name:
+                    defensive_sub_position = _find_player_position(data, old_name)
                 defensive_sub_new_position = _extract_new_player_position(ddesc, ev, et)
+                if not defensive_sub_new_position and new_name:
+                    defensive_sub_new_position = _find_player_position(data, new_name)
 
         # ABS challenge / umpire review on the current play.
-        review_details = current_play.get('reviewDetails') or {}
-        if review_details:
-            review = True
-            review_is_overturned = review_details.get('isOverturned')
-            review_challenger = (review_details.get('player') or {}).get('fullName')
-            review_type = review_details.get('reviewType')
+        (review, review_is_overturned, review_challenger,
+         review_type, review_target, review_team) = _parse_review_info(current_play)
 
         # Defensive alignment: position-code → {id, name} for the nine fielders.
         defense_alignment, fallback_formation = _defense_snapshot(linescore)
@@ -3999,14 +4282,30 @@ def get_game_state(game_pk: str = GAME_PK):
         ) or fallback_formation
 
         status = game_data.get('status', {})
+        abstract_state = status.get('abstractGameState')
+        detailed_state = status.get('detailedState')
+        is_terminal_game = (
+            abstract_state == 'Final'
+            or detailed_state in ('Final', 'Game Over', 'Completed Early')
+        )
+        raw_inning_state = linescore.get('inningState')
+        resolved_inning_state = (
+            'End' if (is_terminal_game and raw_inning_state not in ('Middle', 'End'))
+            else raw_inning_state
+        )
+        away_id = (game_data.get('teams') or {}).get('away', {}).get('id')
+        home_id = (game_data.get('teams') or {}).get('home', {}).get('id')
+        current_inning_num = linescore.get('currentInning') or 1
+        challenges = _calculate_challenges(all_plays, current_inning_num, away_id, home_id)
         return {
             "success": True,
             "teams": teams,
             "score": score,
+            "challenges": challenges,
             "inning": {
                 "number": linescore.get('currentInning'),
                 "ordinal": linescore.get('currentInningOrdinal'),
-                "state": linescore.get('inningState'),
+                "state": resolved_inning_state,
                 "isTop": linescore.get('isTopInning'),
             },
             "outs": outs,
@@ -4020,8 +4319,9 @@ def get_game_state(game_pk: str = GAME_PK):
             "pitchNumber": current_play.get('pitchNumber'),
             "pitchesThrown": pitches_thrown,
             "pitcherGameLine": pitcher_game_line,
-            "gameState": status.get('detailedState'),
-            "isLive": status.get('abstractGameState') == 'Live',
+            "gameState": detailed_state,
+            "isLive": abstract_state == 'Live',
+            "abstractGameState": abstract_state,
             "venue": (game_data.get('venue') or {}).get('name'),
             # Season stats for the current matchup, for the hover popovers.
             "batterSeason": batter_season,
@@ -4055,6 +4355,8 @@ def get_game_state(game_pk: str = GAME_PK):
             "reviewIsOverturned": review_is_overturned,
             "reviewChallenger": review_challenger,
             "reviewType": review_type,
+            "reviewTarget": review_target,
+            "reviewTeam": review_team,
             # Half-inning identity for the status label.
             "inningNumber": linescore.get('currentInning'),
             "isTopInning": linescore.get('isTopInning'),
@@ -4583,11 +4885,14 @@ def get_live_games():
             "start_time_tbd": bool((game.get("status") or {}).get("startTimeTBD")),
         }
         if state in ("Live", "Final"):
+            inn_state = linescore.get("inningState")
+            if state == "Final" and inn_state not in ("Middle", "End"):
+                inn_state = "End"
             summary["inning"] = {
                 "number": linescore.get("currentInning"),
                 "ordinal": linescore.get("currentInningOrdinal"),
                 "isTop": linescore.get("isTopInning"),
-                "state": linescore.get("inningState"),
+                "state": inn_state,
             }
             summary["innings"] = linescore.get("currentInning")
         return summary

@@ -2,7 +2,7 @@ import React, { useRef, useMemo } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { Billboard, Line, Text, useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
-import { getCycleDuration, getTimeScale, getBallReleaseTime } from '../constants/playback';
+import { getCycleDuration, getTimeScale, getBallReleaseTime, stepSimulation } from '../constants/playback';
 import { getTuning, useTuning } from '../constants/tuning';
 import { impactDistortion, SHOCK_SWEEP_FACTOR } from '../util/impactDistortion';
 
@@ -679,10 +679,9 @@ void main() {
 }
 `;
 
-export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCrossings, onArrival, overlay = false, showRingLabel = true, showColoredTail = true, showBillows = true, impactEffect = 'beams' }) => {
+export const Pitch = ({ pitchData, defaultPitchData, replayKey = 0, crossingPlane = 'mid', onCrossings, onArrival, overlay = false, showRingLabel = true, showColoredTail = true, showBillows = true, impactEffect = 'beams' }) => {
     const pitchTuning = useTuning().pitch;
     const ballRef = useRef();
-    const simClock = useRef(0);
     // Tracks whether the physics ball has reached the plate in the current
     // playback cycle. The crossing ring appears only once the pitch has
     // arrived (been batted), persists through the batted-ball flight, and is
@@ -1175,7 +1174,6 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
     // Start each new pitch back at the release point, with both trail layers
     // cleared so they can grow behind the ball as it flies.
     React.useLayoutEffect(() => {
-        simClock.current = 0;
         arrivedRef.current = false;
         arrivedAtRef.current = -1;
         whiteTraceClearedRef.current = false;
@@ -1281,7 +1279,7 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
             alphaAttr.array.fill(0);
             alphaAttr.needsUpdate = true;
         }
-    }, [pitchData, trailGeometry, whiteTraceGeometry, billowGeometry, whiteBillowGeometry, goldSparkGeometry, ringSpikeGeometry100, ringLingerGeometry, smokeGeometry, ringEmberGeometry, burnTrailGeometry, burnSparkGeometry, impactFireGeometry, burnShimmerMaterial, ringMaterial, rippleMaterial, burnRingMaterial, burnRingGlowMaterial, zoneLineWhite]);
+    }, [pitchData, replayKey, trailGeometry, whiteTraceGeometry, billowGeometry, whiteBillowGeometry, goldSparkGeometry, ringSpikeGeometry100, ringLingerGeometry, smokeGeometry, ringEmberGeometry, burnTrailGeometry, burnSparkGeometry, impactFireGeometry, burnShimmerMaterial, ringMaterial, rippleMaterial, burnRingMaterial, burnRingGlowMaterial, zoneLineWhite]);
     
     // Memoize the line points so we don't recreate them every render
     const linePoints = useMemo(() => {
@@ -1416,7 +1414,7 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
     // always points straight at the camera, regardless of nesting.
     const burnCamera = useThree((state) => state.camera);
 
-    useFrame((_, delta) => {
+    useFrame((state, delta) => {
         const settings = getTuning().pitch;
         const trajectoryData = pitchData?.trajectory;
         if (!trajectoryData || trajectoryData.length === 0 || !ballRef.current) return;
@@ -1430,13 +1428,7 @@ export const Pitch = ({ pitchData, defaultPitchData, crossingPlane = 'mid', onCr
         // (sampleTrajectoryAtTime clamps past the end) while the batted ball
         // completes its arc before the cycle wraps.
         const loopDuration = getCycleDuration();
-        const nextClock = simClock.current + delta * getTimeScale();
-        const wrapped = nextClock >= loopDuration;
-        simClock.current = nextClock % loopDuration;
-
-        // The clock is already in the trajectory's real-time domain, so sample
-        // the bracketing data points by their timestamps directly.
-        const currentSimTime = simClock.current;
+        const { time: currentSimTime, wrapped } = stepSimulation(delta, state.clock.elapsedTime);
         // The pitcher restarts his windup just before the cycle wraps (the
         // release lands exactly on the wrap). Clear the persistent white trace
         // there so it's gone while he winds up instead of lingering until the

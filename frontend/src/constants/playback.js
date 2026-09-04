@@ -16,17 +16,82 @@
 //
 // BattedBall knows how long the hit stays airborne, so it computes the full
 // cycle length; Pitch and Batter read it back each frame via getCycleDuration().
-import { getTuning } from './tuning'
+import { getTuning } from './tuning.js'
 
 let cycleDuration = 0.5
 let timeScale = 1
+let simulationTime = 0
+let pendingCycleDuration = null
+let lastFrameStamp = null
+let wrappedThisFrame = false
 
-export function setCycleDuration(duration) {
-  if (Number.isFinite(duration) && duration > 0) cycleDuration = duration
+export function setCycleDuration(duration, { force = false } = {}) {
+  if (!Number.isFinite(duration) || duration <= 0) return
+  // If shortening while the clock is currently past the new duration and not forced,
+  // defer applying the new duration until the cycle cleanly wraps, avoiding mid-flight snaps.
+  if (!force && duration < simulationTime) {
+    pendingCycleDuration = duration
+  } else {
+    cycleDuration = duration
+    pendingCycleDuration = null
+  }
 }
 
 export function getCycleDuration() {
   return cycleDuration
+}
+
+export function getPendingCycleDuration() {
+  return pendingCycleDuration
+}
+
+export function stepSimulation(delta, frameStamp = null) {
+  // Guarantee idempotency across multiple callers within the same render tick
+  if (frameStamp !== null && frameStamp === lastFrameStamp) {
+    return { time: simulationTime, wrapped: wrappedThisFrame }
+  }
+  if (frameStamp !== null) {
+    lastFrameStamp = frameStamp
+  }
+  const dt = (Number.isFinite(delta) ? delta : 0) * timeScale
+  const nextTime = simulationTime + dt
+  if (nextTime >= cycleDuration) {
+    wrappedThisFrame = true
+    if (pendingCycleDuration !== null) {
+      cycleDuration = pendingCycleDuration
+      pendingCycleDuration = null
+    }
+    simulationTime = cycleDuration > 0 ? (nextTime % cycleDuration) : 0
+  } else {
+    wrappedThisFrame = false
+    simulationTime = nextTime
+  }
+  return { time: simulationTime, wrapped: wrappedThisFrame }
+}
+
+export function getSimulationTime() {
+  return simulationTime
+}
+
+export function setSimulationTime(t) {
+  if (Number.isFinite(t)) {
+    simulationTime = Math.max(0, t)
+    wrappedThisFrame = false
+  }
+}
+
+export function resetSimulationTime() {
+  simulationTime = 0
+  wrappedThisFrame = false
+  lastFrameStamp = null
+  if (pendingCycleDuration !== null) {
+    cycleDuration = pendingCycleDuration
+    pendingCycleDuration = null
+  }
+}
+
+export function isSimulationWrapped() {
+  return wrappedThisFrame
 }
 
 // Playback speed (1 = real time). Slower values slow the whole cycle together.
@@ -107,3 +172,17 @@ export function setFielderCamActive(active) {
 export function getFielderCamActive() {
   return fielderCamActive
 }
+
+// Live world position of the look-at target for FielderCam when overriding the
+// ball tracking (e.g. looking ahead at the bag as the fielder carries the ball
+// to step on it). Carries the owning pitch's play id for gating.
+let fielderCamLookTarget = null
+
+export function setFielderCamLookTarget(pos, playId = null) {
+  fielderCamLookTarget = pos ? { x: pos.x, y: pos.y, z: pos.z, playId: playId ?? null } : null
+}
+
+export function getFielderCamLookTarget() {
+  return fielderCamLookTarget
+}
+

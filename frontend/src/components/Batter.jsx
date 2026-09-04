@@ -1,12 +1,18 @@
-import React, { useEffect, useMemo, useRef } from 'react'
+import React, { useLayoutEffect, useMemo, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
-import { getCycleDuration, getTimeScale, getBattedBallPosition } from '../constants/playback'
+import { getCycleDuration, getTimeScale, getBattedBallPosition, getBallReleaseTime, stepSimulation } from '../constants/playback'
 import { FIELD } from '../constants/field'
 import { PLATE_FRONT_Y, clamp, plateCrossing } from '../util/MathUtil'
 import { BATTER_LEAN_ORDER, batterLean } from '../util/batterLean'
+import {
+  resolvePitchSpeedMph,
+  resolveSwingPeak,
+  calculateSwingGeometry,
+  computeBatTiltAtProgress,
+  HIP_Y,
+} from '../util/batterSwing'
 import { useTuning } from '../constants/tuning'
-import { getBallReleaseTime } from '../constants/playback'
 
 // ---------------------------------------------------------------------------
 // Batter sprite at home plate. The batter's side of the plate comes from the
@@ -108,19 +114,35 @@ import { getBallReleaseTime } from '../constants/playback'
 // recovery the back leg eases back to the crouch later than the front leg
 // (settings.backRecoverLag).
 // Footwork through the swing: the swing pivots around the BACK foot, which
-// stays planted (counter-rotated against the hips' opening) and pivots
-// toward the pitcher (settings.backFootPivot). The front foot unplants as the drive
-// fires — lifting and turning with the body (its pre-swing plant keeps only
-// a small settings.frontFootPivot).
+// stays planted in world space (counter-rotated against the hips' opening and
+// compensating for hip drive) while pivoting toward the pitcher
+// (settings.backFootPivot); the front foot unplants as the drive fires —
+// lifting and turning with the body (its pre-swing plant keeps only a small
+// settings.frontFootPivot).
 // Hip drive: as the back leg unbuckles, the hips (lower body) drive forward
-// toward the pitcher (settings.hipDriveForward), the whole body pushes forward a
-// little as well (settings.upperDriveForward), and the upper body tilts back toward
-// the catcher (settings.swingBackTilt) — the "staying back" posture of a real
-// swing, held through the follow-through.
-// The whole-body forward push peaks as the swing fires, then eases back over
-// the settings.pushSettleTime before contact, settling to settings.pushSettleLevel through
-// the follow-through so the batter settles into the plate instead of
-// drifting forward past contact; the recovery then relaxes it fully.
+// toward the pitcher (settings.hipDriveForward) and the torso, head, arms, and
+// bat ride forward with them (settings.upperDriveForward), so the entire body
+// moves into the baseball through the swing. A small residual tilt back
+// toward the catcher (settings.swingBackTilt) keeps a hint of the "staying
+// back" posture without dragging the head backward.
+// The whole-body forward push is ONE continuous accelerating motion from
+// the start of the delayed front step through the swing: a quadratic ramp
+// during the stride (velocity builds from zero — the body edges
+// settings.strideEdgeFrac of the way by the time the foot plants), handing
+// off at that same speed into a swing phase that keeps accelerating to a
+// peak placed at settings.swingPeakFrac through the phase (higher pushes
+// the maximal surge closer to contact) and decelerates smoothly to zero by
+// the settle start; the smoothstep settle-back then eases 1 down to
+// settings.pushSettleLevel at contact. The return is likewise ONE
+// continuous motion: the body rides gently INTO the finish (cresting just
+// after the bat's follow-through) and flows back to the stance in a single
+// accelerating-then-decelerating arc — never a frozen hold followed by a
+// separate ease-out stage. Every handoff is position- and
+// velocity-continuous, so the whole cycle reads as one smooth accelerating
+// flow into the ball and one smooth return to the stance. Taking a pitch
+// gets just the stride edge: the batter strides into the pitch, holds the
+// edge through the crossing, and eases back once the ball passes (the
+// front foot unplants to follow).
 
 // The sprite's top-of-head height (meters) at scale 1, and the nominal stance
 // offsets for that reference sprite. Both are scaled by the same ratio so the
@@ -143,8 +165,7 @@ const SHOULDER_Y = 1.5
 
 // The upper body pivots at the hip joint (the top of the legs) rather than
 // at the feet, so the torso stays attached to the hips while it leans,
-// tilts, and swivels through the swing.
-const HIP_Y = 0.72
+// tilts, and swivels through the swing (HIP_Y).
 
 // How far each elbow rides the bat's barrel line behind the hands during the
 // swing (so the bat swings WITH the forearms as one unit), and how far the two
@@ -252,9 +273,8 @@ function setCylinderBetween(mesh, a, b) {
   mesh.scale.set(1, length, 1)
 }
 
-export const Batter = ({ pitchData }) => {
+export const Batter = ({ pitchData, replayKey = 0 }) => {
   const settings = useTuning().batter
-  const clock = useRef(0)
   const upperRef = useRef()
   const lowerRef = useRef()
   const batGroupRef = useRef()
@@ -374,128 +394,17 @@ export const Batter = ({ pitchData }) => {
   // hands-at-contact position, the barrel's contact angle, and the bat length
   // that puts the sweet spot on the ball.
   const geom = useMemo(() => {
-    const traj = pitchData?.trajectory
-    if (!traj || traj.length === 0) return null
-    const crossing = plateCrossing(traj)
-
-    const loadedY = sign * settings.loadedBaseAngle
-    const throughY = sign * settings.throughBaseAngle
-
-    // Contact point in the height-scaled frame. The batter group sits at
-    // (batX, 0, stanceZ) in world space and the plate front is at world
-    // z = -PLATE_FRONT_Y, so:
-    const contact = {
-      x: (crossing.x - batX) / heightScale,
-      y: crossing.height / heightScale,
-      // The whole body pushes forward by the time the swing reaches contact
-      // (settings.upperDriveForward, eased back to settings.pushSettleLevel at contact), so
-      // the ball sits that much closer to the body.
-      z: (-PLATE_FRONT_Y - stanceZ) / heightScale + settings.upperDriveForward * settings.pushSettleLevel / heightScale,
-    }
-
-    // Head yaw to look at the ball at the plate. The head's face is its local
-    // -Z, so the world yaw that faces the contact point is atan2(-dx, -dz) for
-    // the horizontal offset (dx, dz) from the head to the contact point (the
-    // head sits at x=batX, z=stanceZ; the contact point is at x=crossing.x,
-    // z=-PLATE_FRONT_Y). The head is inside the upper body (rotation.y =
-    // bodyOpen), so the local yaw subtracts the body's turn.
-    const headDx = crossing.x - batX
-    const headDz = -PLATE_FRONT_Y - stanceZ
-    const headYaw = THREE.MathUtils.clamp(
-      Math.atan2(-headDx, -headDz) - bodyOpen,
-      -HEAD_YAW_MAX,
-      HEAD_YAW_MAX,
-    )
-
-    // The upper body at contact also carries the lean / back-tilt from the
-    // frame loop (leanX/leanZ at drive = 1), so express the contact point in
-    // the body's FULL rotated frame — the inverse of Ry(bodyOpen)Rx(leanXc)
-    // Rz(leanZc), the 'YXZ' rotation the upper body uses — not just the yaw,
-    // so the sweet spot lands on the real contact point once the whole
-    // rotation is applied.
-    const lean = batterLean(batX, stanceZ, FIELD.DEFENSE.C.z, bodyOpen, settings.legLean)
-    const leanXc = lean.rotationX + settings.swingBackTilt * Math.cos(bodyOpen)
-    const leanZc = lean.rotationZ + settings.swingBackTilt * Math.sin(bodyOpen)
-    // The upper body rotates around the hip pivot (HIP_Y), so the contact
-    // point is first shifted into the upper body's frame (-hip), the inverse
-    // rotation (Ry(-bodyOpen), Rx(-leanXc), Rz(-leanZc)) is applied in that
-    // order, and the result is shifted back to the feet-relative frame the
-    // geometry works in (+hip).
-    const cU = { x: contact.x, y: contact.y - HIP_Y, z: contact.z }
-    const ryX = cU.x * Math.cos(bodyOpen) - cU.z * Math.sin(bodyOpen)
-    const ryY = cU.y
-    const ryZ = cU.x * Math.sin(bodyOpen) + cU.z * Math.cos(bodyOpen)
-    const rxX = ryX
-    const rxY = ryY * Math.cos(leanXc) + ryZ * Math.sin(leanXc)
-    const rxZ = -ryY * Math.sin(leanXc) + ryZ * Math.cos(leanXc)
-    const contactRot = {
-      x: rxX * Math.cos(leanZc) + rxY * Math.sin(leanZc),
-      y: -rxX * Math.sin(leanZc) + rxY * Math.cos(leanZc) + HIP_Y,
-      z: rxZ,
-    }
-
-    // Hands at contact: reach a fraction of the way from the front of the
-    // torso toward the (rotated) ball. The remaining distance (hands -> ball)
-    // is the sweet-spot reach, and the direction defines the barrel's contact
-    // angle (barrel direction = (-sin, -cos) at rotation.y).
-    const handsH = {
-      x: settings.handExtension * contactRot.x,
-      z: BODY_FRONT_Z + settings.handExtension * (contactRot.z - BODY_FRONT_Z),
-    }
-    const reach = Math.hypot(contactRot.x - handsH.x, contactRot.z - handsH.z) || 1
-    const d = {
-      x: (contactRot.x - handsH.x) / reach,
-      z: (contactRot.z - handsH.z) / reach,
-    }
-    const contactY = Math.atan2(-d.x, -d.z)
-
-    // The barrel's direction at contact comes from Statcast's attack angle
-    // (the sweet spot's true direction of travel the instant the bat meets the
-    // ball), falling back to swing_path_tilt when bat tracking lacks an attack
-    // angle. Lower the hands by the same amount the rising barrel gains so the
-    // sweet spot still meets the ball, and stretch the bat to cover the longer
-    // 3D reach.
-    const attackDeg = pitchData?.attack_angle
-    const planeDeg = pitchData?.swing_path_tilt
-    const tilt = attackDeg != null
-      ? THREE.MathUtils.clamp(THREE.MathUtils.degToRad(attackDeg), -THREE.MathUtils.degToRad(settings.contactTiltMaxDeg), THREE.MathUtils.degToRad(settings.contactTiltMaxDeg))
-      : (planeDeg != null
-          ? THREE.MathUtils.clamp(THREE.MathUtils.degToRad(planeDeg), -THREE.MathUtils.degToRad(settings.contactTiltMaxDeg), THREE.MathUtils.degToRad(settings.contactTiltMaxDeg))
-          : 0)
-    // swing_path_tilt shapes the steep swing plane the barrel rides on the way
-    // to contact; the animation eases off it onto the attack angle at the
-    // instant of contact. Without attack-angle data (or a plane value) it
-    // collapses to the contact tilt, matching the old single-value behavior.
-    const planeTilt = (planeDeg != null && attackDeg != null)
-      ? THREE.MathUtils.clamp(THREE.MathUtils.degToRad(planeDeg), -THREE.MathUtils.degToRad(settings.planeTiltMaxDeg), THREE.MathUtils.degToRad(settings.planeTiltMaxDeg))
-      : tilt
-    const handsY = contactRot.y - reach * Math.tan(tilt)
-    const sweetSpotDist = reach / Math.cos(tilt)
-    const batLength = THREE.MathUtils.clamp(
-      sweetSpotDist / SWEET_SPOT_FRACTION,
-      BAT_LENGTH_MIN,
-      BAT_LENGTH_MAX,
-    )
-
-    return {
-      contactTime: crossing.time,
-      loadedY,
-      throughY,
-      contactY,
+    return calculateSwingGeometry({
+      pitchData,
+      batX,
+      stanceZ,
+      heightScale,
+      sign,
+      bodyOpen,
       loadedHands,
-      // Control point for the hands path: bulge forward (toward the pitcher)
-      // so the bat and arms arc around the torso instead of through it.
-      handsControl: [
-        (loadedHands[0] + handsH.x) / 2,
-        (loadedHands[1] + handsY) / 2,
-        Math.min(loadedHands[2], handsH.z) - settings.handsPathBulge,
-      ],
-      contactHands: [handsH.x, handsY, handsH.z],
-      batLength,
-      tilt,
-      planeTilt,
-      headYaw,
-    }
+      settings,
+      catcherZ: FIELD.DEFENSE.C.z,
+    })
   }, [pitchData, heightScale, batX, stanceZ, sign, loadedHands, bodyOpen, settings])
 
   const arms = [
@@ -574,10 +483,11 @@ export const Batter = ({ pitchData }) => {
   }
 
   // Pose the legs for the given drives (0 = loaded crouch, 1 = full push),
-  // the pre-swing weight shift ``load``, and the windup-timed front stride:
+  // the pre-swing weight shift ``load``, and the late-windup front stride:
   // ``stride`` (0..1) advances the front foot toward the pitcher in step with
-  // the pitcher's windup and ``strideLift`` (0..1) is the transient foot/knee
-  // lift that peaks mid-stride so the foot plants as the windup completes.
+  // the tail of the pitcher's windup and ``strideLift`` (0..1) is the transient
+  // foot/knee lift that peaks mid-step so the foot plants just as the swing
+  // fires.
   // During the load the back leg crouches deeper and the hips settle lower to
   // take the weight; on the drive the back leg (the side away from the
   // pitcher — the right leg for a righty, `sign`) unbends and pushes, driving
@@ -634,9 +544,8 @@ export const Batter = ({ pitchData }) => {
       let shoeYaw
       if (isBack) {
         // Back foot: the planted pivot — counter-rotated to hold its spot,
-        // plus a compensation for the hips' forward drive (world +Z in the
-        // lower frame) so it stays anchored while the hips translate toward
-        // the pitcher.
+        // plus compensation for the hips' forward drive so it stays planted
+        // in world space while the hips translate toward the pitcher.
         footX = plantedX - hipDrive * Math.sin(lowerYaw)
         footZ = plantedZ + hipDrive * Math.cos(lowerYaw)
         shoeYaw = -(1 - settings.backFootPivot) * openAngle
@@ -658,12 +567,14 @@ export const Batter = ({ pitchData }) => {
   }
 
   // Restart the playback clock whenever a new pitch arrives, keeping the swing
-  // in phase with the Pitch component (which shares the same cycle).
-  useEffect(() => {
-    clock.current = 0
-  }, [pitchData])
+  // Reset tracking and look state whenever a new pitch arrives or replay fires.
+  useLayoutEffect(() => {
+    trackRef.current = 0
+    lastBallLook.current = null
+  }, [pitchData, replayKey])
 
   useFrame((state, delta) => {
+    const { time: currentSimTime } = stepSimulation(delta, state.clock.elapsedTime)
     const traj = pitchData?.trajectory
     const simDuration = traj?.[traj.length - 1]?.t
 
@@ -703,11 +614,6 @@ export const Batter = ({ pitchData }) => {
       updateArms(loadedHands, 1)
       return
     }
-
-    // Playback on the shared pitch + batted-ball cycle, scaled by the same
-    // time scale as the pitch and batted ball so the swing stays in sync.
-    clock.current = (clock.current + delta * getTimeScale()) % getCycleDuration()
-    const currentSimTime = clock.current
 
     // Swing phases driven by the real-time clock, each eased with smoothstep:
     //   l: load, shifting the weight onto the back leg for settings.loadTime s before
@@ -751,49 +657,60 @@ export const Batter = ({ pitchData }) => {
     if (swing && currentSimTime >= swingStart && currentSimTime < followEnd) load = 1
     if (swing && currentSimTime >= followEnd && currentSimTime < recoverEnd) load = 1 - r
 
-    // Both the stride and the forward lean start on the exact frame the
-    // pitcher starts his windup. The stride eases through the delivery (its
-    // foot lift peaks mid-stride), while the body lean ramps linearly across
-    // the same window so it keeps visibly moving and reaches full just as the
-    // ball leaves the pitcher's hand at the wrap.
-    const strideRamp = currentSimTime >= windupStart
-      ? easeSwing((currentSimTime - windupStart) / windupDur)
-      : 0
+    // The forward lean starts on the exact frame the pitcher starts his
+    // windup and ramps linearly across the windup window, reaching full just
+    // as the ball leaves the pitcher's hand at the wrap — the lean-in leads
+    // the front stride, which is timed separately below so it plants into
+    // the swing.
     const leanRamp = currentSimTime >= windupStart
       ? clamp((currentSimTime - windupStart) / windupDur, 0, 1)
       : 0
 
-    // Front-foot stride, driven by the same windup progress as the body lean.
-    // It starts the moment the windup starts, the foot lift peaks mid-stride,
-    // and the foot plants as the body lean settles. It then stays planted
-    // through the pitch flight / swing and eases back to the stance after the
-    // play (or just after the pitch for a take), ready for the next windup.
-    let stride = 0
+    // Front-foot stride — delayed so it flows into the swing. The body lean
+    // starts the moment the windup starts (above), but the step itself waits
+    // until the pitcher is almost done with his windup (strideDelayFrac of
+    // the way through it) and then steps quickly, planting as the swing
+    // fires: the foot lifts mid-step and plants just as the hips drive, so
+    // the stride runs straight into the swing instead of completing early
+    // and waiting. The step's progress is computed across the cycle wrap
+    // (the step starts before the wrap and finishes just after it), so the
+    // foot never snaps back when the clock rolls over. After the swing the
+    // foot eases back to the stance during the recovery (or just after the
+    // pitch for a take), ready for the next windup.
+    let stride = 1
     let strideLift = 0
-    if (currentSimTime >= windupStart) {
-      stride = strideRamp
-      // Lift only while the foot is actually stepping (0 at start and plant).
-      strideLift = Math.sin(Math.PI * strideRamp)
-    } else if (swing) {
-      if (currentSimTime < followEnd) {
-        stride = 1
-      } else if (currentSimTime < recoverEnd) {
-        stride = 1 - r
+    // Hoisted step progress (0-1 across the step window, wrap-safe) so the
+    // stride-edge push below can ride the same ramp it begins on.
+    let ramp = 0
+    // Planted through the flight / swing; ease back during the recovery.
+    if (swing) {
+      if (currentSimTime >= followEnd) {
+        stride = currentSimTime < recoverEnd ? 1 - r : 0
       }
     } else {
       const takeSettleEnd = geom.contactTime + settings.leanOutTime
-      if (currentSimTime < takeSettleEnd) {
-        stride = 1
-      } else {
+      if (currentSimTime >= takeSettleEnd) {
         stride = Math.max(0, 1 - easeSwing((currentSimTime - takeSettleEnd) / settings.leanOutTime))
       }
     }
+    // The delayed step itself: from late in the windup to just before the
+    // swing fires (swingStart of the next cycle, past the wrap).
+    const strideStart = windupStart + settings.strideDelayFrac * windupDur
+    const strideDur = Math.max(0.2, swingStart + loopDuration - strideStart)
+    let sinceStride = currentSimTime - strideStart
+    if (sinceStride < 0) sinceStride += loopDuration
+    if (sinceStride <= strideDur) {
+      ramp = easeSwing(sinceStride / strideDur)
+      stride = ramp
+      // Lift only while the foot is actually stepping (0 at start and plant).
+      strideLift = Math.sin(Math.PI * ramp)
+    }
 
-    // Forward lean-in, synced to the same windup progress as the stride: the
-    // batter stands straight while waiting, leans forward in step with the
-    // front foot through the windup, holds it through the flight and swing,
-    // and eases back to straight after the recovery. Independent of the swing
-    // flag, so it also applies to takes.
+    // Forward lean-in, driven by the windup progress above: the batter
+    // stands straight while waiting, leans forward as the pitcher winds up
+    // (leading the delayed front step), holds it through the flight and
+    // swing, and eases back to straight after the recovery. Independent of
+    // the swing flag, so it also applies to takes.
     let leanIn
     if (currentSimTime >= windupStart) {
       leanIn = leanRamp
@@ -889,27 +806,138 @@ export const Batter = ({ pitchData }) => {
         lowerYaw = THREE.MathUtils.lerp(hipFullOpenYaw, setYaw, r)
       }
     }
-    // Whole-body forward push: ramps in with the back-leg drive, then eases
-    // back over the settings.pushSettleTime before contact, settling to
-    // settings.pushSettleLevel through the follow-through so the batter settles into
-    // the plate instead of drifting forward past contact (the recovery then
-    // relaxes it fully). Drives the hips forward (settings.hipDriveForward) and the
+    // The push envelope drives the hips forward (settings.hipDriveForward) and the
     // upper body's smaller push (settings.upperDriveForward).
-    let push = drive
+    const settleStart = geom.contactTime - settings.pushSettleTime
+    let push = 0
     if (swing) {
-      if (currentSimTime >= geom.contactTime - settings.pushSettleTime && currentSimTime < geom.contactTime) {
+      // Whole-body forward push: ONE continuous accelerating motion from the
+      // start of the delayed front step through the swing, not two
+      // constant-speed stages (a slow smoothstep hump during the stride that
+      // stops at the plant, then a fast one for the swing). The stride phase
+      // is a quadratic ramp — velocity builds from zero with no long flat
+      // middle, reaching settings.strideEdgeFrac (30%) of the full drive the
+      // moment the foot plants. The swing phase hands off AT that speed (no
+      // pause at the plant) and keeps accelerating as a cubic: velocity peaks
+      // around the mid-swing, then decelerates smoothly to zero by the settle
+      // start, where the smoothstep settle-back (1 -> settings.pushSettleLevel,
+      // held through contact and eased out on recovery) takes over. Every
+      // handoff is position- and velocity-continuous, so the approach reads
+      // as one smooth flow that simply gets faster and faster into the bat;
+      // the contact push stays exactly settings.pushSettleLevel, keeping the
+      // contact geometry's compensation exact.
+      const approachDur = strideDur + Math.max(1e-3, settleStart - swingStart)
+      // Wrap-safe progress across the whole approach (stride start past the
+      // cycle wrap to the settle start) — same construction as the stride.
+      let sinceApproach = currentSimTime - strideStart
+      if (sinceApproach < 0) sinceApproach += loopDuration
+      if (sinceApproach <= approachDur) {
+        const u = sinceApproach / approachDur
+        const u1 = THREE.MathUtils.clamp(strideDur / approachDur, 1e-3, 0.999)
+        if (u <= u1) {
+          // Stride phase: accelerating quadratic (velocity 0 at the start of
+          // the step, climbing through the plant).
+          push = settings.strideEdgeFrac * (u / u1) * (u / u1)
+        } else {
+          // Swing phase: velocity continues from the plant (v1) and keeps
+          // accelerating to a peak placed at settings.swingPeakFrac (or auto-
+          // resolved from pitch speed when 0: faster pitches shift the peak
+          // later so the maximal surge syncs closer to contact), then
+          // decelerates to zero, ready for the smoothstep settle-back. Two
+          // smoothstep velocity segments stitched at the peak keep the
+          // velocity curve — and its slope — continuous everywhere; the peak
+          // height is forced by the fixed displacement (the body still reaches
+          // exactly full push at the settle start), so a later peak reads as a
+          // sharper surge closer to contact.
+          const s = (u - u1) / (1 - u1)
+          const t2 = (1 - u1) * approachDur
+          const v1 = 2 * settings.strideEdgeFrac / (u1 * approachDur)
+          const pitchSpeed = resolvePitchSpeedMph(pitchData)
+          const swingPeak = resolveSwingPeak(settings.swingPeakFrac, pitchSpeed)
+          // Peak velocity chosen so the area under the velocity curve adds
+          // exactly (1 - strideEdgeFrac) of push by the settle start.
+
+          const vPeak = 2 * (1 - settings.strideEdgeFrac) / t2 - swingPeak * v1
+          // Anti-derivative of the smoothstep ∫g = y³ − y⁴/2, used to
+          // integrate the velocity segments in closed form below.
+          const smoothInt = (y) => y * y * y - (y * y * y * y) / 2
+          if (s <= swingPeak) {
+            // Accelerating segment: v1 -> vPeak.
+            push = settings.strideEdgeFrac + t2 * (
+              v1 * s + (vPeak - v1) * swingPeak * smoothInt(s / swingPeak)
+            )
+          } else {
+            // Decelerating segment: vPeak -> 0.
+            push = settings.strideEdgeFrac + t2 * (
+              swingPeak * (v1 + vPeak) / 2
+              + vPeak * (s - swingPeak)
+              - vPeak * (1 - swingPeak) * smoothInt((s - swingPeak) / (1 - swingPeak))
+            )
+          }
+        }
+      } else if (currentSimTime >= settleStart && currentSimTime < geom.contactTime) {
         push = THREE.MathUtils.lerp(
-          drive,
+          1,
           settings.pushSettleLevel,
-          (currentSimTime - (geom.contactTime - settings.pushSettleTime)) / settings.pushSettleTime,
+          easeSwing((currentSimTime - settleStart) / settings.pushSettleTime),
         )
-      } else if (currentSimTime >= geom.contactTime && currentSimTime < followEnd) {
-        push = settings.pushSettleLevel
-      } else if (currentSimTime >= followEnd && currentSimTime < recoverEnd) {
-        push = settings.pushSettleLevel * (1 - r)
+      } else if (currentSimTime >= geom.contactTime && currentSimTime < recoverEnd) {
+        // ONE continuous post-contact arc — no dead hold, no separate
+        // ease-out stage. The body flows THROUGH contact: it rides gently
+        // forward (a smoothstep bump, cresting about when the bat's own
+        // follow-through completes) and then returns to the stance in a
+        // single motion that accelerates to a peak backward speed at
+        // settings.returnPeakFrac through the arc and decelerates to rest.
+        // Three smoothstep velocity segments stitched at zero slope keep
+        // position, velocity, and the feel of one flow; the arc starts
+        // exactly at settings.pushSettleLevel (contact) and lands exactly
+        // on zero (stance) with no velocity steps anywhere.
+        const span = recoverEnd - geom.contactTime
+        const u = (currentSimTime - geom.contactTime) / span
+        const uFinish = THREE.MathUtils.clamp(settings.followThrough / span, 0.05, 0.5)
+        const uPeak = THREE.MathUtils.clamp(settings.returnPeakFrac, 0.15, 0.85)
+        // Finish ride: a crest of ~+0.02 of push above the settle level,
+        // spread across the bat's follow-through window.
+        const vFinish = 2 * 0.02 / uFinish
+        // Return peak speed chosen so the arc's total displacement is
+        // exactly -pushSettleLevel (down to zero at the stance).
+        const vReturn = (vFinish * uPeak + 2 * settings.pushSettleLevel) / (1 - uFinish)
+        // Anti-derivative of the smoothstep ∫g = y³ − y⁴/2.
+        const smoothInt = (y) => y * y * y - (y * y * y * y) / 2
+        if (u <= uFinish) {
+          // Finish ride: 0 -> vFinish.
+          push = settings.pushSettleLevel + vFinish * uFinish * smoothInt(u / uFinish)
+        } else if (u <= uPeak) {
+          // Accelerating return: vFinish -> -vReturn.
+          push = settings.pushSettleLevel + vFinish * uFinish / 2
+            + vFinish * (u - uFinish)
+            - (vFinish + vReturn) * (uPeak - uFinish) * smoothInt((u - uFinish) / (uPeak - uFinish))
+        } else {
+          // Decelerating return: -vReturn -> 0.
+          push = settings.pushSettleLevel + vFinish * uFinish / 2
+            + (vFinish - vReturn) * (uPeak - uFinish) / 2
+            - vReturn * (u - uPeak)
+            + vReturn * (1 - uPeak) * smoothInt((u - uPeak) / (1 - uPeak))
+        }
+      }
+    } else {
+      // Takes get the same edge — the batter strides into the pitch and rides
+      // it forward — but with no swing ride-up to hand off to, the edge holds
+      // at full through the pitch crossing, then eases back out once the ball
+      // passes (the same leanOutTime window the front foot uses to relax: the
+      // body returns first while the foot holds its plant, then the foot
+      // steps back). No bat meets the ball, so this is independent of the
+      // swing's contact compensation.
+      const takeEdgeEnd = geom.contactTime + settings.leanOutTime
+      if (sinceStride <= strideDur) {
+        push = settings.strideEdgeFrac * ramp
+      } else if (currentSimTime < geom.contactTime) {
+        push = settings.strideEdgeFrac
+      } else if (currentSimTime < takeEdgeEnd) {
+        push = settings.strideEdgeFrac * (1 - easeSwing((currentSimTime - geom.contactTime) / settings.leanOutTime))
       }
     }
-    const hipDrive = settings.hipDriveForward * push
+    const hipDrive = (settings.hipDriveForward * push) / heightScale
     if (lowerRef.current) {
       lowerRef.current.rotation.y = lowerYaw
       lowerRef.current.position.z = -hipDrive
@@ -941,9 +969,10 @@ export const Batter = ({ pitchData }) => {
       upperRef.current.rotation.x = leanX
       upperRef.current.rotation.z = leanZ
       // The back leg firing pushes the whole body forward toward the pitcher
-      // a little (the hips lead with settings.hipDriveForward; the torso follows
-      // with settings.upperDriveForward, which the contact geometry compensates for).
-      upperRef.current.position.z = -settings.upperDriveForward * push
+      // (the hips lead with settings.hipDriveForward; the torso, head, and bat
+      // follow with settings.upperDriveForward, which the contact geometry
+      // compensates for so the sweet spot still meets the ball).
+      upperRef.current.position.z = (-settings.upperDriveForward * push) / heightScale
       // The hips settle lower during the load (the whole upper body drops with
       // them), rising back as the drive engages.
       upperRef.current.position.y = HIP_Y + bob - settings.hipSettle * load * (1 - drive)
@@ -1056,7 +1085,7 @@ export const Batter = ({ pitchData }) => {
     if (swing) {
       if (currentSimTime < geom.contactTime) {
         cockAngle = settings.cockAngle * (1 - e)
-        tiltAngle = geom.tilt * e + (geom.planeTilt - geom.tilt) * Math.sin(Math.PI * e) ** 2
+        tiltAngle = computeBatTiltAtProgress(e, geom.tilt, geom.planeTilt)
         bend = 1 - e
       } else if (currentSimTime < followEnd) {
         cockAngle = 0

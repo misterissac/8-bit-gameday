@@ -1,3 +1,6 @@
+import { feetToM } from './MathUtil.js'
+import { FIELD } from '../constants/field.js'
+
 // A live Statcast hit can arrive before its fielding point (hc_x/hc_y) is
 // known. Until then the landing spot is a guess, so don't render the batted
 // ball — or build its arc, which would otherwise divide by a null launch speed
@@ -88,3 +91,81 @@ export function shouldAutoAdvanceStuckPlay({
     deadlineExceeded === true
   )
 }
+
+// Whether FielderCam should transition to or initialize in 'following' mode.
+// In addition to dynamic chaser sprinters, fielders without moving groups
+// (such as the catcher behind the plate) arm following as soon as the ball
+// is in play.
+export function shouldFielderCamFollow({
+  snapped = false,
+  hasChaser = false,
+  hasBall = false,
+  fielderPosition = null,
+} = {}) {
+  if (!snapped) return false
+  return hasChaser || hasBall || (fielderPosition === 'C' && hasBall)
+}
+
+// Whether FielderCam should begin easing back / exiting on play completion.
+// Both 'following' and 'waiting' (e.g. catchers without separate chaser groups)
+// must restore when the play completion signal increments so the camera
+// never hangs or fails to exit automatically.
+export function shouldFielderCamRestore(mode, completeSignalChanged) {
+  return completeSignalChanged === true && (mode === 'following' || mode === 'waiting')
+}
+
+// Target coordinates of base bags for camera focus. Raised slightly (y = 0.05)
+// to center on the physical bag geometry on the infield dirt.
+export function getBaseTargetLocation(baseKey, fallback = null) {
+  switch (baseKey) {
+    case '1B':
+      return { x: FIELD.BASE.FIRST.x, y: 0.05, z: FIELD.BASE.FIRST.z }
+    case '2B':
+      return { x: FIELD.BASE.SECOND.x, y: 0.05, z: FIELD.BASE.SECOND.z }
+    case '3B':
+      return { x: FIELD.BASE.THIRD.x, y: 0.05, z: FIELD.BASE.THIRD.z }
+    case 'score':
+    case 'home':
+      return { x: 0, y: 0.012, z: -feetToM(8.5 / 12) }
+    default:
+      if (fallback) {
+        return { x: fallback.x, y: 0.05, z: fallback.z }
+      }
+      return { x: FIELD.BASE.FIRST.x, y: 0.05, z: FIELD.BASE.FIRST.z }
+  }
+}
+
+// Resolve the look-at target for FielderCam when a fielder fields the ball
+// and is advancing to step on a base bag (e.g. unassisted groundout). Over a
+// brief transition window (default 0.3s) it eases the look target from where
+// the ball was received to the base bag, then stays locked on the bag until
+// the out is recorded at the base.
+export function resolveFielderCamTarget({
+  t,
+  ballCatchTime,
+  stepOnBagTarget,
+  catchLocation,
+  duration,
+  transitionDuration = 0.3,
+}) {
+  if (!stepOnBagTarget || t == null || ballCatchTime == null || t < ballCatchTime) {
+    return null
+  }
+  const maxTransition = duration != null ? Math.min(transitionDuration, Math.max(0.01, duration * 0.5)) : transitionDuration
+  const elapsed = t - ballCatchTime
+  const p = maxTransition > 0 ? Math.min(Math.max(elapsed / maxTransition, 0), 1) : 1
+  const ease = p * p * (3 - 2 * p) // smoothstep
+
+  const from = catchLocation ? {
+    x: catchLocation.x,
+    y: Math.max(catchLocation.y ?? 0, 0.1),
+    z: catchLocation.z,
+  } : { ...stepOnBagTarget }
+
+  return {
+    x: from.x + (stepOnBagTarget.x - from.x) * ease,
+    y: from.y + (stepOnBagTarget.y - from.y) * ease,
+    z: from.z + (stepOnBagTarget.z - from.z) * ease,
+  }
+}
+

@@ -1,5 +1,5 @@
 import { Vector3 } from 'three'
-import { feetToM, mphToMetersPerSecond } from '../util/MathUtil'
+import { feetToM, mphToMetersPerSecond } from '../util/MathUtil.js'
 
 // ---------------------------------------------------------------------------
 // Field geometry constants.
