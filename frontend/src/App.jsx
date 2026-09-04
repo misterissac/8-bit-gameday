@@ -12,7 +12,7 @@ import { pitchTypeColor } from './util/pitchType';
 import { defenseFromSnapshot, restoreLiveDefense, defensePositions } from './util/defense';
 import { setTimeScale, setCycleDuration, resetSimulationTime, SLOWEST_SPEED } from './constants/playback';
 import { PitchMovementGraph } from './components/PitchMovementGraph';
-// DebugDrawer is intentionally hidden from the
+// IMPORTANT: DebugDrawer is intentionally hidden from the
 // production UI for now. Do not remove it, its styles, or the tuning store;
 // continue maintaining them as new features are added so diagnostics can be
 // re-enabled later without reconstruction.
@@ -3243,7 +3243,7 @@ const playSequence = useMemo(() => {
 
   return (
     <div style={{ width: '100vw', height: '100vh', position: 'relative', overflow: 'hidden' }}>
-      {/* DebugDrawer intentionally remains hidden
+      {/* IMPORTANT: DebugDrawer intentionally remains hidden
           for now. Do not remove this component or its supporting code; keep it
           maintained as new features are added so diagnostics can be re-enabled
           later. */}
