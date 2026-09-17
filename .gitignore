@@ -19,6 +19,17 @@ solomon-gumball:baseball-sim-main/
 
 *.log
 
+# Local dev artifacts
+scratch/
+.freebuff/
+models/backups/
+
+# Blender autosave/backup files
+*.blend1
+*.blend2
+*.blend3
+*.blend.tmp
+
 # IDE / local libs
 .local_libs/
 .idea/

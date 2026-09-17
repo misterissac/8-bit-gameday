@@ -22,7 +22,7 @@ export const SWING_PEAK_AUTO_MAX = 0.88
 export const SWEET_SPOT_FRACTION = 0.78
 export const BAT_LENGTH_MIN = 0.85
 export const BAT_LENGTH_MAX = 1.18
-export const HIP_Y = 0.72
+export const HIP_Y = 1.04
 export const BODY_FRONT_Z = -0.28
 export const HEAD_YAW_MAX = 0.8
 

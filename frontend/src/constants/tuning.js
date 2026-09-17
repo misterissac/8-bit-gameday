@@ -216,10 +216,11 @@ export const DEFAULT_TUNING = {
     fadeMinOpacity: 0.2,
     swingLead: 0.22,
     followThrough: 0.14,
+    followHold: 0.28,
     recoveryTime: 0.55,
     loadTime: 0.18,
     bodyOpenMax: 0.4,
-    fullOpenYaw: 0,
+    fullOpenYaw: 0.95,
     headTiltMax: -0.15,
     lowerBodyOpenFactor: 0.9,
     loadedBaseAngle: -3.141592653589793,
@@ -278,6 +279,7 @@ export const DEFAULT_TUNING = {
     leanOutTime: 0.3,
     loadLeanBack: 0.08,
     backRecoverLag: 0.35,
+    torsoRecoverLag: 0.22,
     handExtension: 0.35,
     handsPathBulge: 0.3,
     contactTiltMaxDeg: 20,
@@ -300,7 +302,7 @@ const clampTuningValue = (group, key, value) => {
   if (group === 'pitch' && ['smokeRedWindowTop', 'smokeGreyBlackPower', 'smokeToneBoostMax', 'smokeWhiteBoost'].includes(key)) return Math.max(0, value);
   if (group === 'battedBall' && ['throwSpeedMph', 'maxRunSpeedMph', 'trailFadeTime', 'traceFadeTime'].includes(key)) return Math.max(0.001, value);
   if (group === 'battedBall' && key === 'groundRollSpeedMph') return Math.max(0, value);
-  if (group === 'batter' && ['fadeEndDistance', 'swingLead', 'followThrough', 'recoveryTime', 'loadTime', 'pushSettleTime', 'leanOutTime'].includes(key)) return Math.max(0.001, value);
+  if (group === 'batter' && ['fadeEndDistance', 'swingLead', 'followThrough', 'followHold', 'recoveryTime', 'loadTime', 'pushSettleTime', 'leanOutTime'].includes(key)) return Math.max(0, value);
   if (group === 'batter' && key === 'swingPeakFrac') return value <= 0 ? 0 : Math.min(0.95, Math.max(0.05, value));
   if (group === 'batter' && key === 'returnPeakFrac') return Math.min(0.85, Math.max(0.15, value));
   return value;

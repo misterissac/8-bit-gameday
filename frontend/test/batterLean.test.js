@@ -46,4 +46,65 @@ for (const batSide of ['R', 'L']) {
       `lean is too weak or off-target (dot=${dot.toFixed(3)}, expected ~${LEAN_MAG})`,
     )
   })
+
+  test(`${batSide === 'R' ? 'right' : 'left'}-handed batter head aims directly at pitcher without tilting up during windup forward lean`, () => {
+    const { batX, stanceZ, setYaw } = stance(batSide)
+    const lean = batterLean(batX, stanceZ, CATCHER_Z, setYaw, LEAN_MAG)
+    const PITCHER_Z = -18.44
+
+    const upper = new THREE.Group()
+    upper.rotation.order = BATTER_LEAN_ORDER
+    upper.rotation.y = setYaw
+    upper.rotation.x = lean.rotationX
+    upper.rotation.z = lean.rotationZ
+
+    const head = new THREE.Group()
+    head.rotation.order = 'YXZ'
+    upper.add(head)
+    upper.updateMatrixWorld(true)
+
+    // Compute compensated pitcher look in upper body live frame
+    const headWorld = new THREE.Vector3()
+    head.getWorldPosition(headWorld)
+    const pitcherTarget = new THREE.Vector3(0, headWorld.y, PITCHER_Z)
+    const worldDir = new THREE.Vector3().subVectors(pitcherTarget, headWorld).normalize()
+    const upperQuat = upper.getWorldQuaternion(new THREE.Quaternion())
+    const localDir = worldDir.clone().applyQuaternion(upperQuat.clone().invert())
+    const pitcherYaw = Math.atan2(-localDir.x, -localDir.z)
+    const pitcherDist = Math.hypot(localDir.x, localDir.z)
+    const pitcherTilt = Math.atan2(localDir.y, pitcherDist)
+
+    head.rotation.y = pitcherYaw
+    head.rotation.x = pitcherTilt
+    upper.updateMatrixWorld(true)
+
+    const headWorldQuat = head.getWorldQuaternion(new THREE.Quaternion())
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(headWorldQuat)
+
+    // Forward gaze should point directly at the pitcher with 0 vertical elevation error
+    const angleToTarget = (forward.angleTo(worldDir) * 180) / Math.PI
+    assert.ok(angleToTarget < 0.01, `head angle to pitcher should be <0.01 deg, got ${angleToTarget.toFixed(4)} deg`)
+    assert.ok(Math.abs(forward.y) < 0.001, `head vertical gaze error should be <0.001, got ${forward.y.toFixed(4)}`)
+  })
 }
+
+test('torso recovery lags upper arms and bat so torso does not turn back first', () => {
+  const torsoRecoverLag = 0.22
+
+  // During initial 22% of recovery, arms/bat unwrap while torso holds follow-through turn
+  for (const r of [0.0, 0.05, 0.10, 0.20, 0.22]) {
+    const rTorso = THREE.MathUtils.clamp((r - torsoRecoverLag) / (1 - torsoRecoverLag), 0, 1)
+    assert.equal(rTorso, 0, `torso should hold turn at r=${r}, got rTorso=${rTorso}`)
+  }
+
+  // After 22%, torso smoothly turns back trailing the arms
+  const rMid = 0.61
+  const rTorsoMid = THREE.MathUtils.clamp((rMid - torsoRecoverLag) / (1 - torsoRecoverLag), 0, 1)
+  assert.ok(rTorsoMid > 0 && rTorsoMid < 1, `torso should be recovering at r=${rMid}`)
+  assert.ok(rTorsoMid < rMid, `torso recovery (${rTorsoMid.toFixed(2)}) should trail arms (${rMid})`)
+
+  // By end of recovery, both reach 1
+  const rEnd = 1.0
+  const rTorsoEnd = THREE.MathUtils.clamp((rEnd - torsoRecoverLag) / (1 - torsoRecoverLag), 0, 1)
+  assert.equal(rTorsoEnd, 1.0, 'torso reaches set stance at r=1.0')
+})

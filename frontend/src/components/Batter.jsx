@@ -1,6 +1,21 @@
 import React, { useLayoutEffect, useMemo, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
+import { useGLTF } from '@react-three/drei'
 import * as THREE from 'three'
+
+const PART_URLS = {
+  head: '/models/parts/head.glb',
+  torso: '/models/parts/torso.glb',
+  pelvis: '/models/parts/pelvis.glb',
+  upperArm: '/models/parts/upper_arm.glb',
+  forearm: '/models/parts/forearm.glb',
+  thigh: '/models/parts/thigh.glb',
+  shin: '/models/parts/shin.glb',
+  shoe: '/models/parts/shoe.glb',
+  hand: '/models/parts/hand.glb',
+  bat: '/models/parts/bat.glb',
+}
+Object.values(PART_URLS).forEach((url) => useGLTF.preload(url))
 import { getCycleDuration, getTimeScale, getBattedBallPosition, getBallReleaseTime, stepSimulation } from '../constants/playback'
 import { FIELD } from '../constants/field'
 import { PLATE_FRONT_Y, clamp, plateCrossing } from '../util/MathUtil'
@@ -61,8 +76,8 @@ import { useTuning } from '../constants/tuning'
 // completes the turn to settings.fullOpenYaw). The sign mirrors handedness so the
 // body turns with the swing (see bodyOpen below).
 
-// After contact the body keeps opening through the follow-through until the
-// chest fully faces the pitcher (settings.fullOpenYaw = 0, straight down the line),
+// After contact the body keeps opening through the follow-through into the
+// pull side to match the elbows (settings.fullOpenYaw),
 // then unwinds back to the set stance during the recovery.
 
 // The set stance faces a point on the home-plate -> catcher segment biased
@@ -147,7 +162,7 @@ import { useTuning } from '../constants/tuning'
 // The sprite's top-of-head height (meters) at scale 1, and the nominal stance
 // offsets for that reference sprite. Both are scaled by the same ratio so the
 // silhouette (height, body width, shoulders, bat) stays proportional.
-const SPRITE_NOMINAL_HEIGHT_M = 1.96
+const SPRITE_NOMINAL_HEIGHT_M = 2.48
 const NOMINAL_STANCE_X_M = 0.65
 const NOMINAL_STANCE_Z_M = 0.75
 
@@ -160,8 +175,8 @@ const BATTER_VISUAL_SCALE = 0.85
 // Contact geometry (all in the height-scaled local frame, where the body
 // centerline is x=0 and the front of the torso is at z=BODY_FRONT_Z).
 const BODY_FRONT_Z = -0.28
-const SHOULDER_X = 0.22
-const SHOULDER_Y = 1.5
+const SHOULDER_X = 0.19
+const SHOULDER_Y = 1.76
 
 // The upper body pivots at the hip joint (the top of the legs) rather than
 // at the feet, so the torso stays attached to the hips while it leans,
@@ -170,7 +185,7 @@ const SHOULDER_Y = 1.5
 // How far each elbow rides the bat's barrel line behind the hands during the
 // swing (so the bat swings WITH the forearms as one unit), and how far the two
 // elbows spread apart along it.
-const FOREARM_LEN = 0.4
+const FOREARM_LEN = 0.46
 const ELBOW_SPREAD = 0.1
 
 // The two hands do not grip the exact same spot: the pitcher-facing (front)
@@ -203,8 +218,8 @@ const BAT_LENGTH_MAX = 1.18
 // cross-body (front) arm's forearm can ride around the front of the torso
 // instead of passing through it when it reaches across to the load grip.
 // The per-side sign is applied in the component.
-const LOADED_HANDS_X = 0.35
-const LOADED_HANDS_Y = 1.35
+const LOADED_HANDS_X = 0.36
+const LOADED_HANDS_Y = 1.90
 const LOADED_HANDS_Z = -0.15
 
 // How far forward the hands path bulges (toward the pitcher) as it arcs from
@@ -273,6 +288,12 @@ function setCylinderBetween(mesh, a, b) {
   mesh.scale.set(1, length, 1)
 }
 
+const _headWorld = new THREE.Vector3()
+const _upperQuat = new THREE.Quaternion()
+const _pitcherTarget = new THREE.Vector3()
+const _worldDir = new THREE.Vector3()
+const _localDir = new THREE.Vector3()
+
 export const Batter = ({ pitchData, replayKey = 0 }) => {
   const settings = useTuning().batter
   const upperRef = useRef()
@@ -291,8 +312,42 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
   const shinRRef = useRef()
   const shoeLRef = useRef()
   const shoeRRef = useRef()
+  const pelvisRef = useRef()
+  const handLRef = useRef()
+  const handRRef = useRef()
   const groupRef = useRef()
   const camera = useThree((s) => s.camera)
+
+  const glbHead = useGLTF(PART_URLS.head)
+  const glbTorso = useGLTF(PART_URLS.torso)
+  const glbPelvis = useGLTF(PART_URLS.pelvis)
+  const glbUpperArm = useGLTF(PART_URLS.upperArm)
+  const glbForearm = useGLTF(PART_URLS.forearm)
+  const glbThigh = useGLTF(PART_URLS.thigh)
+  const glbShin = useGLTF(PART_URLS.shin)
+  const glbShoe = useGLTF(PART_URLS.shoe)
+  const glbHand = useGLTF(PART_URLS.hand)
+  const glbBat = useGLTF(PART_URLS.bat)
+
+  // Clone GLB scenes for each limb/foot/hand so transforms don't conflict
+  const models = useMemo(() => ({
+    head: glbHead.scene.clone(true),
+    torso: glbTorso.scene.clone(true),
+    pelvis: glbPelvis.scene.clone(true),
+    thighL: glbThigh.scene.clone(true),
+    shinL: glbShin.scene.clone(true),
+    thighR: glbThigh.scene.clone(true),
+    shinR: glbShin.scene.clone(true),
+    shoeL: glbShoe.scene.clone(true),
+    shoeR: glbShoe.scene.clone(true),
+    upperArmL: glbUpperArm.scene.clone(true),
+    forearmL: glbForearm.scene.clone(true),
+    upperArmR: glbUpperArm.scene.clone(true),
+    forearmR: glbForearm.scene.clone(true),
+    handL: glbHand.scene.clone(true),
+    handR: glbHand.scene.clone(true),
+    bat: glbBat.scene.clone(true),
+  }), [glbHead, glbTorso, glbPelvis, glbUpperArm, glbForearm, glbThigh, glbShin, glbShoe, glbHand, glbBat])
 
   // Shared materials (one per color) so a single per-frame opacity update fades
   // the whole batter together, the same pattern the catcher uses. depthWrite is
@@ -308,10 +363,33 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
   const batMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#c48a5c', roughness: 0.6 }), [])
   const knobMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#8b5a2b', roughness: 0.7 }), [])
 
+  // Collect all unique materials from both procedural and GLB meshes for fading
+  const allMaterials = useMemo(() => {
+    const mats = new Set([pantsMat, shoesMat, jerseyMat, markerMat, skinMat, helmetMat, brimMat, batMat, knobMat])
+    Object.values(models).forEach((model) => {
+      model.traverse((child) => {
+        if (child.isMesh && child.material) {
+          const mList = Array.isArray(child.material) ? child.material : [child.material]
+          mList.forEach((m) => {
+            // Ensure eyes do not reflect light (matte black finish)
+            if (m.name && m.name.toLowerCase().includes('eye')) {
+              m.roughness = 1.0
+              m.metalness = 0.0
+              m.isEye = true
+              child.userData.isEye = true
+            }
+            mats.add(m)
+          })
+          child.castShadow = true
+          child.receiveShadow = true
+        }
+      })
+    })
+    return Array.from(mats)
+  }, [models, pantsMat, shoesMat, jerseyMat, markerMat, skinMat, helmetMat, brimMat, batMat, knobMat])
+
   // Fade the batter when the camera is behind it (catcher side, +Z) and close
   // enough to block the strike zone; never fade when viewed from the front.
-  // Same distance ramp as the catcher, but the opacity floors at
-  // settings.fadeMinOpacity so the batter stays translucent instead of vanishing.
   useFrame(() => {
     const group = groupRef.current
     if (!group) return
@@ -321,10 +399,21 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     const opacity = behind
       ? settings.fadeMinOpacity + (1 - settings.fadeMinOpacity) * fade
       : 1
-    for (const mat of [pantsMat, shoesMat, jerseyMat, markerMat, skinMat, helmetMat, brimMat, batMat, knobMat]) {
-      mat.opacity = opacity
-      mat.transparent = opacity < 1
-      mat.depthWrite = opacity >= 1
+    for (const mat of allMaterials) {
+      if (mat.isEye) {
+        // Make eyes invisible from the back view when the batter is transparent,
+        // so black eyes don't float inside the translucent skull from behind
+        const eyeOpacity = behind && opacity < 0.99 ? 0 : opacity
+        mat.opacity = eyeOpacity
+        mat.transparent = eyeOpacity < 1
+        mat.depthWrite = eyeOpacity >= 1
+        mat.visible = eyeOpacity > 0
+      } else {
+        mat.opacity = opacity
+        mat.transparent = opacity < 1
+        mat.depthWrite = opacity >= 1
+        mat.visible = true
+      }
     }
   })
   // 0..1 strength of the head's lock onto the batted ball: ramps in at
@@ -418,7 +507,16 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
   // ride the bat's barrel line — so the bat swings WITH the forearms as one
   // unit instead of pivoting around the wrist — easing back through the
   // follow-through.
-  const updateArms = (hands, bend, align = 0, batAngle = sign * settings.loadedBaseAngle, cockAngle = settings.cockAngle, tiltAngle = 0) => {
+  const updateArms = (
+    hands,
+    bend,
+    align = 0,
+    batAngle = sign * settings.loadedBaseAngle,
+    cockAngle = settings.cockAngle,
+    tiltAngle = 0,
+    followProgress = 0,
+    isRecovering = false,
+  ) => {
     // The bat mesh points along local -Z, raised by the cock/tilt X rotations
     // and yawed by batAngle, so the handle->barrel direction is:
     const phi = cockAngle + tiltAngle
@@ -432,11 +530,14 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     const perp = [-barrel.z, 0, barrel.x]
     for (const { side, upperRef, foreRef } of arms) {
       const shoulder = [side * SHOULDER_X, SHOULDER_Y, 0]
-      // The pitcher-facing (front) arm grips up the barrel — the front of the
-      // bat — while the other arm grips at the handle/knob (the back of the
-      // bat), so the two hands are separated along the barrel line.
+      // In standard baseball mechanics:
+      // The back arm (side === sign: right arm for righty, left arm for lefty)
+      // grips higher up the handle toward the barrel (+GRIP_SPLIT along barrel).
+      // The lead arm (side === -sign: left arm for righty, right arm for lefty)
+      // grips at the base of the handle resting against the knob (hands).
+      const isBackArm = side === sign
       const isFrontArm = side === -sign
-      const grip = isFrontArm
+      const grip = isBackArm
         ? [
             hands[0] + GRIP_SPLIT * barrel.x,
             hands[1] + GRIP_SPLIT * barrel.y,
@@ -477,6 +578,35 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
           grip[2] - len * dir.z + side * ELBOW_SPREAD * align * perp[2],
         ]
       }
+
+      // Follow-through: upper arms actively lead and drag the forearms and bat along
+      // so the forearms do not become crossed into an 'X' scissor.
+      // Lead arm pulls back around ribs, while trail arm sweeps across chest dragging the forearm.
+      if (followProgress > 0) {
+        const targetFollowElbow = isFrontArm
+          ? [
+              side * (SHOULDER_X + 0.12),
+              SHOULDER_Y - 0.20,
+              0.04,
+            ]
+          : [
+              -side * 0.14,
+              SHOULDER_Y - 0.12,
+              -0.24,
+            ]
+        // In forward follow-through, lead with upper arms so forearms don't scissor.
+        // During recovery, unwrap smoothly so the upper arms lead the return and the torso
+        // follows behind them rather than turning back while the arms are pinned.
+        const fp = isRecovering
+          ? easeSwing(followProgress)
+          : (isFrontArm ? Math.sqrt(followProgress) : easeSwing(followProgress))
+        finalElbow = [
+          THREE.MathUtils.lerp(finalElbow[0], targetFollowElbow[0], fp),
+          THREE.MathUtils.lerp(finalElbow[1], targetFollowElbow[1], fp),
+          THREE.MathUtils.lerp(finalElbow[2], targetFollowElbow[2], fp),
+        ]
+      }
+
       setCylinderBetween(upperRef.current, shoulder, finalElbow)
       setCylinderBetween(foreRef.current, finalElbow, grip)
     }
@@ -511,19 +641,19 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       // The hips settle lower during the load, rising back as the drive
       // engages (the upper body drops by the same amount in the frame loop).
       const hipSettle = settings.hipSettle * load * (1 - d)
-      const kneeY = 0.38
+      const kneeY = 0.55
         + (isBack ? settings.legBackKneeRise : settings.legFrontKneeRise) * d
         - backCrouch
         + (isBack ? 0 : settings.legFrontKneeLift * strideLift * (1 - d))
-      const kneeX = side * 0.14 + strideX * 0.5
+      const kneeX = side * 0.165 + strideX * 0.5
       const kneeZ = -0.13
         - (isBack ? settings.legBackKneeForward : settings.legFrontKneeForward) * d
         - strideZ * 0.5
-      const ankleX = side * 0.14 + strideX
+      const ankleX = side * 0.165 + strideX
       const ankleZ = -0.05
         - (isBack ? settings.legBackPushForward : settings.legFrontPushForward) * d
         - strideZ
-      const hip = [side * 0.14, 0.72 - hipSettle, 0]
+      const hip = [side * 0.165, 1.04 - hipSettle, 0]
       const knee = [kneeX, kneeY, kneeZ]
       // The front foot lifts clearly while striding (windup), then plants as
       // the stride completes; it unplants again briefly as the swing fires.
@@ -556,11 +686,11 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
         shoeYaw = THREE.MathUtils.lerp(-(1 - settings.frontFootPivot) * openAngle, 0, drive)
         ankleLift += settings.legFrontUnplantLift * drive
       }
-      const ankle = [footX, 0.05 + ankleLift, footZ]
+      const ankle = [footX, 0.06 + ankleLift, footZ]
       setCylinderBetween(thigh.current, hip, knee)
       setCylinderBetween(shin.current, knee, ankle)
       if (shoe.current) {
-        shoe.current.position.set(footX, 0.03 + ankleLift, footZ)
+        shoe.current.position.set(footX, 0.04 + ankleLift, footZ)
         shoe.current.rotation.y = shoeYaw
       }
     }
@@ -585,6 +715,9 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       if (lowerRef.current) {
         lowerRef.current.rotation.y = setYaw
         lowerRef.current.position.z = 0
+      }
+      if (pelvisRef.current) {
+        pelvisRef.current.position.y = 1.02
       }
       if (upperRef.current) {
         // YXZ order: yaw first, then the lean's forward/sideways tilts, so the
@@ -612,6 +745,15 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       if (cockRef.current) cockRef.current.rotation.x = settings.cockAngle
       if (tiltRef.current) tiltRef.current.rotation.x = 0
       updateArms(loadedHands, 1)
+      if (handLRef.current && handRRef.current) {
+        if (sign === 1) {
+          handLRef.current.position.set(-0.01, 0, 0)
+          handRRef.current.position.set(0.01, 0, -GRIP_SPLIT)
+        } else {
+          handLRef.current.position.set(-0.01, 0, -GRIP_SPLIT)
+          handRRef.current.position.set(0.01, 0, 0)
+        }
+      }
       return
     }
 
@@ -620,12 +762,15 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     //      the swing (holds through contact, eases back with the recovery)
     //   e: swing, from settings.swingLead s before contact up to contact
     //   f: follow-through, settings.followThrough s after contact
+    //   hold: holds the finish pose at the swing plane for settings.followHold s
     //   r: recovery, easing back to the loaded stance over settings.recoveryTime while
     //      the batted ball is in flight (ready for the next pitch of the cycle)
     const swingStart = geom.contactTime - settings.swingLead
     const loadStart = swingStart - settings.loadTime
     const followEnd = geom.contactTime + settings.followThrough
-    const recoverEnd = followEnd + settings.recoveryTime
+    const holdDuration = settings.followHold ?? 0.28
+    const holdEnd = followEnd + holdDuration
+    const recoverEnd = holdEnd + settings.recoveryTime
     // The pitcher's windup — mapped onto the post-contact window of the
     // shared cycle so the release lands exactly on the wrap (the same timing
     // the Pitcher component uses) — is when the batter starts his stride and
@@ -647,15 +792,17 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
         e = easeSwing((currentSimTime - swingStart) / settings.swingLead)
       } else if (currentSimTime >= geom.contactTime && currentSimTime < followEnd) {
         f = easeSwing((currentSimTime - geom.contactTime) / settings.followThrough)
-      } else if (currentSimTime >= followEnd && currentSimTime < recoverEnd) {
-        r = easeSwing((currentSimTime - followEnd) / settings.recoveryTime)
+      } else if (currentSimTime >= followEnd && currentSimTime < holdEnd) {
+        f = 1
+      } else if (currentSimTime >= holdEnd && currentSimTime < recoverEnd) {
+        r = easeSwing((currentSimTime - holdEnd) / settings.recoveryTime)
       }
     }
     // The load's weight shift (back-leg crouch, hip settle, settled lean)
     // holds through the swing and eases back out as the legs recover. The
     // front stride is driven separately by the pitcher's windup below.
-    if (swing && currentSimTime >= swingStart && currentSimTime < followEnd) load = 1
-    if (swing && currentSimTime >= followEnd && currentSimTime < recoverEnd) load = 1 - r
+    if (swing && currentSimTime >= swingStart && currentSimTime < holdEnd) load = 1
+    if (swing && currentSimTime >= holdEnd && currentSimTime < recoverEnd) load = 1 - r
 
     // The forward lean starts on the exact frame the pitcher starts his
     // windup and ramps linearly across the windup window, reaching full just
@@ -684,7 +831,7 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     let ramp = 0
     // Planted through the flight / swing; ease back during the recovery.
     if (swing) {
-      if (currentSimTime >= followEnd) {
+      if (currentSimTime >= holdEnd) {
         stride = currentSimTime < recoverEnd ? 1 - r : 0
       }
     } else {
@@ -723,25 +870,35 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       leanIn = 1
     }
 
+    // The torso recovery lags behind the upper arms: through settings.torsoRecoverLag
+    // of the recovery the torso holds its pull-side turn while the shoulders,
+    // arms, and bat unwrap and release first. Then the torso smoothly turns back,
+    // following behind the upper arms into the set stance.
+    const torsoRecoverLag = settings.torsoRecoverLag ?? 0.22
+    const rTorso = (swing && r > 0)
+      ? THREE.MathUtils.clamp((r - torsoRecoverLag) / (1 - torsoRecoverLag), 0, 1)
+      : 0
+    const torsoEase = easeSwing(rTorso)
+
     // How open the upper body / head is: ramps up through the swing, holds
-    // through the follow-through, and eases back during recovery.
+    // through the follow-through and hold window, and eases back during recovery.
     let open = 0
     if (swing) {
       if (currentSimTime < geom.contactTime) open = e
-      else if (currentSimTime < followEnd) open = 1
-      else if (currentSimTime < recoverEnd) open = 1 - r
+      else if (currentSimTime < holdEnd) open = 1
+      else if (currentSimTime < recoverEnd) open = 1 - rTorso
     }
 
     // The torso opens ahead of the hands during the pre-contact window (the
     // barrel catches up exactly at contact), then rides the same
-    // follow-through/recovery as the rest of the swing. This is the kinetic
+    // follow-through/hold/recovery as the rest of the swing. This is the kinetic
     // chain: back foot/hips fire first (settings.hipsLead), then the body turn, then
     // the hands.
     let bodyTurn = 0
     if (swing) {
       if (currentSimTime < geom.contactTime) bodyTurn = THREE.MathUtils.clamp(e * settings.bodyTurnLead, 0, 1)
-      else if (currentSimTime < followEnd) bodyTurn = 1
-      else if (currentSimTime < recoverEnd) bodyTurn = 1 - r
+      else if (currentSimTime < holdEnd) bodyTurn = 1
+      else if (currentSimTime < recoverEnd) bodyTurn = 1 - rTorso
     }
 
     // How strongly the forearms ride the bat's barrel line: full once the
@@ -779,15 +936,15 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
 
     // Body rotation through the swing: the upper body opens toward the
     // pitcher up to contact (bodyOpen), keeps turning through the
-    // follow-through until the chest fully faces the pitcher (settings.fullOpenYaw),
-    // then unwinds back to the set stance during recovery. The hips ride the
-    // same arc at a fraction of the rotation (settings.lowerBodyOpenFactor),
-    // phase-advanced to lead the shoulders into the swing. The lead carries
-    // into the follow-through: the hips finish their continued rotation
-    // (lowerOpenYaw -> hipFullOpenYaw) while the torso is still unwinding
-    // into the fully-open pose, so the legs keep driving through contact and
-    // the torso completes the turn after them.
-    const hipFullOpenYaw = setYaw + (settings.fullOpenYaw - setYaw) * settings.lowerBodyOpenFactor
+    // follow-through into the pull side to match the elbows (fullBodyYaw),
+    // softly extends as the swing decelerates, then unwinds back to the
+    // set stance during recovery. The hips ride the same arc at a fraction
+    // of the rotation (settings.lowerBodyOpenFactor), phase-advanced to lead
+    // the shoulders into the swing.
+    const fullBodyYaw = -sign * Math.abs(settings.fullOpenYaw > 0 ? settings.fullOpenYaw : 0.95)
+    const peakBodyYaw = fullBodyYaw - sign * 0.08
+    const hipFullOpenYaw = setYaw + (fullBodyYaw - setYaw) * settings.lowerBodyOpenFactor
+    const peakLowerYaw = hipFullOpenYaw - sign * 0.05
     let bodyYaw = setYaw
     let lowerYaw = setYaw
     if (swing) {
@@ -795,15 +952,21 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
         bodyYaw = THREE.MathUtils.lerp(setYaw, bodyOpen, bodyTurn)
         lowerYaw = THREE.MathUtils.lerp(setYaw, lowerOpenYaw, lowerOpen)
       } else if (currentSimTime < followEnd) {
-        bodyYaw = THREE.MathUtils.lerp(bodyOpen, settings.fullOpenYaw, f)
+        bodyYaw = THREE.MathUtils.lerp(bodyOpen, fullBodyYaw, f)
         lowerYaw = THREE.MathUtils.lerp(
           lowerOpenYaw,
           hipFullOpenYaw,
           THREE.MathUtils.clamp(f * settings.hipsLead, 0, 1),
         )
+      } else if (currentSimTime < holdEnd) {
+        const holdFrac = Math.min(1, Math.max(0, (currentSimTime - followEnd) / holdDuration))
+        const extendFrac = Math.min(1, holdFrac / 0.65)
+        const extendEase = 1 - Math.pow(1 - extendFrac, 2)
+        bodyYaw = THREE.MathUtils.lerp(fullBodyYaw, peakBodyYaw, extendEase)
+        lowerYaw = THREE.MathUtils.lerp(hipFullOpenYaw, peakLowerYaw, extendEase)
       } else if (currentSimTime < recoverEnd) {
-        bodyYaw = THREE.MathUtils.lerp(settings.fullOpenYaw, setYaw, r)
-        lowerYaw = THREE.MathUtils.lerp(hipFullOpenYaw, setYaw, r)
+        bodyYaw = THREE.MathUtils.lerp(peakBodyYaw, setYaw, torsoEase)
+        lowerYaw = THREE.MathUtils.lerp(peakLowerYaw, setYaw, torsoEase)
       }
     }
     // The push envelope drives the hips forward (settings.hipDriveForward) and the
@@ -977,6 +1140,9 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       // them), rising back as the drive engages.
       upperRef.current.position.y = HIP_Y + bob - settings.hipSettle * load * (1 - drive)
     }
+    if (pelvisRef.current) {
+      pelvisRef.current.position.y = 1.02 - settings.hipSettle * load * (1 - drive)
+    }
     poseLegs(drive, driveBack, load, stride, strideLift, lowerYaw, hipDrive)
 
     // Head: faces the pitcher during the set, eases to track the ball through
@@ -986,7 +1152,7 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     // fly balls / down for grounders. The lock-on ramps in at contact and
     // eases back out once the ball lands, so the head tracks the flight but
     // never snaps when the play ends.
-    if (headRef.current) {
+    if (headRef.current && upperRef.current) {
       // YXZ order: yaw around the vertical first, then pitch — the standard
       // head convention, so the pitch always tilts the face up/down regardless
       // of how far the head is turned. With the default XYZ order the pitch
@@ -994,21 +1160,37 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       // (tracking a ball while the upper body recovers) a positive tilt flips
       // to pointing DOWN — the head looks like it's tilting off the back.
       headRef.current.rotation.order = 'YXZ'
+
+      // Head direction to pitcher:
+      // When the batter leans forward during the pitcher's windup, the upper body
+      // tilts toward home plate (rotation.x and rotation.z on upperRef).
+      // Express the world vector to the pitcher in the upper body's LIVE coordinate
+      // frame so the head's local pitch and yaw counteract the torso's forward/sideways
+      // lean, keeping the gaze locked level and directly onto the pitcher instead of
+      // tilting up into the sky.
+      upperRef.current.updateWorldMatrix(true, true)
+      headRef.current.getWorldPosition(_headWorld)
+      _pitcherTarget.set(0, _headWorld.y, FIELD.DEFENSE.P.z)
+      _worldDir.subVectors(_pitcherTarget, _headWorld).normalize()
+      upperRef.current.getWorldQuaternion(_upperQuat)
+      _localDir.copy(_worldDir).applyQuaternion(_upperQuat.invert())
+      const pitcherYaw = Math.atan2(-_localDir.x, -_localDir.z)
+      const pitcherDist = Math.hypot(_localDir.x, _localDir.z)
+      const pitcherTilt = Math.atan2(_localDir.y, pitcherDist)
+
       const ballPos = getBattedBallPosition()
-      const upperYaw = upperRef.current ? upperRef.current.rotation.y : 0
-      let yaw = lerpAngle(headPitcherYaw, geom.headYaw, open)
-      let tilt = settings.headTiltMax * open
+      const upperYaw = upperRef.current.rotation.y
+      let yaw = lerpAngle(pitcherYaw, geom.headYaw, open)
+      let tilt = THREE.MathUtils.lerp(pitcherTilt, settings.headTiltMax, open)
       const tracking = ballPos && currentSimTime >= geom.contactTime
       if (tracking) {
         // The ball launches exactly at the contact point, so this look is
         // continuous with the contact tracking. Store the WORLD yaw to the
         // ball (not a local one) so the fade below stays anchored in world
         // space while the upper body may still be rotating back.
-        const headWorld = new THREE.Vector3()
-        headRef.current.getWorldPosition(headWorld)
-        const dx = ballPos.x - headWorld.x
-        const dy = ballPos.y - headWorld.y
-        const dz = ballPos.z - headWorld.z
+        const dx = ballPos.x - _headWorld.x
+        const dy = ballPos.y - _headWorld.y
+        const dz = ballPos.z - _headWorld.z
         const dist = Math.hypot(dx, dz)
         lastBallLook.current = {
           worldYaw: Math.atan2(-dx, -dz),
@@ -1044,64 +1226,96 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     }
 
     // Hands: loaded -> contact along a forward-bulging arc through the swing,
-    // held at contact through the follow-through, then eased back to loaded.
+    // then follow-through arc extending and lifting slightly along the swing plane as it
+    // decelerates fluidly, holds the finish pose, and eases back to loaded.
+    const throughHands = [
+      -sign * 0.26,
+      geom.contactHands[1] + 0.08,
+      -0.20,
+    ]
+    const followHandsControl = [
+      -sign * 0.20,
+      geom.contactHands[1] + 0.04,
+      -0.36,
+    ]
+    const peakHands = [
+      throughHands[0] - sign * 0.03,
+      throughHands[1] + 0.06,
+      throughHands[2] + 0.02,
+    ]
+    const peakAngle = geom.throughY + sign * 0.12
+    const peakTilt = geom.planeTilt + 0.10
+    const peakCock = 0.06
+
     let hands = geom.loadedHands
+    let angle = geom.loadedY
+    let cockAngle = settings.cockAngle
+    let tiltAngle = 0
+    let bend = 1
+    let followProgress = 0
+
     if (swing && currentSimTime >= swingStart) {
       if (currentSimTime < geom.contactTime) {
         hands = bezier2(geom.loadedHands, geom.handsControl, geom.contactHands, e)
-      } else if (currentSimTime < followEnd) {
-        hands = geom.contactHands
-      } else if (currentSimTime < recoverEnd) {
-        hands = lerpV3(geom.contactHands, geom.loadedHands, r)
-      }
-    }
-
-    // Bat angle: loaded -> contact (sweet spot on the ball) -> follow-through
-    // -> recovered stance.
-    let angle = geom.loadedY
-    if (swing) {
-      if (currentSimTime < geom.contactTime) {
         angle = THREE.MathUtils.lerp(geom.loadedY, geom.contactY, e)
+        cockAngle = settings.cockAngle * (1 - e)
+        tiltAngle = computeBatTiltAtProgress(e, geom.tilt, geom.planeTilt)
+        bend = 1 - e
+        followProgress = 0
       } else if (currentSimTime < followEnd) {
+        hands = bezier2(geom.contactHands, followHandsControl, throughHands, f)
         angle = THREE.MathUtils.lerp(geom.contactY, geom.throughY, f)
+        cockAngle = 0
+        tiltAngle = THREE.MathUtils.lerp(geom.tilt, geom.planeTilt, f)
+        bend = 0
+        followProgress = f
+      } else if (currentSimTime < holdEnd) {
+        // Decelerate smoothly while lifting the bat up slightly and extending the follow-through,
+        // holding the peak pose so motion stays fluid without stopping abruptly.
+        const holdFrac = Math.min(1, Math.max(0, (currentSimTime - followEnd) / holdDuration))
+        const extendFrac = Math.min(1, holdFrac / 0.65)
+        const extendEase = 1 - Math.pow(1 - extendFrac, 2)
+
+        hands = [
+          THREE.MathUtils.lerp(throughHands[0], peakHands[0], extendEase),
+          THREE.MathUtils.lerp(throughHands[1], peakHands[1], extendEase),
+          THREE.MathUtils.lerp(throughHands[2], peakHands[2], extendEase),
+        ]
+        angle = THREE.MathUtils.lerp(geom.throughY, peakAngle, extendEase)
+        cockAngle = peakCock * extendEase
+        tiltAngle = THREE.MathUtils.lerp(geom.planeTilt, peakTilt, extendEase)
+        bend = 0
+        followProgress = 1
       } else if (currentSimTime < recoverEnd) {
-        angle = THREE.MathUtils.lerp(geom.throughY, geom.loadedY, r)
+        hands = lerpV3(peakHands, geom.loadedHands, r)
+        angle = THREE.MathUtils.lerp(peakAngle, geom.loadedY, r)
+        cockAngle = THREE.MathUtils.lerp(peakCock, settings.cockAngle, r)
+        tiltAngle = peakTilt * (1 - r)
+        bend = r
+        followProgress = 1 - r
       }
     }
 
     batGroupRef.current.position.set(hands[0], hands[1], hands[2])
     batGroupRef.current.rotation.y = angle
 
-    // The bat drops from the cocked position (over the shoulder) to level by
-    // contact. The barrel first rides up onto the swing plane shaped by
-    // swing_path_tilt, then flattens onto the true attack angle exactly at
-    // contact (the sine bump is 0 at both ends, so the endpoints are exact);
-    // after contact it rises back up along the plane through the
-    // follow-through. The arms straighten through the swing — all reversing
-    // through the recovery.
-    let cockAngle = settings.cockAngle
-    let tiltAngle = 0
-    let bend = 1
-    if (swing) {
-      if (currentSimTime < geom.contactTime) {
-        cockAngle = settings.cockAngle * (1 - e)
-        tiltAngle = computeBatTiltAtProgress(e, geom.tilt, geom.planeTilt)
-        bend = 1 - e
-      } else if (currentSimTime < followEnd) {
-        cockAngle = 0
-        tiltAngle = THREE.MathUtils.lerp(geom.tilt, geom.planeTilt, f)
-        bend = 0
-      } else if (currentSimTime < recoverEnd) {
-        cockAngle = settings.cockAngle * r
-        tiltAngle = geom.planeTilt * (1 - r)
-        bend = r
-      }
-    }
     if (cockRef.current) cockRef.current.rotation.x = cockAngle
     if (tiltRef.current) tiltRef.current.rotation.x = tiltAngle
 
-    updateArms(hands, bend, align, angle, cockAngle, tiltAngle)
+    const isRecovering = swing && currentSimTime >= holdEnd && currentSimTime < recoverEnd
+    updateArms(hands, bend, align, angle, cockAngle, tiltAngle, followProgress, isRecovering)
 
+    if (handLRef.current && handRRef.current) {
+      if (sign === 1) {
+        // Righty: Left hand (lead) at knob (Z = 0), Right hand (back) on top (Z = -GRIP_SPLIT)
+        handLRef.current.position.set(-0.01, 0, 0)
+        handRRef.current.position.set(0.01, 0, -GRIP_SPLIT)
+      } else {
+        // Lefty: Right hand (lead) at knob (Z = 0), Left hand (back) on top (Z = -GRIP_SPLIT)
+        handLRef.current.position.set(-0.01, 0, -GRIP_SPLIT)
+        handRRef.current.position.set(0.01, 0, 0)
+      }
+    }
   })
 
   if (!pitchData) return null
@@ -1123,27 +1337,31 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
               for the crouch of the set stance. Unit-height cylinders re-posed
               every frame by poseLegs (hidden until the first frame so they
               don't flash), exactly like the arms. */}
-          <mesh ref={thighLRef} visible={false} castShadow material={pantsMat}>
-            <cylinderGeometry args={[0.065, 0.065, 1, 8]} />
-          </mesh>
-          <mesh ref={shinLRef} visible={false} castShadow material={pantsMat}>
-            <cylinderGeometry args={[0.05, 0.05, 1, 8]} />
-          </mesh>
-          <mesh ref={thighRRef} visible={false} castShadow material={pantsMat}>
-            <cylinderGeometry args={[0.065, 0.065, 1, 8]} />
-          </mesh>
-          <mesh ref={shinRRef} visible={false} castShadow material={pantsMat}>
-            <cylinderGeometry args={[0.05, 0.05, 1, 8]} />
-          </mesh>
+          <group ref={thighLRef} visible={false}>
+            <primitive object={models.thighL} />
+          </group>
+          <group ref={shinLRef} visible={false}>
+            <primitive object={models.shinL} />
+          </group>
+          <group ref={thighRRef} visible={false}>
+            <primitive object={models.thighR} />
+          </group>
+          <group ref={shinRRef} visible={false}>
+            <primitive object={models.shinR} />
+          </group>
 
-          {/* Feet (shoes), perpendicular to the first/third base line (long
-              axis along the pitcher-catcher line) */}
-          <mesh ref={shoeLRef} position={[-0.14, 0.03, -0.05]} castShadow material={shoesMat}>
-            <boxGeometry args={[0.12, 0.06, 0.32]} />
-          </mesh>
-          <mesh ref={shoeRRef} position={[0.14, 0.03, -0.05]} castShadow material={shoesMat}>
-            <boxGeometry args={[0.12, 0.06, 0.32]} />
-          </mesh>
+          {/* Feet (shoes): chunky 3-tone sneaker cleats */}
+          <group ref={shoeLRef} position={[-0.165, 0.04, -0.05]}>
+            <primitive object={models.shoeL} />
+          </group>
+          <group ref={shoeRRef} position={[0.165, 0.04, -0.05]}>
+            <primitive object={models.shoeR} />
+          </group>
+
+          {/* Pelvis / hips / behind: baseball pants waist and cute rounded rear */}
+          <group ref={pelvisRef} position={[0, 1.02, 0]}>
+            <primitive object={models.pelvis} />
+          </group>
         </group>
 
         {/* Upper body: rotates to open toward the pitcher through the swing,
@@ -1154,68 +1372,45 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
             coordinates. */}
         <group ref={upperRef} position={[0, HIP_Y, 0]}>
           <group position={[0, -HIP_Y, 0]}>
-            {/* Torso (jersey) */}
-            <mesh position={[0, 1.05, 0]} castShadow material={jerseyMat}>
-              <capsuleGeometry args={[0.28, 0.6, 4, 8]} />
-            </mesh>
-
-            {/* Chest marker (jersey number) on the front so the body's turn is
-                visible as it opens toward the pitcher */}
-            <mesh position={[0, 1.18, -0.3]} material={markerMat}>
-              <boxGeometry args={[0.18, 0.14, 0.02]} />
-            </mesh>
-
-            {/* Head: tilts forward toward the pitcher (rotation.x on headRef) as
-                the upper body opens, tracking the ball through the swing. A
-                helmet + brim make the tilt read on the plain sphere. The group
-                is positioned at the NECK (1.5) so the head rotates around its
-                joint with the body — not the feet it previously pivoted on —
-                keeping it attached even when it tilts up to track a pop-up. */}
-            <group ref={headRef} position={[0, 1.5, 0]}>
-              <mesh position={[0, 0.22, 0]} material={skinMat}>
-                <sphereGeometry args={[0.23, 12, 12]} />
-              </mesh>
-              {/* Helmet cap (top half of a slightly larger sphere) */}
-              <mesh position={[0, 0.22, 0]} material={helmetMat}>
-                <sphereGeometry args={[0.245, 12, 12, 0, Math.PI * 2, 0, Math.PI / 2]} />
-              </mesh>
-              {/* Brim pointing toward the pitcher (-Z) */}
-              <mesh position={[0, 0.2, -0.26]} material={brimMat}>
-                <boxGeometry args={[0.36, 0.045, 0.22]} />
-              </mesh>
+            {/* Torso (jersey) with chest patch */}
+            <group position={[0, 1.14, 0]}>
+              <primitive object={models.torso} />
             </group>
 
-            {/* Arms: upper arm (shoulder->elbow) + forearm (elbow->hands), posed
-                each frame by updateArms as the hands travel to the contact
-                point. Hidden until the first frame so they don't flash. */}
-            <mesh ref={leftUpperRef} visible={false} castShadow material={skinMat}>
-              <cylinderGeometry args={[0.055, 0.055, 1, 8]} />
-            </mesh>
-            <mesh ref={leftForeRef} visible={false} castShadow material={skinMat}>
-              <cylinderGeometry args={[0.045, 0.045, 1, 8]} />
-            </mesh>
-            <mesh ref={rightUpperRef} visible={false} castShadow material={skinMat}>
-              <cylinderGeometry args={[0.055, 0.055, 1, 8]} />
-            </mesh>
-            <mesh ref={rightForeRef} visible={false} castShadow material={skinMat}>
-              <cylinderGeometry args={[0.045, 0.045, 1, 8]} />
-            </mesh>
+            {/* Head: tilts forward toward the pitcher (rotation.x on headRef).
+                Combined custom Head + Eyes + Helmet model */}
+            <group ref={headRef} position={[0, 1.96, 0]}>
+              <primitive object={models.head} position={[0, 0, 0]} />
+            </group>
 
-            {/* Bat: handle at the hands, barrel toward the pitcher (-Z). The
-                group is repositioned (hands arc) and rotated (swing) every
-                frame; the inner cock group drops the bat from over the shoulder
-                into the zone and the tilt group applies the contact attack
-                angle / swing-plane tilt. */}
+            {/* Arms: upper arm (shoulder->elbow) + forearm (elbow->hands), pill-shaped GLB capsules */}
+            <group ref={leftUpperRef} visible={false}>
+              <primitive object={models.upperArmL} />
+            </group>
+            <group ref={leftForeRef} visible={false}>
+              <primitive object={models.forearmL} />
+            </group>
+            <group ref={rightUpperRef} visible={false}>
+              <primitive object={models.upperArmR} />
+            </group>
+            <group ref={rightForeRef} visible={false}>
+              <primitive object={models.forearmR} />
+            </group>
+
+            {/* Bat and gripping hands: handle at the hands, barrel toward the pitcher (-Z). */}
             <group ref={batGroupRef} position={loadedHands} rotation={[0, sign * settings.loadedBaseAngle, 0]}>
               <group ref={cockRef} rotation={[settings.cockAngle, 0, 0]}>
                 <group ref={tiltRef}>
-                  <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, -batLength / 2]} material={batMat}>
-                    <cylinderGeometry args={[0.045, 0.024, batLength, 8]} />
-                  </mesh>
-                  {/* Knob behind the handle */}
-                  <mesh position={[0, 0, 0.03]} material={knobMat}>
-                    <sphereGeometry args={[0.03, 8, 8]} />
-                  </mesh>
+                  <group scale={[1, 1, batLength / 0.95]}>
+                    <primitive object={models.bat} />
+                  </group>
+                  {/* Gripping hands at handle */}
+                  <group ref={handLRef} position={[-0.01, 0, sign === 1 ? 0 : -GRIP_SPLIT]} rotation={[0, 0, 0.15]}>
+                    <primitive object={models.handL} />
+                  </group>
+                  <group ref={handRRef} position={[0.01, 0, sign === 1 ? -GRIP_SPLIT : 0]} rotation={[0, 0, -0.15]}>
+                    <primitive object={models.handR} />
+                  </group>
                 </group>
               </group>
             </group>
