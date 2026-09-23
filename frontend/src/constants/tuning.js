@@ -220,13 +220,62 @@ export const DEFAULT_TUNING = {
     recoveryTime: 0.55,
     loadTime: 0.18,
     bodyOpenMax: 0.4,
-    fullOpenYaw: 0.95,
+    // How far the chest still is from the pitcher's line at the end of the
+    // follow-through — the same axis and the same side as bodyOpenMax above, so
+    // the swing keeps opening while this is below the contact turn and the chest
+    // reaches the pitcher's line at 0, and *past* him below that. A batter's body
+    // does not stop at contact: it carries on round through the pitcher's line,
+    // which is also what leaves the arms somewhere to go, instead of folding them
+    // across a chest that has stopped turning. (This used to be read as a
+    // magnitude, so every value put the finish *short* of the contact turn and
+    // the body visibly closed back up through the follow-through.)
+    //
+    // Measured off the posed skeleton, from 21.8° short of the pitcher at contact
+    // to 27.0° *past* him at the end of the follow-through, 31.3° through the hold
+    // and 31.3° at the peak: the chest is still opening after the ball has gone,
+    // which is the beat the hands ride to come round with it. It is set by the
+    // bat's own carry rather than by the body: both fists stay on the handle and
+    // the trailing arm's reach is what bounds where the bat can be carried, so the
+    // shoulders are what bring the knob round to the plane (see TRAIL_REACH_CLEAR
+    // and TRAIL_REACH_MAX in Batter.jsx, and the spec's own reading of it — the
+    // finish is measured 27° past the pitcher against the 40° it is held to).
+    fullOpenYaw: -0.45,
     headTiltMax: -0.15,
     lowerBodyOpenFactor: 0.9,
+    // How much of that turn the pelvis takes with it on the follow-through, as
+    // against the 0.9 the hips lead the shoulders with into contact (which sets
+    // the whole approach and the contact geometry, and is left alone). All of
+    // it: the finish is the whole lower body open with the chest, legs included
+    // — the swing is over, nothing is being staged for a next move, and a pelvis
+    // left behind the chest is a waist band with a turn to absorb.
+    followLowerOpenFactor: 1,
     loadedBaseAngle: -3.141592653589793,
-    throughBaseAngle: 1.5707963267948966,
+    throughBaseAngle: 1.10,
     cockAngle: 0.7,
     setFaceBias: 0.35,
+    // How far the set stance's trunk is turned off the plate-facing yaw toward
+    // the pitcher's line — the direction the arms are held toward — as a share of
+    // the angle between them. The set stance faces the plate, which is broadside
+    // to the pitcher, so the trunk starts the swing a long way round from where
+    // the arms are pointed; the trunk and the pelvis are turned this far toward
+    // them (together, so nothing is added to the waist's own twist), which is
+    // also where the swing unwinds back to. 0 leaves the stance facing the plate
+    // exactly as it always did.
+    //
+    // It is also what the *hands* are measured against. With the grip out over
+    // the trail shoulder (where it was) 0.30 of this left the lead arm's bicep 10
+    // vertices inside the ribs; with the grip in front of the chest and the trunk
+    // turned to meet it, the same arm is clear of the trunk at 0 inside, and 0.11
+    // rig in front of its own shoulder.
+    //
+    // The share is bounded at both ends by the pose it is there for: the pitcher's
+    // own view of the arms wants the trunk turned (with the grip in front of the
+    // chest, the trail arm reads 91 of 198 vertices hidden at 0 and 26 at 0.2),
+    // and the set's own stance wants it still facing mostly away from him
+    // (0.38 turns it to 69.5° off his line, where the set no longer reads as a
+    // set). At 0.2 the swing unwinds back to -89.7° and lands there with -87.1° at
+    // nine tenths of the way home.
+    stanceArmFacing: 0.2,
     hipsLead: 2.6,
     bodyTurnLead: 1.15,
     headTrackTiltDown: 0.55,
@@ -279,8 +328,23 @@ export const DEFAULT_TUNING = {
     leanOutTime: 0.3,
     loadLeanBack: 0.08,
     backRecoverLag: 0.35,
-    torsoRecoverLag: 0.22,
-    handExtension: 0.35,
+    // How late the torso may start its turn back to the set stance, as a
+    // fraction of recoveryTime. 0 means it unwinds with the shoulders and the
+    // arms — one motion, in the order the chain fired. A late torso leaves the
+    // arms and the bat folding across a chest that is still turned to the pull
+    // side, which reads as the shoulders twisting off the torso.
+    torsoRecoverLag: 0,
+    // How far the hands reach from the front of the torso toward the ball, as a
+    // share of the way there. It is what holds the *arms* at the pose they were
+    // tuned at while the bat takes up the rest of the distance: the batter
+    // stands 0.10 m further back from the plate than it used to (see
+    // STANCE_SETBACK_M in Batter.jsx), so the ball is that much further from the
+    // body, and a share tuned for the old distance carries the hands out after
+    // it — the trail arm stretches to its own span at contact, its palm coming
+    // 2.6 mm off the handle against a 1 mm bound. At 0.274 the hands sit the same
+    // 0.355 rig in front of the torso at contact as they always did, and the bat
+    // takes the 0.13 rig of extra distance instead (0.967 -> 1.103 rig).
+    handExtension: 0.274,
     handsPathBulge: 0.3,
     contactTiltMaxDeg: 20,
     planeTiltMaxDeg: 50,

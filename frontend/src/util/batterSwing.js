@@ -103,6 +103,13 @@ export function resolveSwingPeak(swingPeakSetting, pitchSpeedMph) {
  * @param {number[]} [params.loadedHands=[0.35, 1.35, -0.15]]
  * @param {object} params.settings
  * @param {number} [params.catcherZ]
+ * @param {{batX: number, stanceZ: number}|null} [params.leanAt=null] where the
+ *   body is taken to be standing *for the lean's own direction* — the batter
+ *   stands beside the plate and leans over it, and the animation's lean is posed
+ *   about the stance it was tuned at, so a batter set back in the box poses the
+ *   lean from there (see STANCE_SETBACK_M in Batter.jsx). Defaults to the contact
+ *   geometry's own position, which is where the animation measures it from when
+ *   nothing is set back.
  * @returns {object|null} Swing geometry
  */
 export function calculateSwingGeometry({
@@ -115,6 +122,7 @@ export function calculateSwingGeometry({
   loadedHands = [0.35, 1.35, -0.15],
   settings,
   catcherZ = FIELD.DEFENSE.C.z,
+  leanAt = null,
 }) {
   const traj = pitchData?.trajectory
   if (!traj || traj.length === 0) return null
@@ -129,10 +137,15 @@ export function calculateSwingGeometry({
   const contact = {
     x: (crossing.x - batX) / heightScale,
     y: crossing.height / heightScale,
-    // The whole body pushes forward by the time the swing reaches contact
-    // (settings.upperDriveForward, eased back to settings.pushSettleLevel at contact), so
-    // the ball sits that much closer to the body.
-    z: (-PLATE_FRONT_Y - stanceZ) / heightScale + settings.upperDriveForward * settings.pushSettleLevel / heightScale,
+    // The whole body pushes forward by the time the swing reaches contact — the
+    // hips' own lunge (settings.hipDriveForward) and the torso's push on top of
+    // it (settings.upperDriveForward), both eased back to
+    // settings.pushSettleLevel at contact — so the ball sits that much closer to
+    // the body. The bat hangs in the body's own frame (upperRef, which carries
+    // exactly this travel), so both halves of the drive move the ball closer in
+    // that frame, not one of them.
+    z: (-PLATE_FRONT_Y - stanceZ) / heightScale
+      + (settings.hipDriveForward + settings.upperDriveForward) * settings.pushSettleLevel / heightScale,
   }
 
   // Head yaw to look at the ball at the plate. The head's face is its local
@@ -155,7 +168,13 @@ export function calculateSwingGeometry({
   // Rz(leanZc), the 'YXZ' rotation the upper body uses — not just the yaw,
   // so the sweet spot lands on the real contact point once the whole
   // rotation is applied.
-  const lean = batterLean(batX, stanceZ, catcherZ, bodyOpen, settings.legLean)
+  const lean = batterLean(
+    leanAt?.batX ?? batX,
+    leanAt?.stanceZ ?? stanceZ,
+    catcherZ,
+    bodyOpen,
+    settings.legLean,
+  )
   const leanXc = lean.rotationX + settings.swingBackTilt * Math.cos(bodyOpen)
   const leanZc = lean.rotationZ + settings.swingBackTilt * Math.sin(bodyOpen)
 
@@ -328,8 +347,11 @@ export function forwardKinematicsSweetSpotAtContact(geom, settings, batterParams
   const v3Y = v2Y
   const v3Z = -v2X * Math.sin(bodyOpen) + v2Z * Math.cos(bodyOpen)
 
-  // Shift back from hip pivot and add upperRef forward position:
-  const upperPosZ = (-settings.upperDriveForward * settings.pushSettleLevel) / heightScale
+  // Shift back from hip pivot and add upperRef forward position — the same
+  // travel ``contact`` above was measured against, or the two would not agree on
+  // where the bat is:
+  const upperPosZ = -(settings.hipDriveForward + settings.upperDriveForward)
+    * settings.pushSettleLevel / heightScale
   const pUpperWorld = {
     x: v3X,
     y: v3Y + HIP_Y,

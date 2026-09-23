@@ -19,6 +19,13 @@ solomon-gumball:baseball-sim-main/
 
 *.log
 
+# Playwright (visual-regression artifacts; committed baselines live in
+# frontend/e2e/__screenshots__)
+playwright-report/
+blob-report/
+test-results/
+frontend/.playwright/
+
 # Local dev artifacts
 scratch/
 .freebuff/

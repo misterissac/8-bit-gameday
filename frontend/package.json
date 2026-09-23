@@ -8,6 +8,9 @@
     "build": "vite build",
     "lint": "oxlint",
     "test": "node --test",
+    "test:visual": "playwright test",
+    "test:visual:update": "playwright test --update-snapshots",
+    "pose-sheet": "node scripts/pose-sheet.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
