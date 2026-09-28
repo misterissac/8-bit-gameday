@@ -28,7 +28,7 @@ import { chromium } from '@playwright/test'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const HARNESS = '/e2e/harness/batter.html'
 const PHASES = ['stance', 'midSwing', 'contact', 'followThrough', 'recovery']
-const VIEWS = ['three-quarter', 'front', 'side', 'back', 'top', 'low']
+const VIEWS = ['three-quarter', 'front', 'side', 'side-trail', 'back', 'top', 'low']
 
 const { values } = parseArgs({
   options: {

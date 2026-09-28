@@ -8,7 +8,7 @@ import * as THREE from 'three'
 import { Batter } from '../../src/components/Batter'
 import { ARM_BONES, PART_BONES, PLAYER_BONES } from '../../src/util/playerRig'
 import { setCycleDuration, setSimulationTime, setTimeScale } from '../../src/constants/playback'
-import { DEFAULT_TUNING, setTuningValue } from '../../src/constants/tuning'
+import { DEFAULT_TUNING, getTuning, setTuningValue } from '../../src/constants/tuning'
 import { CONTACT_WORLD, CYCLE_DURATION_S, PHASES, STANCE_PITCH } from './fixture'
 
 // ---------------------------------------------------------------------------
@@ -26,8 +26,9 @@ import { CONTACT_WORLD, CYCLE_DURATION_S, PHASES, STANCE_PITCH } from './fixture
 //   1. forces the tuning groups that affect this pose back to DEFAULT_TUNING
 //      (a developer's saved DebugDrawer tweaks on this origin would otherwise
 //      silently re-baseline the renders),
-//   2. zeroes the idle bob, which is driven by real elapsed time and is the only
-//      non-clock input to the pose,
+//   2. zeroes the idle bounce, which is driven by real elapsed time and is the only
+//      non-clock input to the pose (``?idle=1`` keeps it, for measuring it — with
+//      the idle clock itself pinnable and sweepable, see sweepIdle),
 //   3. pins the cycle duration, and
 //   4. freezes the simulation clock at the phase time every animation frame.
 //
@@ -70,13 +71,25 @@ const VIEWS = {
   'three-quarter': [1.15, 0.42, -1],
   front: [0, 0.25, -1],
   side: [1, 0.2, 0],
+  // The other ear: `side` frames the batter's lead side (where the helmet's one
+  // flap belongs), and this is the side that has to be clear of one.
+  'side-trail': [-1, 0.2, 0],
   back: [0, 0.3, 1],
   low: [0, 0.7, -1],
   top: [0, 3, -0.25],
 }
 const query = new URLSearchParams(window.location.search)
 const viewName = query.get('view') || 'three-quarter'
-const CAMERA_DIRECTION = new THREE.Vector3(...(VIEWS[viewName] ?? VIEWS['three-quarter'])).normalize()
+// ...and ?cam=x,y,z for a direction the named views do not cover — the batter's own
+// *chest* is one, because he is squared to the plate rather than to the pitcher, so
+// the seam down his jersey is read head-on from a direction none of the six above
+// looks along. Same contract as the rest: a debug knob the suite never passes.
+// Colons as well as commas: a query string is split on commas by every kit script that
+// passes one, so a direction has to be writable without them (?cam=1:0.15:-0.06).
+const camParam = (query.get('cam') || '').split(/[,:]/).map(Number)
+const CAMERA_DIRECTION = (camParam.length === 3 && camParam.every(Number.isFinite)
+  ? new THREE.Vector3(...camParam)
+  : new THREE.Vector3(...(VIEWS[viewName] ?? VIEWS['three-quarter']))).normalize()
 // ?zoom=0.5 halves the framing distance, for a close look at the pose. The
 // suite never passes it, so the baselines keep the default framing.
 const CAMERA_ZOOM = Number(query.get('zoom') || 1) || 1
@@ -91,6 +104,12 @@ const FOCUS_BONES = {
   hands: ['handL', 'handR', 'fingersL', 'fingersR', 'thumbL', 'thumbR'],
   // The hip crease: where the trunks meet the legs.
   hips: ['spine', 'spine001', 'pelvisL', 'pelvisR', 'thighL', 'thighR'],
+  // The head: the helmet, the face and what the brim covers. The model's own
+  // head is the last spine link.
+  head: ['neck', 'spine006'],
+  // The feet: the shoe, its laces and the sock it meets. The ankle, the toe and
+  // the heel are the bones the shoe's own weights name.
+  feet: ['footL', 'footR', 'toeL', 'toeR', 'heel02L', 'heel02R'],
 }
 const CAMERA_FOCUS = FOCUS_BONES[query.get('focus')] || null
 // ?fade=arms,head draws those parts translucent, which is how the torso's own
@@ -106,6 +125,10 @@ const FADE_REGIONS = {
   torso: ['spine', 'spine001', 'spine002'],
   arms: ['upper_armL', 'upper_armR', 'forearmL', 'forearmR'],
   hands: ['handL', 'handR', 'fingersL', 'fingersR', 'thumbL', 'thumbR'],
+  // Both at once, as one word: the arms alone still leave the fists in front of the
+  // chest, and a query string is split on commas by every kit script that passes it.
+  limbs: ['upper_armL', 'upper_armR', 'forearmL', 'forearmR',
+    'handL', 'handR', 'fingersL', 'fingersR', 'thumbL', 'thumbR'],
   legs: ['thighL', 'thighR', 'shinL', 'shinR', 'footL', 'footR', 'toeL', 'toeR'],
 }
 // Parts that are their own mesh rather than a region of the skinned body.
@@ -162,9 +185,24 @@ for (const group of TUNING_GROUPS_IN_PLAY) {
     setTuningValue(group, key, value, { persist: false })
   }
 }
-// Idle bob: sin(elapsedTime * swaySpeed) * swayBobAmount, the one real-time term
-// in the stance pose.
-setTuningValue('batter', 'swayBobAmount', 0, { persist: false })
+// Idle bounce: the one real-time term in the stance pose. Its amplitudes are
+// zeroed by default so every render here is a pure function of the pinned clock;
+// ``?idle=1`` keeps them, and the idle clock below can then be walked the same
+// way the simulation clock is (see sweepIdle).
+const idleQuery = new URLSearchParams(window.location.search)
+const idleParam = idleQuery.get('idle')
+const idleOn = idleParam === '1' || idleParam === 'true'
+const IDLE_KEYS = [
+  'swayKneeFlex',
+  'swaySwayAmount',
+  'swayKneeTravel',
+  'swayLeanAmount',
+  'swayBatWiggle',
+  'swayBatRoll',
+]
+for (const key of IDLE_KEYS) {
+  if (!idleOn) setTuningValue('batter', key, 0, { persist: false })
+}
 
 setCycleDuration(CYCLE_DURATION_S, { force: true })
 setTimeScale(FROZEN_TIME_SCALE)
@@ -189,6 +227,7 @@ const vr = {
   probeGrip: () => null,
   probeBatBody: () => null,
   probeCover: () => null,
+  probeKit: () => null,
   // Set once, when the camera was framed: the measurement the framing was based
   // on, kept for diagnosing a baseline shift.
   framing: null,
@@ -1383,6 +1422,588 @@ function probeBones(scene) {
   }
 }
 
+// The batter's kit, read off the live model: every separate shell of the helmet
+// and of the body, and the placket the look pass hangs on the chest with how far
+// it stands off the jersey. src/util/batterLook.js shapes all three, so the suite
+// reads the geometry here rather than the pass's own report of what it did: the
+// shells are measured in the model's rest frame (a shell's own bounds do not move
+// with the pose — the skinning is what moves), which is the frame the kit is
+// authored in.
+function probeKit(scene) {
+  const batter = scene.getObjectByName(BATTER_NAME)
+  if (!batter) return null
+  const helmet = batter.getObjectByName('Helmet')
+  const body = batter.getObjectByName('JOINED')
+  const laces = batter.getObjectByName('LaceDetail')
+  const brows = batter.getObjectByName('BrowDetail')
+  if (!body?.isSkinnedMesh) return null
+
+  // The jersey's opening and the shoes' own leather are *welded into* the body's own
+  // geometry (see weldDetail in src/util/batterLook.js): what they are in the model is a
+  // range of the body's vertices, so this is how they are read back — the range cut out
+  // as a geometry of its own, with the body's own attributes, material and skeleton, and
+  // the faces between its vertices. Every reading below (its shells, its tones, how far
+  // it stands off the cloth it is drawn on) then applies to it unchanged.
+  const welded = (range, name) => {
+    if (!range) return null
+    const [from, to] = range
+    const geometry = new THREE.BufferGeometry()
+    for (const [key, attribute] of Object.entries(body.geometry.attributes)) {
+      const { itemSize, normalized, array } = attribute
+      const out = new array.constructor((to - from) * itemSize)
+      out.set(array.subarray(from * itemSize, to * itemSize))
+      const next = new THREE.BufferAttribute(out, itemSize)
+      next.normalized = normalized
+      geometry.setAttribute(key, next)
+    }
+    const index = body.geometry.getIndex().array
+    const kept = []
+    for (let i = 0; i < index.length; i += 3) {
+      const corners = [index[i], index[i + 1], index[i + 2]]
+      if (corners.some((vertex) => vertex < from || vertex >= to)) continue
+      kept.push(corners[0] - from, corners[1] - from, corners[2] - from)
+    }
+    geometry.setIndex(new THREE.BufferAttribute(new Uint16Array(kept), 1))
+    return {
+      name,
+      isSkinnedMesh: true,
+      skeleton: body.skeleton,
+      material: body.material,
+      parent: body.parent,
+      geometry,
+    }
+  }
+  const look = body.userData?.batterLook ?? null
+  const jersey = welded(look?.jersey ? [look.jersey.from, look.jersey.to] : null, 'JerseyFront')
+  const shoes = welded(look?.shoes ? [look.shoes.from, look.shoes.to] : null, 'ShoeDetail')
+  // The model's own vertices: everything the welds did not add. A welded piece stands
+  // off *those* — against the whole body its own vertices are the nearest ones to
+  // themselves, and every piece would read as sitting exactly on the surface.
+  const bodyVertices = body.geometry.getAttribute('position').count
+  const ownVertices = Array.from(
+    { length: look?.jersey?.from ?? bodyVertices },
+    (_, vertex) => vertex,
+  )
+
+  // The pieces of a mesh: the model is one mesh per body part, so its separate
+  // closed surfaces (the helmet's flaps, the eyes, the nose) are separate islands
+  // in one index buffer. Union-find over the triangles is the whole of it.
+  const shells = (geometry) => {
+    const index = geometry.getIndex()
+    const count = geometry.getAttribute('position').count
+    if (!index) return []
+    const parent = new Int32Array(count)
+    for (let i = 0; i < count; i += 1) parent[i] = i
+    const find = (start) => {
+      let root = start
+      while (parent[root] !== root) root = parent[root]
+      let walk = start
+      while (parent[walk] !== root) {
+        const next = parent[walk]
+        parent[walk] = root
+        walk = next
+      }
+      return root
+    }
+    const array = index.array
+    for (let i = 0; i < array.length; i += 3) {
+      parent[find(array[i + 1])] = find(array[i])
+      parent[find(array[i + 2])] = find(array[i])
+    }
+    const byRoot = new Map()
+    for (let i = 0; i < count; i += 1) {
+      const root = find(i)
+      if (!byRoot.has(root)) byRoot.set(root, [])
+      byRoot.get(root).push(i)
+    }
+    return [...byRoot.values()]
+  }
+
+  const round = (value) => Number(value.toFixed(4))
+  const bounds = (geometry, vertices) => {
+    const position = geometry.getAttribute('position')
+    const box = { x: [Infinity, -Infinity], y: [Infinity, -Infinity], z: [Infinity, -Infinity] }
+    for (const vertex of vertices) {
+      box.x[0] = Math.min(box.x[0], position.getX(vertex))
+      box.x[1] = Math.max(box.x[1], position.getX(vertex))
+      box.y[0] = Math.min(box.y[0], position.getY(vertex))
+      box.y[1] = Math.max(box.y[1], position.getY(vertex))
+      box.z[0] = Math.min(box.z[0], position.getZ(vertex))
+      box.z[1] = Math.max(box.z[1], position.getZ(vertex))
+    }
+    return {
+      x: box.x.map(round), y: box.y.map(round), z: box.z.map(round),
+    }
+  }
+
+  const describe = (mesh) => {
+    if (!mesh?.geometry) return null
+    const geometry = mesh.geometry
+    const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
+    return {
+      name: mesh.name,
+      parent: mesh.parent?.name ?? null,
+      skinned: Boolean(mesh.isSkinnedMesh),
+      verts: geometry.getAttribute('position').count,
+      triangles: (geometry.getIndex()?.count ?? 0) / 3,
+      vertexColors: Boolean(material?.vertexColors),
+      color: material?.color ? [round(material.color.r), round(material.color.g), round(material.color.b)] : null,
+      // Only the pieces big enough to be one of the model's own surfaces: a
+      // shell of two or three vertices is an artefact of the export, not a part.
+      shells: shells(geometry)
+        .filter((vertices) => vertices.length >= 8)
+        .map((vertices) => ({ verts: vertices.length, box: bounds(geometry, vertices) })),
+    }
+  }
+
+  // The tones a piece of detail is drawn in, out of its own vertex colours: the
+  // jersey's opening is grey on a pale blue uniform, so this is where the grey is.
+  // The details hung on the body carry floats and the welded ones are a range of the
+  // body's own colour attribute, which is a normalised byte array — three's `getX`
+  // hands either back as the 0-1 the shader multiplies by, so both read the same way.
+  const tones = (mesh) => {
+    const attribute = mesh?.geometry?.getAttribute('color')
+    if (!attribute) return null
+    const luminance = []
+    for (let vertex = 0; vertex < attribute.count; vertex += 1) {
+      luminance.push(0.2126 * attribute.getX(vertex) + 0.7152 * attribute.getY(vertex) + 0.0722 * attribute.getZ(vertex))
+    }
+    return { min: round(Math.min(...luminance)), max: round(Math.max(...luminance)) }
+  }
+
+  // How far a piece of detail sits off the body it is hung on: for every vertex of
+  // it, the nearest vertex of the body, and how far that is and how far *out* along
+  // the model's own front (+z) the detail sits from it. A piece that hugs reads a
+  // little out (its own lift); one buried in the body reads negative.
+  const standOffOf = (mesh, against = null) => {
+    if (!mesh) return null
+    const positions = body.geometry.getAttribute('position')
+    const others = against ?? Array.from({ length: positions.count }, (_, vertex) => vertex)
+    const own = mesh.geometry.getAttribute('position')
+    const gaps = []
+    const outs = []
+    for (let vertex = 0; vertex < own.count; vertex += 1) {
+      const p = _vertex.fromBufferAttribute(own, vertex)
+      let nearest = -1
+      let squared = Infinity
+      for (const other of others) {
+        const dx = p.x - positions.getX(other)
+        const dy = p.y - positions.getY(other)
+        const dz = p.z - positions.getZ(other)
+        const candidate = dx * dx + dy * dy + dz * dz
+        if (candidate < squared) {
+          squared = candidate
+          nearest = other
+        }
+      }
+      if (nearest < 0) continue
+      gaps.push(Math.sqrt(squared))
+      outs.push(p.z - positions.getZ(nearest))
+    }
+    const span = (values) => [round(Math.min(...values)), round(Math.max(...values))]
+    return { gap: span(gaps), out: span(outs) }
+  }
+
+  // The cloth the jersey's opening is drawn on: the chest's own shells — the ones that
+  // reach down to the belt and stop at the jersey's collar, whose front is the chest's.
+  // The opening has to stand proud of *these* and hug them; measured against the whole
+  // body its own top band reads the neck instead, which stands proud of the collar
+  // (z 0.1003 against 0.0143) and so reads as the opening sinking into the chest.
+  const chestVertices = (() => {
+    const list = shells(body.geometry).filter((vertices) => vertices.length >= 40)
+      .map((vertices) => ({ vertices, box: bounds(body.geometry, vertices) }))
+      .filter(({ box }) => box.y[0] <= 1.292 && box.y[1] <= 1.56 && box.z[1] >= 0.06)
+    return list.flatMap(({ vertices }) => vertices)
+  })()
+
+  // The ear cover the helmet still draws, side by side: how far down the shell still
+  // hangs *beside an ear*, which a batting helmet has on one side only. The zone is the
+  // space beside an ear and no further back than the ear's own trailing edge (the head's
+  // ear runs y 1.7346 to 1.8165 at |x| 0.147 to 0.1725, z -0.019 to 0.053), below the
+  // brim's underside — so the number is "how low does the helmet come down beside this
+  // ear", and the nape behind it (z < -0.09) is not what is being asked about. The flap
+  // side reaches the jaw; the other side stops over the ear's own middle, so half of
+  // that ear shows below it.
+  const EAR_ZONE = { topY: 1.7954, sideX: 0.12, backZ: -0.09, frontZ: 0.06 }
+  // The ear's own z span, with a hair of slack either side of it: the window the shell's
+  // lower edge is read in when the question is "how much of *this ear* is covered".
+  const EAR_SPAN_Z = [-0.025, 0.055]
+  const earCover = (side) => {
+    const geometry = helmet?.geometry
+    if (!geometry) return null
+    const position = geometry.getAttribute('position')
+    const array = geometry.getIndex().array
+    const inside = (vertex) => position.getX(vertex) * side >= EAR_ZONE.sideX
+      && position.getY(vertex) <= EAR_ZONE.topY
+      && position.getZ(vertex) >= EAR_ZONE.backZ
+      && position.getZ(vertex) <= EAR_ZONE.frontZ
+    // Read off the triangles, not off the vertex buffer: a piece of the shell the pass
+    // has taken away leaves its vertices where they were, and a vertex nothing draws is
+    // not part of the helmet's edge.
+    const drawnOn = (side, zFrom = -Infinity, zTo = Infinity) => {
+      let low = Infinity
+      for (let i = 0; i < array.length; i += 3) {
+        for (const vertex of [array[i], array[i + 1], array[i + 2]]) {
+          if (position.getX(vertex) * side < EAR_ZONE.sideX) continue
+          if (position.getY(vertex) > EAR_ZONE.topY) continue
+          const z = position.getZ(vertex)
+          if (z < zFrom || z > zTo) continue
+          low = Math.min(low, position.getY(vertex))
+        }
+      }
+      return low
+    }
+    let triangles = 0
+    let lowY = Infinity
+    let frontZ = -Infinity
+    // And the lowest the shell comes down on that side *anywhere* below the brim, off
+    // the midline — the jaw guard's own reach, whatever z it hangs at.
+    let hungY = Infinity
+    for (let i = 0; i < array.length; i += 3) {
+      const [a, b, c] = [array[i], array[i + 1], array[i + 2]]
+      if ([a, b, c].some(inside)) {
+        triangles += 1
+        for (const vertex of [a, b, c]) {
+          if (!inside(vertex)) continue
+          lowY = Math.min(lowY, position.getY(vertex))
+          frontZ = Math.max(frontZ, position.getZ(vertex))
+        }
+      }
+      for (const vertex of [a, b, c]) {
+        if (position.getX(vertex) * side < EAR_ZONE.sideX) continue
+        if (position.getY(vertex) > EAR_ZONE.topY) continue
+        hungY = Math.min(hungY, position.getY(vertex))
+      }
+    }
+    // The edge, station by station along the head: behind the ear, over it, and out by
+    // the brim in front of it. This is what says the edge is the helmet's own sweep and
+    // not a cut: it is lowest over the ear's own middle, reaches the brim's underside in
+    // front of it, and falls away behind it into the nape, which is the helmet's back.
+    // A rim cut off level reads the same height in all three windows, and a rim cut with
+    // a step in it reads a jump between two of them.
+    const over = drawnOn(side, ...EAR_SPAN_Z)
+    const behind = drawnOn(side, -0.10, -0.04)
+    const beside = drawnOn(side, -0.03, 0.02)
+    const forward = drawnOn(side, 0.08, 0.12)
+    return {
+      triangles,
+      lowY: Number.isFinite(lowY) ? round(lowY) : null,
+      frontZ: Number.isFinite(frontZ) ? round(frontZ) : null,
+      belowBrim: Number.isFinite(lowY) ? round(EAR_ZONE.topY - lowY) : null,
+      hungY: Number.isFinite(hungY) ? round(hungY) : null,
+      // How low the shell comes down over the ear's own span: the head's ear runs
+      // 1.7346 to 1.8165, so a rim between the two covers part of it and leaves the rest.
+      earY: Number.isFinite(over) ? round(over) : null,
+      rim: {
+        behind: Number.isFinite(behind) ? round(behind) : null,
+        beside: Number.isFinite(beside) ? round(beside) : null,
+        forward: Number.isFinite(forward) ? round(forward) : null,
+      },
+    }
+  }
+
+  // How far a piece of detail stands off the *surface* it is drawn on, rather than off
+  // the nearest vertex of it: for every vertex of the piece, the front-most triangle of
+  // the body's own shells that covers the point looking down the model's own front, and
+  // the gap between the two. A line drawn on the cloth follows the cloth's surface, which
+  // runs between its vertices — measured against the nearest vertex, an opening drawn
+  // properly on the chest reads as sinking into it wherever the surface bulges forward of
+  // the vertices on either side of the point.
+  const SURFACE_FRONT_MIN_Z = 0.02
+  const surfaceOffOf = (mesh, against) => {
+    if (!mesh) return null
+    const position = body.geometry.getAttribute('position')
+    const array = body.geometry.getIndex().array
+    const covering = new Set(against)
+    const own = mesh.geometry.getAttribute('position')
+    const frontAt = (x, y) => {
+      let front = -Infinity
+      for (let i = 0; i < array.length; i += 3) {
+        const [a, b, c] = [array[i], array[i + 1], array[i + 2]]
+        if (!covering.has(a) || !covering.has(b) || !covering.has(c)) continue
+        const ax = position.getX(a)
+        const ay = position.getY(a)
+        const bx = position.getX(b)
+        const by = position.getY(b)
+        const cx = position.getX(c)
+        const cy = position.getY(c)
+        const det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+        if (Math.abs(det) < 1e-9) continue
+        const wa = ((by - cy) * (x - cx) + (cx - bx) * (y - cy)) / det
+        const wb = ((cy - ay) * (x - cx) + (ax - cx) * (y - cy)) / det
+        const wc = 1 - wa - wb
+        if (wa < -0.02 || wb < -0.02 || wc < -0.02) continue
+        const z = wa * position.getZ(a) + wb * position.getZ(b) + wc * position.getZ(c)
+        // ...and it has to be the cloth's own *front*: a shoulder's slope crosses these
+        // stations from inside, and the height it reads there is behind the cloth's.
+        if (z < SURFACE_FRONT_MIN_Z) continue
+        front = Math.max(front, z)
+      }
+      return front
+    }
+    const offsets = []
+    const rows = []
+    for (let vertex = 0; vertex < own.count; vertex += 1) {
+      const front = frontAt(own.getX(vertex), own.getY(vertex))
+      if (!Number.isFinite(front)) continue
+      offsets.push(own.getZ(vertex) - front)
+      rows.push(own.getY(vertex))
+    }
+    if (!offsets.length) return null
+    // ...and how much of the piece reads: how many of its vertices are in front of the
+    // cloth *at all*, and how far up and down the piece they run. A station the cloth's
+    // own front does not reach reads nothing, so a piece that stops short is the piece's
+    // own range, not a shorter one of the cloth's.
+    return {
+      count: offsets.length,
+      off: [round(Math.min(...offsets)), round(Math.max(...offsets))],
+      fromY: round(Math.min(...rows)),
+      toY: round(Math.max(...rows)),
+    }
+  }
+
+  // The eyes, and how much of each the head's own surface is in front of: a flat plate
+  // on a face that curves sinks into it at the edges, and what is inside the head is not
+  // drawn. The head's own shells are coarse — the face is 63 vertices for the whole
+  // thing — so the front it puts up at a point is the *interpolated* surface of the
+  // triangles that cover that point down the model's own front, not the highest vertex
+  // near it: between two of those vertices the drawn surface bulges forward of both,
+  // and that is exactly where a plate sinks in. Reported per eye: how many of its
+  // vertices the head covers, how deep the worst of them goes, and how proud the most
+  // marginal vertex is (negative when the head is in front of it).
+  const EYE_BOX = { vertMin: 20, vertMax: 90, frontMinZ: 0.05, bottomMinY: 1.6, topMaxY: 1.9 }
+  const eyeReading = () => {
+    const position = body.geometry.getAttribute('position')
+    const index = body.geometry.getIndex()
+    const array = index.array
+    const boxed = (vertices) => bounds(body.geometry, vertices)
+    const eyes = shells(body.geometry)
+      .filter((vertices) => vertices.length >= EYE_BOX.vertMin && vertices.length <= EYE_BOX.vertMax)
+      .map((vertices) => ({ vertices, box: boxed(vertices) }))
+      .filter(({ box }) => box.y[0] >= EYE_BOX.bottomMinY && box.y[1] <= EYE_BOX.topMaxY
+        && box.z[0] >= EYE_BOX.frontMinZ
+        && (box.x[0] > 0.004 || box.x[1] < -0.004))
+    const own = new Set(eyes.flatMap((eye) => eye.vertices))
+    const frontAt = (x, y) => {
+      let front = -Infinity
+      for (let i = 0; i < array.length; i += 3) {
+        const [a, b, c] = [array[i], array[i + 1], array[i + 2]]
+        if (own.has(a) || own.has(b) || own.has(c)) continue
+        const ax = position.getX(a)
+        const ay = position.getY(a)
+        const bx = position.getX(b)
+        const by = position.getY(b)
+        const cx = position.getX(c)
+        const cy = position.getY(c)
+        const det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+        if (Math.abs(det) < 1e-9) continue
+        const wa = ((by - cy) * (x - cx) + (cx - bx) * (y - cy)) / det
+        const wb = ((cy - ay) * (x - cx) + (ax - cx) * (y - cy)) / det
+        const wc = 1 - wa - wb
+        if (wa < 0 || wb < 0 || wc < 0) continue
+        front = Math.max(front, wa * position.getZ(a) + wb * position.getZ(b) + wc * position.getZ(c))
+      }
+      return front
+    }
+    return eyes.map((eye) => {
+      let buried = 0
+      let deepest = 0
+      let margin = Infinity
+      for (const vertex of eye.vertices) {
+        const x = position.getX(vertex)
+        const y = position.getY(vertex)
+        const front = frontAt(x, y)
+        if (!Number.isFinite(front)) continue
+        const proud = position.getZ(vertex) - front
+        margin = Math.min(margin, proud)
+        if (proud >= 0) continue
+        buried += 1
+        deepest = Math.max(deepest, -proud)
+      }
+      return {
+        verts: eye.vertices.length,
+        buried,
+        deepest: round(deepest),
+        margin: Number.isFinite(margin) ? round(margin) : null,
+        box: eye.box,
+      }
+    })
+  }
+
+  // The buttons: a hollow one is a ring, so the vertices of its own piece are all a
+  // little way out from its centre, with the cloth showing through the hole.
+  const holes = (mesh) => {
+    if (!mesh) return []
+    const position = mesh.geometry.getAttribute('position')
+    return shells(mesh.geometry)
+      .filter((vertices) => vertices.length >= 8)
+      .map((vertices) => {
+        const box = bounds(mesh.geometry, vertices)
+        const centre = {
+          x: (box.x[0] + box.x[1]) / 2,
+          y: (box.y[0] + box.y[1]) / 2,
+        }
+        const radii = vertices.map((vertex) => Math.hypot(
+          position.getX(vertex) - centre.x,
+          position.getY(vertex) - centre.y,
+        ))
+        return {
+          verts: vertices.length,
+          inner: round(Math.min(...radii)),
+          outer: round(Math.max(...radii)),
+          width: round(box.x[1] - box.x[0]),
+          height: round(box.y[1] - box.y[0]),
+        }
+      })
+  }
+
+  // The shoes, and what is worn above them. How high each shoe's own rim reaches is
+  // read off the body's shoe shells, one per foot; the pieces of the shoe detail are
+  // then told apart by shape: a lace bar lies across the instep (wide and low, and thin
+  // along the foot), the tongue is a pad running down the foot under them, and the
+  // edge of the sole is the wide piece down at the ground. Nothing may stand *above*
+  // the shoe's own rim: measured, the trousers already cover the leg down past it (the
+  // leg shell reaches y 0.2716 against the shoes' 0.2992), so a band there is a sock
+  // pulled out over the trouser — which is what the kit used to wear, and no longer
+  // does. `sockBands` is that check: pieces rising more than a hair over the rim.
+  const feetReading = () => {
+    if (!shoes) return null
+    const shoeShells = describe(body).shells.filter((shell) => shell.verts >= 60
+      && shell.box.y[1] < 0.36 && shell.box.y[0] < 0
+      && (shell.box.x[0] > 0.01 || shell.box.x[1] < -0.01))
+    if (!shoeShells.length) return null
+    const rim = Math.max(...shoeShells.map((shell) => shell.box.y[1]))
+    const piecesOf = (mesh) => shells(mesh.geometry)
+      .filter((vertices) => vertices.length >= 8)
+      .map((vertices) => ({
+        verts: vertices.length,
+        box: bounds(mesh.geometry, vertices),
+        own: new Set(vertices),
+      }))
+    // The shoe's own pieces — the edge of its sole and the tongue — are welded into the
+    // body's geometry; the laces across them are their own mesh.
+    const leather = piecesOf(shoes)
+    const lacePieces = laces ? piecesOf(laces) : []
+    const pieces = [...leather, ...lacePieces]
+    // A lace bar lies *across* the instep: wide in x, low on the shoe, and thin along
+    // the foot. The sole's edge is wide too, but it is under the bars.
+    const across = (piece) => piece.box.x[1] - piece.box.x[0] >= 0.08
+      && piece.box.y[0] >= 0.08 && piece.box.y[1] <= 0.2
+      && piece.box.y[1] - piece.box.y[0] <= 0.06
+    const bars = lacePieces.filter(across)
+    const above = pieces.filter((piece) => piece.box.y[1] > rim + 0.01)
+    // ...and how many of the bars' own faces look *up*. A bar is laid across the shoe's
+    // top surface, so a face of it the renderer draws from above is wound out of that
+    // surface; wound the other way it faces down into the shoe, which the renderer draws
+    // from behind and so never draws at all. Measured, that is what the laces were: all
+    // twelve bars on the model, every face of them pointing down, and not one of them on
+    // screen — so the count of them alone cannot tell a laced shoe from a bare one.
+    const shoeIndex = (laces ?? shoes).geometry.getIndex().array
+    const shoePosition = (laces ?? shoes).geometry.getAttribute('position')
+    let laceUpFaces = 0
+    for (let i = 0; i < shoeIndex.length; i += 3) {
+      const [a, b, c] = [shoeIndex[i], shoeIndex[i + 1], shoeIndex[i + 2]]
+      if (!bars.some((bar) => bar.own.has(a) && bar.own.has(b) && bar.own.has(c))) continue
+      const ux = shoePosition.getX(b) - shoePosition.getX(a)
+      const uy = shoePosition.getY(b) - shoePosition.getY(a)
+      const uz = shoePosition.getZ(b) - shoePosition.getZ(a)
+      const vx = shoePosition.getX(c) - shoePosition.getX(a)
+      const vy = shoePosition.getY(c) - shoePosition.getY(a)
+      const vz = shoePosition.getZ(c) - shoePosition.getZ(a)
+      const length = Math.hypot(ux, uy, uz) * Math.hypot(vx, vy, vz)
+      if (length > 0 && (uz * vx - ux * vz) / length > 0.5) laceUpFaces += 1
+    }
+    return {
+      rim: round(rim),
+      shellTops: shoeShells.map((shell) => round(shell.box.y[1])),
+      laceBars: bars.length,
+      laceUpFaces,
+      sockBands: above.length,
+      sockTop: above.length ? round(Math.max(...above.map((piece) => piece.box.y[1]))) : round(rim),
+      // The tongue is the pad down the instep: wide, well off the ground, and far deeper
+      // than a bar (measured, 0.07 of the shoe's height against a bar's 0.005).
+      tongues: leather.filter((piece) => piece.box.x[1] - piece.box.x[0] >= 0.08
+        && piece.box.y[1] - piece.box.y[0] >= 0.05 && piece.box.y[0] >= 0.06).length,
+      pieces: pieces.length,
+    }
+  }
+
+  // The brows, one per eye: a bar over the top of each eye plate, its own bounds read in
+  // the model's rest frame, the piece it is read as, and its tone — the face's own tone
+  // taken down, so it is darker than the skin it is drawn on and lighter than the eye
+  // under it (the eyes are painted black). How far in front of the face a brow stands is
+  // measured like the jersey's detail: the nearest vertex of the body it is hung on.
+  const browsReading = () => {
+    if (!brows) return null
+    const list = shells(brows.geometry)
+      .filter((vertices) => vertices.length >= 8)
+      .map((vertices) => ({ verts: vertices.length, box: bounds(brows.geometry, vertices) }))
+    return {
+      count: list.length,
+      pieces: list,
+      standOff: standOffOf(brows),
+      tones: tones(brows),
+    }
+  }
+
+  return {
+    helmet: helmet ? { ...describe(helmet), earCover: { lead: earCover(1), trail: earCover(-1) } } : null,
+    body: describe(body),
+    eyes: eyeReading(),
+    brows: browsReading(),
+    feet: feetReading(),
+    jersey: jersey
+      ? {
+        ...describe(jersey),
+        boundToBody: Boolean(jersey.isSkinnedMesh && jersey.skeleton && jersey.skeleton === body.skeleton),
+        standOff: standOffOf(jersey, chestVertices),
+        surfaceOff: surfaceOffOf(jersey, chestVertices),
+        // The opening's own line, station by station: the piece that is the line (the one
+        // with the most vertices), each station's height and how far forward it sits. A
+        // station the cloth does not reach, and that falls back to a default rather than
+        // holding the height of the one below it, leaves a step in this — measured, the
+        // opening's top three stations sat 0.031 rig *behind* the cloth's own front and
+        // came back 0.047 forward again at the collar, which is the opening diving inside
+        // the body under it.
+        line: (() => {
+          const own = jersey.geometry.getAttribute('position')
+          const widest = shells(jersey.geometry).sort((a, b) => b.length - a.length)[0] ?? []
+          const stations = new Map()
+          for (const vertex of widest) {
+            const key = own.getY(vertex).toFixed(4)
+            stations.set(key, Math.max(stations.get(key) ?? -Infinity, own.getZ(vertex)))
+          }
+          return [...stations.entries()]
+            .map(([y, z]) => [Number(y), round(z)])
+            .sort((a, b) => a[0] - b[0])
+        })(),
+        tones: tones(jersey),
+        pieces: holes(jersey),
+      }
+      : null,
+    shoes: shoes
+      ? {
+        ...describe(shoes),
+        boundToBody: Boolean(shoes.isSkinnedMesh && shoes.skeleton && shoes.skeleton === body.skeleton),
+        standOff: standOffOf(shoes, ownVertices),
+        tones: tones(shoes),
+        pieces: holes(shoes),
+      }
+      : null,
+    // The laces on their own: the kit's cloth rather than the shoe's leather, so they
+    // are the one piece of the shoe that is still a mesh of its own (see addShoeDetail).
+    laces: laces
+      ? {
+        ...describe(laces),
+        boundToBody: Boolean(laces.isSkinnedMesh && laces.skeleton && laces.skeleton === body.skeleton),
+        standOff: standOffOf(laces),
+        tones: tones(laces),
+        pieces: holes(laces),
+      }
+      : null,
+  }
+}
+
 // Which way each bone of the pose is *pointing*: the world direction of a bone's
 // own three local axes, for the joints whose orientation is the pose rather than
 // its position — the hands (whether a wrist has rolled over) and the upper arms
@@ -1466,10 +2087,25 @@ function probeBodyBox(scene, only = null) {
 // a sweep can move it without re-rendering the stage.
 const pinnedTime = { at: phaseTime }
 
-// Hold the frozen clock on that time: re-pinned every frame so the pose can never
-// creep away from it as frames accumulate.
+// The idle's own clock: real elapsed time in the app (see the idle in
+// Batter.jsx), and "leave it running" here. A sweep can pin and walk it, which is
+// what makes the bounce measurable at all: it is otherwise wall-clock, so two
+// reads of the same pose never agree.
+// ``?idleTime=`` pins it on the way in, for reading or rendering one chosen phase
+// of the bounce without a sweep.
+const idleTimeRaw = idleQuery.get('idleTime')
+const idleTimeParam = idleTimeRaw == null ? Number.NaN : Number(idleTimeRaw)
+const idleTime = { at: Number.isFinite(idleTimeParam) ? idleTimeParam : null }
+
+// Hold the frozen clocks on those times: re-pinned every frame so the pose can
+// never creep away from them as frames accumulate. Mounted BEFORE the batter (see
+// Stage) so the pin lands in the same frame as the read: three's clock has
+// already accumulated this frame's delta by the time the subscribers run.
 function TimePin() {
-  useFrame(() => setSimulationTime(pinnedTime.at))
+  useFrame((state) => {
+    setSimulationTime(pinnedTime.at)
+    if (idleTime.at !== null) state.clock.elapsedTime = idleTime.at
+  })
   return null
 }
 
@@ -1522,6 +2158,45 @@ async function sweep(from, to, step, names) {
   pinnedTime.at = phaseTime
   await settleFrames(SWEEP_SETTLE_FRAMES)
   return rows
+}
+
+/**
+ * The same walk, over the idle's own clock rather than the simulation's: the
+ * bounce is a function of real elapsed time, so a pose can only be compared
+ * between builds if the clock that drives it is pinned. Leaves the idle clock
+ * free again (``at = null``) so a baseline render is not held on one phase of
+ * the bounce.
+ *
+ * @param {number} from first sample's idle clock time (s)
+ * @param {number} to last sample's idle clock time (s), inclusive
+ * @param {number} step the gap between samples (s)
+ * @param {string[]} names probe functions on ``vr`` to call at each sample
+ * @returns {Promise<Array<{time: number, [probe: string]: any}>>}
+ */
+async function sweepIdle(from, to, step, names) {
+  const count = Math.max(1, Math.round((to - from) / step))
+  const rows = []
+  for (let i = 0; i <= count; i += 1) {
+    const time = from + (i * (to - from)) / count
+    idleTime.at = time
+    await settleFrames(SWEEP_SETTLE_FRAMES)
+    const row = { time: Number(time.toFixed(4)) }
+    for (const name of names) row[name] = typeof vr[name] === 'function' ? vr[name]() : null
+    rows.push(row)
+  }
+  idleTime.at = null
+  await settleFrames(SWEEP_SETTLE_FRAMES)
+  return rows
+}
+
+/**
+ * The idle's own clock, as it stands: a probe reading the bounce at one phase of
+ * it can pin ``?idleTime=`` and read this back rather than re-deriving the phase.
+ *
+ * @returns {number|null} the pinned idle clock time (s), or null while it runs free
+ */
+function getIdleTime() {
+  return idleTime.at
 }
 
 // A material that punches the faded part out of whatever draws it, or — on the
@@ -1762,6 +2437,10 @@ function Stage() {
       camera.lookAt(center)
       camera.updateProjectionMatrix()
       vr.framing = { center: center.toArray(), size: size.toArray(), distance }
+      // ...and the camera itself, so a probe can project a point of the body to a
+      // pixel exactly rather than rebuilding the framing and hoping it matches.
+      vr.camera = camera
+      vr.fov = camera.fov
       setStage(2)
       return
     }
@@ -1784,7 +2463,13 @@ function Stage() {
     vr.probeCover = (view) => probeCover(scene, view)
     vr.probeGrip = () => probeGrip(scene)
     vr.probeSleeve = () => probeSleeve(scene)
+    vr.probeKit = () => probeKit(scene)
     vr.sweep = (from, to, step, names) => sweep(from, to, step, names)
+    vr.sweepIdle = (from, to, step, names) => sweepIdle(from, to, step, names)
+    vr.getIdleTime = () => getIdleTime()
+    // The tuning this page is actually running with, for a probe that needs to know
+    // what it asked for (the group that affects this pose, at least).
+    vr.getIdleTuning = () => ({ ...getTuning().batter })
   }, [scene])
 
   // One <Batter> instance for the whole run, with only its pitchData prop
@@ -1794,8 +2479,11 @@ function Stage() {
 
   return (
     <Suspense fallback={null}>
-      <Batter pitchData={pitchData} replayKey={0} />
+      {/* The pin is mounted first so its frame callback runs *before* the batter's:
+          three's clock has already added this frame's delta by then, so pinning
+          after the batter would hold a pose one frame stale instead. */}
       {stage === 2 && <TimePin />}
+      <Batter pitchData={pitchData} replayKey={0} />
     </Suspense>
   )
 }

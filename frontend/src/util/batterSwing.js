@@ -21,7 +21,16 @@ export const SWING_PEAK_AUTO_MAX = 0.88
 // Swing geometry and contact constants
 export const SWEET_SPOT_FRACTION = 0.78
 export const BAT_LENGTH_MIN = 0.85
-export const BAT_LENGTH_MAX = 1.18
+// The longest the bat may grow before the sweet spot stops reaching the ball.
+// It is what sets the batter's *place* in the box: the bat has to make up
+// whatever distance the body's own travel leaves (see STANCE_SETBACK_M in
+// Batter.jsx), and the drive's ride is itself bounded by how far the planted rear
+// leg can reach its footprint (see the rear-foot block there) — so a rework of
+// the drive that shortens the ride feeds straight into how long the bat is
+// allowed to become. A re-fit that wants a shorter bat has to buy it back from
+// the two things on the other side of the ledger: the stance's depth and how far
+// the hands reach (settings.handExtension).
+export const BAT_LENGTH_MAX = 2.6
 export const HIP_Y = 1.04
 export const BODY_FRONT_Z = -0.28
 export const HEAD_YAW_MAX = 0.8
@@ -110,6 +119,15 @@ export function resolveSwingPeak(swingPeakSetting, pitchSpeedMph) {
  *   lean from there (see STANCE_SETBACK_M in Batter.jsx). Defaults to the contact
  *   geometry's own position, which is where the animation measures it from when
  *   nothing is set back.
+ * @param {number|null} [params.driveRide=null] how far forward toward the pitcher
+ *   the whole body has actually travelled at the contact, in the height-scaled
+ *   frame (rig units). The animation bounds the pelvis' ride by the planted rear
+ *   leg's own span (see the drive's rear-foot block in Batter.jsx), so the travel
+ *   the ball is met against is the bounded one and not the tuning's own
+ *   ``hipDriveForward + upperDriveForward``; the geometry has to be handed the
+ *   travel the pose actually makes or the sweet spot would be drawn for a body
+ *   that is somewhere else. Defaults to the tuning's full travel, which is what
+ *   every caller that does not bound the drive sees.
  * @returns {object|null} Swing geometry
  */
 export function calculateSwingGeometry({
@@ -123,6 +141,7 @@ export function calculateSwingGeometry({
   settings,
   catcherZ = FIELD.DEFENSE.C.z,
   leanAt = null,
+  driveRide = null,
 }) {
   const traj = pitchData?.trajectory
   if (!traj || traj.length === 0) return null
@@ -130,6 +149,16 @@ export function calculateSwingGeometry({
 
   const loadedY = sign * settings.loadedBaseAngle
   const throughY = sign * settings.throughBaseAngle
+
+  // How far the body has ridden forward toward the pitcher by the contact, in
+  // the height-scaled frame: the hips' own lunge (settings.hipDriveForward) and
+  // the torso's push on top of it (settings.upperDriveForward), both eased back
+  // to settings.pushSettleLevel at contact — unless the animation bounded the
+  // ride by the planted rear leg's span, in which case that bounded travel is
+  // what the pose makes and what the ball has to be measured against.
+  const rideAtContact = driveRide == null
+    ? (settings.hipDriveForward + settings.upperDriveForward) * settings.pushSettleLevel / heightScale
+    : driveRide
 
   // Contact point in the height-scaled frame. The batter group sits at
   // (batX, 0, stanceZ) in world space and the plate front is at world
@@ -144,8 +173,7 @@ export function calculateSwingGeometry({
     // the body. The bat hangs in the body's own frame (upperRef, which carries
     // exactly this travel), so both halves of the drive move the ball closer in
     // that frame, not one of them.
-    z: (-PLATE_FRONT_Y - stanceZ) / heightScale
-      + (settings.hipDriveForward + settings.upperDriveForward) * settings.pushSettleLevel / heightScale,
+    z: (-PLATE_FRONT_Y - stanceZ) / heightScale + rideAtContact,
   }
 
   // Head yaw to look at the ball at the plate. The head's face is its local
@@ -269,6 +297,10 @@ export function calculateSwingGeometry({
     contact,
     leanXc,
     leanZc,
+    // The travel the contact point was measured against, so the forward-kinematics
+    // helper below — and every caller that reads the pose back — puts the bat in
+    // the same place the geometry just did.
+    driveRide: rideAtContact,
   }
 }
 
@@ -311,7 +343,7 @@ export function computeBatTiltAtProgress(e, tilt, planeTilt) {
  */
 export function forwardKinematicsSweetSpotAtContact(geom, settings, batterParams) {
   const { batX, stanceZ, heightScale = 1, bodyOpen = 0.6 } = batterParams
-  const { contactHands, contactY, tilt, sweetSpotDist, leanXc, leanZc } = geom
+  const { contactHands, contactY, tilt, sweetSpotDist, leanXc, leanZc, driveRide } = geom
 
   // 1. Vector from hands to sweet spot in batGroup local frame:
   // Barrel points along local -Z and rotates around X by tilt.
@@ -349,9 +381,11 @@ export function forwardKinematicsSweetSpotAtContact(geom, settings, batterParams
 
   // Shift back from hip pivot and add upperRef forward position — the same
   // travel ``contact`` above was measured against, or the two would not agree on
-  // where the bat is:
-  const upperPosZ = -(settings.hipDriveForward + settings.upperDriveForward)
-    * settings.pushSettleLevel / heightScale
+  // where the bat is. That travel is the geometry's own ``driveRide``, so a swing
+  // whose ride the animation has bounded reads back on the ball too:
+  const upperPosZ = -(driveRide ??
+    (settings.hipDriveForward + settings.upperDriveForward)
+      * settings.pushSettleLevel / heightScale)
   const pUpperWorld = {
     x: v3X,
     y: v3Y + HIP_Y,
@@ -364,4 +398,94 @@ export function forwardKinematicsSweetSpotAtContact(geom, settings, batterParams
     y: pUpperWorld.y * heightScale,
     z: stanceZ + pUpperWorld.z * heightScale,
   }
+}
+
+// ---------------------------------------------------------------------------
+// The set stance's idle.
+//
+// A batter waiting on a pitch is never still: he rocks his weight from foot to
+// foot, his knees give and take, and the bat waggles in his hands. What he does
+// *not* do is rise and fall as a block — his feet stay nailed to the ground and
+// the body's height is the knees' business. That distinction is the whole of
+// this shape, and it is the one the old bob got wrong: it moved the hips up and
+// down around the stance, and above the stance there is nothing left to give
+// (the rig's legs are at full stretch there), so the ankles rose with the hips
+// and the shoes came off the ground — measured, 3.9 cm of it, heel first.
+//
+// So the wave is one-sided: it goes *down* from the stance and comes back, and
+// the stance itself is its own top. "Way down" is a knee flex (see idleCrouch),
+// which the hips then follow.
+// How far the bat's own waggle lags the body's rock, in radians of the idle clock.
+// A bat held in loose hands trails the hands that are carrying it, which is what
+// keeps the waggle reading as the bat's own motion rather than a second bob.
+export const IDLE_WAGGLE_PHASE = 1.3
+
+/**
+ * The idle's own clock, as two shapes on one period: the crouch (0 at the stance,
+ * 1 at the deepest point) and the bat's waggle (-1..1, the same rate, lagging).
+ *
+ * The crouch's own shape is (1 - cos) / 2 rather than |sin|: it leaves and
+ * returns to the stance smoothly, with no corner at the top of the wave, which
+ * is where a bob that "bounces" off a rectified sine reads as a bounce off a
+ * wall.
+ *
+ * The *rock* is this same shape, not a second one: read off the reference idle
+ * clip (solomon-gumball's BattingIdle, two identical cycles in 2.46 s), the
+ * pelvis's lateral travel and its vertical travel move together — 3.05 cm across
+ * as it drops 4.37 cm, reaching both extremes on the same frame — so the weight
+ * shift *is* the crouch rather than something happening alongside it. A batter
+ * rocks onto a foot as his knees give, and comes back up over the other as they
+ * straighten; there is no frame of that clip where he is crouched and centred.
+ *
+ * @param {number} phase radians on the idle clock (elapsed * swaySpeed)
+ * @returns {{crouch: number, waggle: number}}
+ */
+export function idleStance(phase) {
+  return {
+    crouch: (1 - Math.cos(phase)) / 2,
+    waggle: Math.sin(phase + IDLE_WAGGLE_PHASE),
+  }
+}
+
+/**
+ * How far the hips drop when the knees flex, for a leg that cannot stretch.
+ *
+ * A leg is two rigid links and a planted foot, so the hip sits at whatever
+ * distance the knee's own angle puts it from the ankle: d = sqrt(t^2 + s^2 -
+ * 2ts cos(theta)) for a thigh t, a shin s and an interior knee angle theta, and
+ * the hip's *height* above the ankle is that distance with the ankle's own
+ * horizontal offset taken out, sqrt(d^2 - horizontal^2). The stance's own
+ * distance fixes theta at rest, so a request to flex the knee by ``flex`` is a
+ * request to drop the hips by exactly this much — and asking for the drop any
+ * other way is what lets the driver pull a foot off the ground. Flexing is
+ * *smaller* theta: a straight leg is the interior angle's own maximum, 180
+ * degrees, and there is nothing above it to ask for (which is why the idle's
+ * wave has to be the side of the stance that flexes).
+ *
+ * The caller takes the *smallest* drop its two legs imply: the legs share one
+ * pelvis, so the one that can give less is the one the drop has to respect, and
+ * no leg is ever left asking for more length than it has.
+ *
+ * @param {object} leg the leg's own measurements, in rig units
+ * @param {number} leg.flex radians of extra knee flexion at the deepest point
+ * @param {number} leg.thigh thigh length
+ * @param {number} leg.shin shin length
+ * @param {number} leg.rise hip joint's height above the planted ankle at the stance
+ * @param {number} leg.horizontal hip-to-ankle horizontal offset at the stance
+ * @returns {number} how far the hips must drop, in rig units (>= 0)
+ */
+export function idleCrouch({ flex, thigh, shin, rise, horizontal }) {
+  if (!(flex > 0) || !(thigh > 0) || !(shin > 0) || !(rise > 0)) return 0
+  const rest = Math.hypot(horizontal, rise)
+  // The stance's own knee angle. A stance that already sits at the bones' own
+  // span has no angle to speak of (the leg is straight), and a request to flex
+  // from there is measured from straight: the acos is clamped, so the arithmetic
+  // below cannot ask for a leg longer than the bones.
+  const cosRest = clamp((thigh * thigh + shin * shin - rest * rest) / (2 * thigh * shin), -1, 1)
+  const restAngle = Math.acos(cosRest)
+  const angle = Math.max(0, restAngle - flex)
+  const reach = Math.sqrt(Math.max(0, thigh * thigh + shin * shin - 2 * thigh * shin * Math.cos(angle)))
+  if (!(reach < rest)) return 0
+  const riseNow = Math.sqrt(Math.max(0, reach * reach - horizontal * horizontal))
+  return Math.max(0, rise - riseNow)
 }

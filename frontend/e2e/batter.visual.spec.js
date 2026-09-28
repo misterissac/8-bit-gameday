@@ -8,8 +8,10 @@ import {
   RECOVERY_WINDOW,
   SWING_START_S,
   WAY_HOME_WINDOW,
+  WINDUP_WINDOW,
 } from './harness/fixture.js'
 import { SWEET_SPOT_FRACTION } from '../src/util/batterSwing.js'
+import { DEFAULT_TUNING } from '../src/constants/tuning.js'
 import { WRIST_BEND_MAX, WRIST_TWIST_MAX } from '../src/util/playerRig.js'
 import { PLATE_FRONT_Y } from '../src/util/MathUtil.js'
 
@@ -39,6 +41,7 @@ const BOX_INNER_LINE_M = PLATE_HALF_WIDTH_M + SIX_INCHES_M
 
 const SHOTS = [
   { phase: 'stance', file: 'batter-stance.png' },
+  { phase: 'take', file: 'batter-take.png' },
   { phase: 'midSwing', file: 'batter-mid-swing.png' },
   { phase: 'contact', file: 'batter-contact.png' },
   { phase: 'followThrough', file: 'batter-follow-through.png' },
@@ -451,22 +454,37 @@ test.describe('the body holds the bat', () => {
     // on the thigh bones and drag the belt down the stomach when the batter bent
     // over the plate.)
     // And the two halves have to stay *joined*. Leaning together is not enough:
-    // the pelvis may hand the torso the swing's turn, but it may not let it
-    // slide — a translation between the two blocks is exactly what the belt band
-    // has to close by stretching, and the drive written on the torso alone pulled
-    // it 0.465 rig units apart at mid-swing (582% of the band's own height), so
-    // the torso read as having slipped off the hips. The pelvis's joint and the
-    // torso's base are rigidly offset from one another, and that distance is
-    // measured at the set stance — where the swing asks for no drive at all — and
-    // has to hold in every phase.
+    // a translation between the two blocks has to be answered somewhere, and the
+    // drive written on the torso alone pulled it 0.465 rig units apart at
+    // mid-swing (582% of the band's own height), so the torso read as having
+    // slipped off the hips. Where it is answered is the belt: the surface is cut
+    // open along its own top edge and a band of the same surface is hidden under
+    // it, so a hem that stands over the belt rather than with the hips *slides*
+    // along it instead of tearing anything — the belt's own test measures that
+    // seam against the sleeve's coverage, and this one may not ask for more than
+    // it. The drive's sink is exactly that: the pelvis drops onto the lead leg
+    // while the chest, the arms and the bat keep the frame the contact geometry
+    // authors (see REACH_SLACK in Batter.jsx), which parts the two edges by the
+    // sink — 0.081 rig at the contact, 0.131 at the follow-through — against a
+    // sleeve cut to 0.14. What this still refuses is a slide the belt cannot
+    // cover, or one the pose did not ask for. The pelvis's joint and the torso's
+    // base are offset from one another, and that distance is measured at the set
+    // stance — where the swing asks for no drive at all — and holds within the
+    // sleeve's own coverage in every phase.
     let joinedAtStance = null
+    let sleeveCoverage = null
     for (const { phase } of SHOTS) {
       await openPhase(page, phase)
       const rig = await readRig(page)
       const { separation } = rig.solve.torso
       const authored = degrees(rig.solve.pose.torsoYawExtra)
       const joined = norm(sub(rig.bone('spine001'), rig.bone('spine')))
-      if (phase === 'stance') joinedAtStance = joined
+      if (phase === 'stance') {
+        joinedAtStance = joined
+        // The belt's own sleeve, as the belt's own test reads it: how far past the
+        // cut the hidden band runs, which is how far the hem may slide over it.
+        sleeveCoverage = rig.solve.sleeve.margin
+      }
       console.log(
         `${phase}: pelvis/chest separation ${degrees(separation.angle).toFixed(1)}° ` +
         `(tuning asks for ${authored.toFixed(1)}°) · shears the body's up axis ` +
@@ -482,8 +500,8 @@ test.describe('the body holds the bat', () => {
       ).toBeLessThan(2)
       expect(
         joined,
-        `${phase}: the torso should ride on the pelvis, not slide off it`,
-      ).toBeLessThan(joinedAtStance + 0.02)
+        `${phase}: the torso should not slide further off the pelvis than the belt covers`,
+      ).toBeLessThan(joinedAtStance + sleeveCoverage)
     }
   })
 
@@ -611,15 +629,25 @@ test.describe('the body holds the bat', () => {
     // which is what read as the jersey being wrung over the hips. So the surface is
     // cut open along the belt's top edge instead: the belt belongs to the pelvis,
     // the jersey above it to the torso, and a duplicate of the surface either side
-    // of the cut — smaller, and weighted rigidly to the pelvis — is hidden under
-    // it, so the hem slides over the belt rather than dragging it.
+    // of the cut is hidden under it, so the hem slides over the belt rather than
+    // dragging it.
     //
     // Three things this pins. Nothing spans the cut. The sleeve runs far enough
-    // past it to cover the seam. And it is *small enough*: the waist's section is
-    // much wider than it is deep, so the swing rotates that section past the belt
-    // and carries its widest angles inward — a sleeve inset by only a few per cent
-    // is poked through by the hem it is meant to hide under, which is exactly how
-    // this was got wrong first (at 8%, and visible in the render at mid-swing).
+    // past it to cover the seam. And either side of the seam stands a hair off the
+    // other, so the two do not sit in the same place (see the driver's SEAM_LIP).
+    //
+    // The sleeve is a copy *carrying the skin of the vertex it copies*, which is
+    // what decides where it may be placed: a copy placed by the same matrices as
+    // the surface is the surface contracted toward the body's axis, so it is inside
+    // it whatever the pose does, and it may sit the few millimetres inside the
+    // uniform that keep it off the surface — and outside the naked body the uniform
+    // is worn over. It used to be weighted rigidly to the pelvis and sized against
+    // the swing instead ("a quarter of the radius, or the hem is poked through"),
+    // and that is what made the belt ragged on a body that turns hard at the waist:
+    // a quarter of the radius is deeper than the body, so the tear in the uniform
+    // showed bare skin where the sleeve was meant to be. What that rule asked is
+    // gone with the placement it described; the sleeve's *appearance* is pinned by
+    // the belt crops below, and the pitcher's own suite measures the tear itself.
     for (const { phase } of SHOTS) {
       await openPhase(page, phase)
       const rig = await readRig(page)
@@ -634,44 +662,14 @@ test.describe('the body holds the bat', () => {
         `${phase}: the belt should be a cut, not a band of skin between two parts`,
       ).toBeUndefined()
 
-      // How much smaller than the body the sleeve has to be: turning the section
-      // by the swing's own spin carries the jersey's surface at each direction to
-      // where the section was a spin ago, and that has to stay outside the sleeve.
-      const [axisX, axisZ] = sleeve.axis
-      const ring = sleeve.ring
-        .map(([x, , z]) => ({ angle: Math.atan2(z - axisZ, x - axisX), radius: Math.hypot(x - axisX, z - axisZ) }))
-        .sort((a, b) => a.angle - b.angle)
-      const radiusAt = (angle) => {
-        // The rest ring's radius at an angle, between the two samples that straddle
-        // it (the ring is sampled once per direction).
-        for (let i = 1; i < ring.length; i += 1) {
-          if (ring[i].angle < angle) continue
-          const before = ring[i - 1]
-          const after = ring[i]
-          const along = (angle - before.angle) / (after.angle - before.angle)
-          return before.radius + (after.radius - before.radius) * along
-        }
-        return ring[ring.length - 1].radius
-      }
-      const spin = Math.abs(rig.solve.torso.separation.angle)
-      let need = 0
-      for (const direction of [1, -1]) {
-        for (const sample of ring) {
-          const turned = sample.angle + direction * spin
-          const wrapped = Math.atan2(Math.sin(turned), Math.cos(turned))
-          need = Math.max(need, 1 - radiusAt(wrapped) / sample.radius)
-        }
-      }
-      console.log(
-        `${phase}: spin ${degrees(spin).toFixed(1)}° · seam opens ${held.open.toFixed(4)} rig vertically ` +
-          `(margin ${sleeve.margin}) · the sleeve has to be ${(need * 100).toFixed(1)}% smaller, is ` +
-          `${(sleeve.inset * 100).toFixed(0)}%`,
-      )
-      expect(need, `${phase}: the sleeve should stay inside the jersey the swing turns over it`).toBeLessThan(
-        sleeve.inset,
-      )
       expect(held.open, `${phase}: the sleeve should run far enough past the cut to cover the seam`).toBeLessThan(
         sleeve.margin,
+      )
+      console.log(
+        `${phase}: spin ${degrees(Math.abs(rig.solve.torso.separation.angle)).toFixed(1)}° · the seam opens ` +
+          `${held.open.toFixed(4)} rig vertically (margin ${sleeve.margin}) · the hem stands ` +
+          `${(sleeve.lip * 100).toFixed(1)}% of the radius off the belt · the sleeve is inset ` +
+          `${(sleeve.inset * 100).toFixed(0)}%`,
       )
     }
   })
@@ -679,26 +677,50 @@ test.describe('the body holds the bat', () => {
   test('the feet stay on the ground through the drive', async ({ page }) => {
     // Both ends: a foot must not sink through the ground, and it must not be left
     // floating either. The tuning drives the hips further forward than the leg
-    // can reach, so the drive foot's *heel* does come up — the shoe pivots on its
-    // toe, 0.16 rig units at its worst — but the *drive* is what moves the
-    // pelvis, and the feet are carried with it (they ride forward with the pelvis
-    // rather than being left behind under it). Without that, the drive's own 0.33
-    // rig units of travel would be taken by the skeleton lifting the feet out of
-    // the ground instead, which is the floating foot these bounds catch.
+    // can reach, and the *drive* is what moves the pelvis, so the feet are carried
+    // with it (they ride forward with the pelvis rather than being left behind
+    // under it). Without that, the drive's own 0.33 rig units of travel would be
+    // taken by the skeleton lifting the feet out of the ground instead, which is
+    // the floating foot these bounds catch.
     //
-    // The other half of that is the *roll*: a rigid skeleton cannot stretch, so
-    // what the drive asks for past the leg's length is taken by the ankle turning
-    // about the toe, which keeps the toe where it was while the heel lifts.
-    // Lifting the ankle straight up — what the driver did before — carried the
-    // whole shoe, toe and all, so the drive foot simply left the ground through
-    // the swing: its toe read 0.051-0.054 rig at mid-swing and contact instead of
-    // the 0.021 it stands at. Both shoes off the ground is a levitating batter,
-    // so the lowest toe is required to stay down in every phase.
+    // What the drive asks for past the leg's length has to come out of the feet,
+    // and the two feet give differently. The *back* foot is the pivot the swing
+    // turns on: it rolls onto its toe, which keeps the toe where it was planted
+    // while the heel lifts. The *lead* foot may not — the whole swing rides a heel
+    // that stays on the dirt, with the toe as the end that comes up, in the
+    // follow-through (see legFrontToeLift) — so it skids back along the ground
+    // instead: the ankle target slides in toward the socket until the leg spans
+    // it, at the height the pose asked for, and the shoe stays flat with its heel
+    // down. Rolling it instead is what this test used to catch: the lead foot's
+    // own heel read 0.318 rig through contact, a shoe standing on its toe, which
+    // is a batter stepping out of his own swing rather than turning on a planted
+    // front foot.
     const LIFTED = { toeL: 0.16, toeR: 0.16, footL: 0.24, footR: 0.24 }
     // A toe stands at 0.021 rig in the model's rest pose; the front foot is
     // deliberately unplanted as the drive fires, so the bound is on the *lower*
     // of the two, with 0.02 rig (~3 cm) of headroom.
     const TOE_PLANTED = 0.04
+    // The lead heel's own bound: it stands at 0.001 rig in the set stance, and
+    // 0.06 rig (~4 cm) is what the shoe's own roll onto its front corner can cost
+    // it as the body turns over it — half the shoe's height, and nothing like the
+    // 0.3 the toe pivot took it to.
+    const LEAD_HEEL_MAX = 0.06
+    // ...and how far the lead toe comes up over that heel at the finish.
+    const TOE_UP_MIN = 0.03
+    // The lead shoe turns *with* the hips rather than holding its own line: the
+    // swing's turn is the pelvis's to do and the front foot rides it (see
+    // frontFootPivot), so the shoe's angle against the hips' own line is the same
+    // at the finish as it is in the set stance. A foot left behind — the usual
+    // failure, the shoe staying put while the body turns over it — reads as that
+    // angle collapsing toward nothing, and the ankle then carries the whole turn.
+    const LEAD_TURN_DRIFT_MAX = 12
+    const flatline = (a, b) => (Math.atan2(b[0] - a[0], b[2] - a[2]) * 180) / Math.PI
+    const against = (rig) => flatline(rig.bone('heel02L'), rig.bone('toeL'))
+      - flatline(rig.bone('thighR'), rig.bone('thighL'))
+    // The shortest way round from one angle to another, so a reading that wraps
+    // past ±180 is not read as a half turn.
+    const wrap = (degrees) => ((((degrees + 180) % 360) + 360) % 360) - 180
+    let stanceLeadTurn = null
     for (const { phase } of SHOTS) {
       await openPhase(page, phase)
       const rig = await readRig(page)
@@ -714,6 +736,30 @@ test.describe('the body holds the bat', () => {
         lowestToe,
         `${phase}: the shoes should roll onto a toe, not both leave the ground`,
       ).toBeLessThan(TOE_PLANTED)
+      const lead = rig.bone('footL')[1] - rig.bone('heel02L')[1]
+      console.log(`${phase}: the lead foot stands ${lead.toFixed(3)} rig above its own heel`)
+      expect(
+        rig.bone('heel02L')[1],
+        `${phase}: the lead foot's heel should be on the ground, not standing the shoe on its toe`,
+      ).toBeLessThan(LEAD_HEEL_MAX)
+      // ...and only at the finish does the toe end come up off it: through the
+      // drive the shoe is flat, so the toe is below the ankle and not above it.
+      const toeOverHeel = rig.bone('toeL')[1] - rig.bone('heel02L')[1]
+      console.log(`${phase}: its toe stands ${toeOverHeel.toFixed(3)} rig over that heel`)
+      if (phase === 'followThrough') {
+        expect(
+          toeOverHeel,
+          'the lead toe should point up out of the ground in the follow-through, with the heel still on it',
+        ).toBeGreaterThan(TOE_UP_MIN)
+      }
+      const leadTurn = against(rig)
+      const drift = stanceLeadTurn === null ? 0 : wrap(leadTurn - stanceLeadTurn)
+      console.log(`${phase}: the lead shoe holds ${leadTurn.toFixed(1)} of the hips' own line (drift ${drift.toFixed(1)})`)
+      if (phase === 'stance') stanceLeadTurn = leadTurn
+      expect(
+        Math.abs(drift),
+        `${phase}: the lead shoe should turn with the hips instead of holding its own line`,
+      ).toBeLessThan(LEAD_TURN_DRIFT_MAX)
     }
   })
 
@@ -799,6 +845,11 @@ test.describe('the body holds the bat', () => {
     const SQUARED_RIG = 0.02
     const STRAIGHT_RIG = 0.05
     const STRIDE_RIG = 0.4
+    // ...and how far the rear shoe's own footprint may travel all swing. Measured
+    // from the set stance to the contact: 0.068 rig, which is the tuning's own
+    // 0.05 of push forward along the line the shoe stands on (legBackPushForward)
+    // plus the shoe's own levelling roll carrying the toe a further 0.018.
+    const BACK_PLANT_RIG = 0.08
     await openPhase(page, 'stance')
     const stance = await readRig(page)
     await openPhase(page, 'contact')
@@ -808,13 +859,26 @@ test.describe('the body holds the bat', () => {
     console.log(`stance: the two ankles are ${square.toFixed(3)} rig apart across the box`)
     expect(square, 'the set stance should be squared to the front line').toBeLessThan(SQUARED_RIG)
 
-    for (const [name, bone, minForward] of [['front', 'footL', STRIDE_RIG], ['back', 'footR', 0]]) {
+    // The front foot steps at the front line. The rear foot is the other kind of
+    // foot: it is the plant the swing turns on, so what is read there is the
+    // *footprint* it stands on — the ball of the shoe, which is the toe bone's own
+    // place — and not its ankle, which rides the shoe's pivot about that ball and
+    // may travel either way (see the drive's own bound in Batter.jsx). The ball
+    // itself may move only by the tuning's own push forward.
+    for (const [name, bone, minForward, maxForward] of [
+      ['front', 'footL', STRIDE_RIG, Infinity],
+      ['rear', 'toeR', 0, BACK_PLANT_RIG],
+    ]) {
       const from = stance.bone(bone)
       const to = contact.bone(bone)
       const across = Math.abs(to[0] - from[0])
       const forward = from[2] - to[2]
-      console.log(`${name} ankle: ${across.toFixed(3)} rig across, ${forward.toFixed(3)} rig forward`)
-      expect(forward, `the ${name} ankle should travel toward the pitcher`).toBeGreaterThan(minForward)
+      console.log(`${name} ${bone}: ${across.toFixed(3)} rig across, ${forward.toFixed(3)} rig forward`)
+      expect(forward, `the ${name} ${bone} should travel toward the pitcher`).toBeGreaterThan(minForward)
+      expect(
+        forward,
+        `the ${name} ${bone} should stay on the footprint it was planted on`,
+      ).toBeLessThan(maxForward)
       expect(
         across,
         `the ${name} ankle should step straight at the front line, not across the box`,
@@ -1323,6 +1387,128 @@ test.describe('the body holds the bat', () => {
       reset.slice(reset.indexOf(bent)).filter(({ span }) => span > TAIL_SPAN_MAX)
         .map(({ time, span }) => `${time.toFixed(2)}s ${span.toFixed(3)}`),
       'the lead arm should keep a bend from there to the end of the way home',
+    ).toEqual([])
+  })
+
+  test('the trailing arm goes out to the line of the pitch before it folds, and folds one way', async ({ page }) => {
+    // The two tests above are about where the arm's *span* goes. This is about the
+    // arm's own direction, and the shape of the way home in it: the bat is carried
+    // out until the trailing arm's chord lies square to the front line of the box —
+    // straight at the pitcher — with the arm still nearly straight, and only then
+    // does it fold inwards into the set stance.
+    //
+    // Read off the bones rather than the solve, because this is a question of which
+    // way the arm *points*: the chord from the trailing shoulder to the trailing
+    // wrist, its span as a share of the arm's own reach, and the elbow's own bend.
+    // The heading is the chord's direction in the plane of the ground, nought
+    // pointing at the pitcher (world -z).
+    //
+    // The bound that bites is the *pairing* of the two readings: an arm laid on the
+    // line of the pitch has to still be nearly straight when it gets there. Measured,
+    // the way home crosses the perpendicular at **1.08 s** with its chord **1.3
+    // degrees** off it, its span **0.964** of its reach and its elbow at
+    // **165.4 degrees**, and with the carry off — the pose left where the hold put
+    // it — it crosses instead with the arm already folded to **0.874** of its reach
+    // (a 152.5-degree elbow), so the fold runs through the crossing rather than
+    // after it. That is the difference this test exists to hold.
+    const PERP_TOL = 12 // how near the perpendicular the chord has to come
+    const PERP_SAMPLES = 4 // ...and for how many 0.01 s frames
+    const STRAIGHT = 0.9 // the share of its own reach the arm has to read there
+    const ELBOW_ON_LINE = 158 // ...and the elbow's own bend, 180 being straight
+    const SWEEP_MAX = 170 // degrees the whole way home may turn the chord in all
+    const STEP_MAX = 15 // ...and what one 0.01 s frame of it may turn
+    const CLOSE_MIN = 25 // how far the elbow has to fold in after the crossing
+    const OPEN_MAX = 2 // ...and how far it may re-open from its running minimum
+    await page.goto(`/e2e/harness/batter.html?phase=followThrough&time=${RECOVERY_WINDOW.start}`)
+    await page.waitForFunction(() => window.__vr?.ready === true)
+    const rows = await page.evaluate(
+      ([from, to, step]) => window.__vr.sweep(from, to, step, ['probeBones', 'probeSolve']),
+      [RECOVERY_WINDOW.start, RECOVERY_WINDOW.end, 0.01],
+    )
+    expect(rows.length, 'the window should be swept, not sampled').toBeGreaterThan(40)
+    const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    const unit = (v) => {
+      const n = Math.hypot(...v) || 1
+      return v.map((c) => c / n)
+    }
+    const deg = (rad) => (rad * 180) / Math.PI
+    const samples = []
+    for (const row of rows) {
+      const { bones, scale } = row.probeBones
+      const reach = row.probeSolve?.arms?.find((arm) => arm.side > 0)?.reach ?? 0.743
+      const fore = sub(bones.forearmR, bones.upper_armR)
+      const hand = sub(bones.handR, bones.upper_armR)
+      samples.push({
+        time: row.time,
+        span: Math.hypot(...hand) / scale / reach,
+        // The elbow's own bend, 180 being straight: the angle the two bones make
+        // with each other, read from where each points off the shoulder.
+        bend: 180 - deg(Math.acos(Math.min(1, Math.max(-1, dot(unit(fore), unit(hand)))))),
+        heading: deg(Math.atan2(-unit(hand)[0], -unit(hand)[2])),
+      })
+    }
+    // Non-vacuous, and read from the same page: the arm really is folded at some
+    // point of the way home, so the sweep is covering the fold and not a pose.
+    expect(
+      Math.min(...samples.map((s) => s.span)),
+      'the trailing arm should fold on the way home',
+    ).toBeLessThan(0.7)
+    let swept = 0
+    let worst = { turn: 0, time: 0 }
+    for (let i = 1; i < samples.length; i += 1) {
+      let delta = samples[i].heading - samples[i - 1].heading
+      while (delta > 180) delta -= 360
+      while (delta < -180) delta += 360
+      swept += delta
+      if (Math.abs(delta) > Math.abs(worst.turn)) worst = { turn: delta, time: samples[i].time }
+    }
+    console.log(
+      `the trailing arm's chord sweeps ${swept.toFixed(1)} degrees of heading over `
+      + `${samples.length} samples at 0.01 s, its largest single frame ${worst.turn.toFixed(1)}`
+      + ` at ${worst.time.toFixed(2)}s`,
+    )
+    expect(
+      Math.abs(swept),
+      'the trailing arm should not flip through its own socket on the way home',
+    ).toBeLessThan(SWEEP_MAX)
+    expect(
+      Math.abs(worst.turn),
+      'no frame of the way home should snap the arm round',
+    ).toBeLessThan(STEP_MAX)
+    const nearest = samples.reduce((a, b) => (Math.abs(b.heading) < Math.abs(a.heading) ? b : a))
+    const onLine = samples.filter((s) => Math.abs(s.heading) <= PERP_TOL)
+    console.log(
+      `it lies within ${PERP_TOL} degrees of the perpendicular at ${onLine.length} samples`
+      + (onLine.length ? ` (${onLine[0].time.toFixed(2)}-${onLine[onLine.length - 1].time.toFixed(2)}s)` : '')
+      + `, nearest the line at ${nearest.time.toFixed(2)}s: ${nearest.heading.toFixed(1)} degrees off,`
+      + ` span ${nearest.span.toFixed(3)} (a ${nearest.bend.toFixed(1)}-degree elbow)`,
+    )
+    expect(onLine.length, 'the chord should come out to the line of the pitch').toBeGreaterThanOrEqual(PERP_SAMPLES)
+    expect(
+      onLine.filter((s) => s.span < STRAIGHT).map((s) => `${s.time.toFixed(2)}s ${s.span.toFixed(3)}`),
+      'the arm should still be straight when the chord is out at the line',
+    ).toEqual([])
+    expect(
+      onLine.filter((s) => s.bend < ELBOW_ON_LINE).map((s) => `${s.time.toFixed(2)}s ${s.bend.toFixed(1)}`),
+      'and the elbow should have nearly all of its bend left to give',
+    ).toEqual([])
+    // The fold itself, from the crossing on: inwards, one way, and all the way in.
+    const crossing = samples.findIndex((s) => s.time >= nearest.time)
+    const folds = samples.slice(crossing)
+    const floor = Math.min(...folds.map((s) => s.bend))
+    expect(
+      folds[0].bend - floor,
+      'the elbow should fold inwards once the chord is out at the line',
+    ).toBeGreaterThan(CLOSE_MIN)
+    let running = folds[0].bend
+    expect(
+      folds.filter((s) => {
+        const opened = s.bend - running > OPEN_MAX
+        running = Math.min(running, s.bend)
+        return opened
+      }).map((s) => `${s.time.toFixed(2)}s ${s.bend.toFixed(1)}`),
+      'and it should fold one way, not open and close again',
     ).toEqual([])
   })
 
@@ -2763,6 +2949,508 @@ test.describe('a limb never flickers about its own joint', () => {
   })
 })
 
+test.describe("the batter's kit", () => {
+  // The look pass (src/util/batterLook.js) shapes the helmet, the eyes and the
+  // jersey. These read the shipped model's own geometry — every separate shell of
+  // each mesh, in the model's rest frame, in which the model's own +x is its left —
+  // rather than the pass's report of what it did, so the numbers below are facts
+  // about the kit rather than about the code that made it.
+  //
+  // A flap is a shell that hangs below the crown and lies wholly on one side of
+  // the midline; the brim is what juts to the front-most z, and its underside is
+  // the lowest vertex of the helmet drawn that far forward.
+  const FLAP_MIN_VERTS = 8
+  const FLAP_TOP_MAX_Y = 1.86
+  const FLAP_SIDE_MIN_X = 0.04
+  // What the eyes have to be: clear of the brim, and the reference's own size. The
+  // body-parts model's eye is 0.265 of its head's height and this head is 0.355
+  // tall, so the reference's own eye would be 0.094 here; this one reads 0.104,
+  // a shade bigger, which is what was asked for.
+  const EYE_CLEARANCE_M = 0.005
+  const EYE_HEIGHT_RANGE = [0.085, 0.13]
+  // A uniform shrink keeps the modelled plate's own shape: its width was 0.515 of
+  // its height.
+  const EYE_ASPECT_RANGE = [0.45, 0.6]
+  // What the eyes have to do about the head they are on. A plate is flat and the face
+  // is not, so a plate laid on it sinks in at its edges — measured off the shipped
+  // model's own surfaces, *half* of each eye's 53 vertices (36 of them) were inside the
+  // head, up to 0.026 rig deep at the inner corner, and what is inside the head is not
+  // drawn. So every eye vertex has to be in front of the head's own surface at its place
+  // on the face, by a hair at least.
+  const EYE_CLEAR_MIN = 0.001
+  // The jersey's opening: a line drawn on the cloth down the chest, from the belt (the
+  // trunks' band runs y 1.258-1.293) up to the collar's crease at 1.58, with hollow
+  // buttons beside it from the top of it to the bottom. A *line*: measured, the ribbon
+  // it replaced was 0.007 rig across, and a line on a chest this size is a third of that.
+  const LINE_WIDTH_MAX = 0.005
+  const LINE_BOTTOM_MAX_Y = 1.296 // it has to reach the belt...
+  const LINE_TOP_MIN_Y = 1.54 // ...and up to the jersey's own collar...
+  const LINE_TOP_MAX_Y = 1.5544 // ...whose rim is here: the neck and the jaw are above it
+  const BUTTONS_MIN = 6 // from top to bottom, not clustered in the middle
+  // ...and that it reads along its whole length: down to the belt, nearly every vertex of
+  // it with cloth behind it, and never stepping back into the body where the cloth's own
+  // front has stopped.
+  const LINE_READ_BOTTOM_MAX_Y = 1.3
+  const LINE_READ_MIN = 160 // of the opening's and the buttons' own 194 vertices
+  const LINE_STATIONS_MIN = 20 // the line's own stations, from the belt to the collar
+  const LINE_STEP_BACK_MAX = 0.02
+  const BUTTON_REACH_MAX = 0.08 // read off vertices rather than off the surface, the cloth
+  // ...runs up to this far from any one of them where the chest is coarse
+  const BUTTON_END_MARGIN = 0.02 // the first and last sit within this of the line's own ends
+  const BUTTON_GAP_MAX = 0.05 // standing off the cloth, but within a touch of it
+  // The opening's own grey: a seam in pale-blue cloth is *darker* than the cloth it is
+  // sewn in. Measured, the cloth is 0.69 in luminance, and the grey the opening used to
+  // be drawn in — 0.78 of the cloth for the seam and 0.94 for the buttons, 0.54 and
+  // 0.65 — was lighter than the cloth's own shading and did not read on it. Both are
+  // darker than this now.
+  const OPENING_GREY_MAX = 0.6
+  // The brows: one over each eye, in the face's own tone taken down. Measured, the face
+  // is 0.775 in luminance and the eyes are painted black at 0.05, so a brow has to sit
+  // between the two of them to read as a brow rather than as more face or more eye.
+  const BROWS_MIN = 2
+  // Dark: a brow is nearer the painted eye below it than the skin around it. Measured,
+  // the face is 0.775 in luminance, the eye 0.05, and the brow 0.161 — against 0.226
+  // when it was first drawn, which read as barely darker than the skin it sits on.
+  const BROW_GREY_MAX = 0.2
+  const BROW_WIDTH_MIN = 0.05 // wide enough to be a brow over an eye 0.054 rig wide
+  const BROW_HEIGHT_MIN = 0.012
+  const BROW_OUT_MIN = 0.018 // how far past the corner of its eye it runs, towards the ear
+  // ...and the skin the brow sits over: measured, the strip above an eye used to be
+  // 0.008 rig with the brow laid from there, and the eye and the brow read as one shape.
+  // A brow *above* its eye needs a band of face between the two of them.
+  const BROW_SKIN_MIN = 0.009
+  const BROW_SKIN_MAX = 0.02
+  const BROW_REACH_MAX = 0.04 // how far its own ends may be from the nearest body vertex
+  // The shoes: laces across the instep with a tongue under them, and nothing worn above
+  // the shoe's own rim — the trousers already cover the leg down past it. Measured, the
+  // kit used to wear a white band above each ankle (a cuff above the rim with a collar
+  // over the shoe's own opening), and its laces — twelve bars of them — were wound
+  // face-down into the shoe, so the renderer never drew one of them.
+  const LACE_BARS_MIN = 10 // five a foot, evenly spaced down the instep
+  const TONGUES_MIN = 2 // and a tongue down each instep, under the laces
+  const SHOE_GAP_MAX = 0.05
+
+  const readKit = async (page) => {
+    const kit = await page.evaluate(() => window.__vr.probeKit())
+    expect(kit, 'the batter should be in the harness scene with its kit on').not.toBeNull()
+    return kit
+  }
+
+  test('the helmet carries one ear flap, on the pitcher side, over the jaw', async ({ page }) => {
+    await openPhase(page, 'stance')
+    const kit = await readKit(page)
+    const flaps = kit.helmet.shells.filter((shell) => shell.verts >= FLAP_MIN_VERTS
+      && shell.box.y[1] < FLAP_TOP_MAX_Y
+      && (shell.box.x[0] >= FLAP_SIDE_MIN_X || shell.box.x[1] <= -FLAP_SIDE_MIN_X))
+    console.log(`the helmet's shells (${kit.helmet.shells.length}), flaps at ${flaps
+      .map((flap) => `x[${flap.box.x}] y[${flap.box.y}] z[${flap.box.z}]`).join(' ')}`)
+    console.log(`the ear cover either side: ${JSON.stringify(kit.helmet.earCover)}`)
+    expect(
+      flaps.length,
+      'a batting helmet has one ear flap, not two and not none',
+    ).toBe(1)
+    // A right-handed batter turns his left side to the pitcher and wears the flap
+    // over that ear; a lefty wears it over the other one. The model's own +x is
+    // its left, so the flap has to be on the side the lead arm is on.
+    const [flap] = flaps
+    const leadIsModelLeft = BAT_SIDE !== 'L'
+    const onLeadSide = leadIsModelLeft ? flap.box.x : flap.box.x.map((x) => -x)
+    expect(
+      onLeadSide[0],
+      `the flap belongs over the ear on the pitcher's side (batting ${BAT_SIDE})`,
+    ).toBeGreaterThanOrEqual(FLAP_SIDE_MIN_X)
+    // A jaw guard, not an ear muff: the guard comes down level with the jaw (measured,
+    // its lowest vertex is at 1.5467, against 1.5652 where the shipped one stopped —
+    // the head's own ear runs y 1.7346 to 1.8165, so it hangs clear of it), and the
+    // deepest part of it flares forward over the cheek as it goes (z 0.207 against
+    // 0.1966, the brim's own front being 0.2318).
+    // The head's own ear, as the model has it: y 1.7346 to 1.8165 at |x| 0.147 to
+    // 0.1725, z -0.0187 to 0.0531. Half of it is 1.7756, and that is where the shell's
+    // lower edge belongs on the side that carries no flap.
+    const EAR_LOW_Y = 1.7346
+    const EAR_MID_Y = 1.7756
+    const EAR_HIGH_Y = 1.8165
+    const { lead, trail } = kit.helmet.earCover
+    console.log(`the ear cover: lead hangs to ${lead.hungY} (${lead.belowBrim} below the brim)
+      and over the ear to ${lead.earY}; trail to ${trail.hungY} (${trail.belowBrim}) and over
+      the ear to ${trail.earY}; rims ${JSON.stringify({ lead: lead.rim, trail: trail.rim })}`)
+    expect(
+      flap.box.y[0],
+      'the guard should come down to the jaw, not stop at the ear',
+    ).toBeLessThanOrEqual(1.555)
+    expect(lead.hungY, 'and be the lowest thing the helmet draws on that side')
+      .toBeLessThanOrEqual(1.555)
+    // The ear cover that goes: the helmet hangs off the brim beside each ear, and the
+    // one a batting helmet does *not* have is still the one that read as a rear flap
+    // when only the flap shell and the lobe had been taken off — the rim they left
+    // behind went down to 1.6442, 0.15 below the brim, beside that ear. So on the
+    // trailing side the shell has to stop above the ear, with the nape behind it left to
+    // the helmet's own back.
+    expect(
+      trail.belowBrim,
+      'the trailing side should carry no ear cover: its rim sweeps into the nape',
+    ).toBeLessThan(0.16)
+    // ...and nothing hangs below the line it comes off by: the shell's own lower edge on
+    // that side *is* that line, because the cover is folded back up onto it rather than
+    // cut off (the band and the shell it hangs from are one surface, so a cut leaves
+    // either a ragged rim or — measured, until this was changed — a plate of the cover
+    // hanging 0.162 rig below the line, a jaw guard where there is no flap). The line
+    // reaches the nape's own height at its lowest, 1.6584, and the mesh's own resolution
+    // leaves the rim a hair above that.
+    expect(
+      trail.hungY,
+      'and nothing of the helmet should hang below the nape\'s own line behind the ear',
+    ).toBeGreaterThan(1.65)
+    expect(
+      trail.hungY,
+      'the trailing rim should be the fold line itself, not a cover left hanging under it',
+    ).toBeLessThan(1.7)
+    expect(trail.hungY, 'the two sides should not read like a pair')
+      .toBeGreaterThan(lead.hungY + 0.08)
+    // How much of that ear the shell covers. A rim hung to the ear's own bottom (where
+    // the first pass put it, at 1.72) is not a rim at all: it is a lobe of shell hanging
+    // 0.075 below the brim beside an ear that has no flap over it, which reads as a jaw
+    // guard — measured, that is what a rim at the ear's bottom looked like. So the edge
+    // comes down to the *middle* of the ear: the top half of it covered, the bottom half
+    // showing below.
+    expect(
+      trail.earY,
+      'the trailing side still carries a cover over the whole ear where it has no flap',
+    ).toBeGreaterThan(EAR_LOW_Y + 0.02)
+    expect(
+      trail.earY,
+      'and it should not stop above the ear either: half of it is covered',
+    ).toBeLessThan(EAR_HIGH_Y - 0.02)
+    expect(
+      Math.abs(trail.earY - EAR_MID_Y),
+      'the edge over the ear should sit at the ear\'s own middle, half of it either side',
+    ).toBeLessThan(0.02)
+    // Where the cover came off, the helmet's own edge sweeps: lowest over the ear's own
+    // middle, up in front of it to meet the brim's underside, and away behind it into the
+    // nape. This is the shape — an edge run *level* past the ear is a straight line with
+    // a step at either end, which is what reads as a cutout, and one cut with a step in it
+    // reads a jump between two of these windows. All three are read on the same side, off
+    // the vertices the helmet actually draws.
+    expect(
+      trail.rim.forward - trail.rim.beside,
+      'the trailing rim should rise going forward, not run level past the ear',
+    ).toBeGreaterThan(0.008)
+    expect(
+      trail.rim.beside - trail.rim.behind,
+      'and fall away behind the ear into the nape, which is the helmet\'s own back',
+    ).toBeGreaterThan(0.05)
+  })
+
+  test("the eyes sit clear under the brim and on the face, at the reference's own size", async ({ page }) => {
+    await openPhase(page, 'stance')
+    const kit = await readKit(page)
+    // The brim is the shell that juts to the helmet's own front-most z — read as the
+    // front-most rather than as a number, so a flap that flares out past it is caught by
+    // the eye assertions below rather than quietly becoming "the brim".
+    const frontZ = Math.max(...kit.helmet.shells.map((shell) => shell.box.z[1]))
+    const forward = kit.helmet.shells.filter((shell) => shell.box.z[1] >= frontZ - 0.005)
+    expect(forward.length, 'the helmet should have a brim jutting forward').toBeGreaterThan(0)
+    const brimUnderside = Math.min(...forward.map((shell) => shell.box.y[0]))
+    const eyes = kit.eyes
+    const heightOf = (eye) => eye.box.y[1] - eye.box.y[0]
+    const widthOf = (eye) => eye.box.x[1] - eye.box.x[0]
+    console.log(`brim underside ${brimUnderside.toFixed(4)}; eyes: ${eyes
+      .map((eye) => `${heightOf(eye).toFixed(4)}x${widthOf(eye).toFixed(4)} top ${eye.box.y[1].toFixed(4)}, `
+        + `${eye.buried} of ${eye.verts} behind the head (worst ${eye.deepest}), margin ${eye.margin}`)
+      .join(' | ')}`)
+    expect(eyes.length, 'there are two eyes on the face').toBe(2)
+    for (const eye of eyes) {
+      expect(
+        eye.box.y[1],
+        'an eye must not reach up behind the brim, where the helmet hides it',
+      ).toBeLessThanOrEqual(brimUnderside - EYE_CLEARANCE_M)
+      expect(heightOf(eye), 'the eye should read like the reference model\'s, not smaller')
+        .toBeGreaterThanOrEqual(EYE_HEIGHT_RANGE[0])
+      expect(heightOf(eye), 'and not so big that the helmet swallows it')
+        .toBeLessThanOrEqual(EYE_HEIGHT_RANGE[1])
+      expect(
+        widthOf(eye) / heightOf(eye),
+        'the plate should keep its own shape (the shrink is uniform)',
+      ).toBeGreaterThanOrEqual(EYE_ASPECT_RANGE[0])
+      expect(widthOf(eye) / heightOf(eye)).toBeLessThanOrEqual(EYE_ASPECT_RANGE[1])
+      // ...and it has to be *out* of the face it is drawn on. The plate is flat and the
+      // face is not; as they shipped, half of each eye was inside the head (36 of 53
+      // vertices, 0.026 rig deep at the inner corner, where the nose and the cheek are).
+      expect(
+        eye.buried,
+        'no part of an eye may sit inside the head, where it is not drawn',
+      ).toBe(0)
+      expect(
+        eye.margin,
+        'every vertex should be in front of the face it is drawn on',
+      ).toBeGreaterThanOrEqual(EYE_CLEAR_MIN)
+    }
+    expect(
+      Math.abs(heightOf(eyes[0]) - heightOf(eyes[1])),
+      'the two eyes are the same eye mirrored',
+    ).toBeLessThan(0.002)
+  })
+
+  test('the jersey carries a placket on its front, with buttons', async ({ page }) => {
+    await openPhase(page, 'stance')
+    const kit = await readKit(page)
+    const jersey = kit.jersey
+    expect(jersey, 'the jersey should have a front on it').not.toBeNull()
+    const line = jersey.shells.reduce((a, b) => (b.verts > a.verts ? b : a))
+    // A button is a ring, so its own piece has all of its vertices a little way out from
+    // its centre with the cloth showing through the hole; the two readings are taken off
+    // the same shells, in the same order.
+    const buttons = jersey.shells
+      .map((shell, at) => ({ shell, piece: jersey.pieces[at] }))
+      .filter(({ shell, piece }) => shell !== line && piece && piece.inner >= 0.003 && piece.outer <= 0.02)
+    const rings = buttons.map(({ piece }) => piece)
+    console.log(`the jersey's opening: ${(line.box.x[1] - line.box.x[0]).toFixed(4)} across, `
+      + `y ${line.box.y[0]}-${line.box.y[1]}; ${rings.length} buttons from `
+      + `${buttons.length ? Math.min(...buttons.map(({ shell }) => shell.box.y[0])).toFixed(4) : '-'} to `
+      + `${buttons.length ? Math.max(...buttons.map(({ shell }) => shell.box.y[1])).toFixed(4) : '-'}`)
+    expect(jersey.parent, 'the detail is skinned with the body it sits on')
+      .toBe(kit.body.parent)
+    expect(jersey.boundToBody, 'and rides the body\'s own skeleton').toBe(true)
+    expect(jersey.vertexColors, 'the opening is drawn in the uniform\'s own greys')
+      .toBe(true)
+    // The opening is a *line* on the cloth, not a ribbon laid on it: down the middle of
+    // the chest, from the belt up under the collar. Measured, the ribbon it replaced was
+    // 0.007 rig across and stopped short of both ends (y 1.302 to 1.576).
+    expect(line.box.x[1] - line.box.x[0], 'a line, not a strip of fabric')
+      .toBeLessThanOrEqual(LINE_WIDTH_MAX)
+    expect(line.box.x[1] - line.box.x[0], 'but drawn, not invisible').toBeGreaterThan(0)
+    expect(Math.abs((line.box.x[0] + line.box.x[1]) / 2), 'down the middle of the chest')
+      .toBeLessThanOrEqual(0.01)
+    expect(line.box.y[0], 'from the belt').toBeLessThanOrEqual(LINE_BOTTOM_MAX_Y)
+    expect(line.box.y[1], 'to the collar').toBeGreaterThanOrEqual(LINE_TOP_MIN_Y)
+    // ...and *to the jersey's* collar, not past it. The neck's own front stands proud of
+    // the collar (z 0.1003 against 0.0143 at y 1.5586) and the jaw is above that, so an
+    // opening read off the body's front near the midline climbs off the jersey and onto
+    // the face — which is where this line used to run, up to 1.588.
+    expect(
+      line.box.y[1],
+      'the opening must stop at the jersey\'s own collar, not climb onto the neck and jaw',
+    ).toBeLessThanOrEqual(LINE_TOP_MAX_Y)
+    // The buttons, hollow rings beside it, from the top of the line to the bottom: what
+    // was asked for is a column down the opening, not a few gathered at the chest.
+    expect(rings.length, 'a column of buttons down the opening').toBeGreaterThanOrEqual(BUTTONS_MIN)
+    for (const ring of rings) {
+      expect(ring.inner, 'a button is a ring, not a disc: the cloth shows through it')
+        .toBeGreaterThan(0)
+      expect(ring.inner / ring.outer, 'and the hole is a real one')
+        .toBeLessThan(0.7)
+    }
+    const buttonTop = Math.max(...buttons.map(({ shell }) => shell.box.y[1]))
+    const buttonBottom = Math.min(...buttons.map(({ shell }) => shell.box.y[0]))
+    expect(line.box.y[1] - buttonTop, 'the top button sits at the top of the opening')
+      .toBeLessThanOrEqual(BUTTON_END_MARGIN)
+    expect(buttonBottom - line.box.y[0], 'and the bottom one at its bottom')
+      .toBeLessThanOrEqual(BUTTON_END_MARGIN)
+    // Standing off the cloth is what makes the detail read at all, and it has to hug the
+    // jersey rather than hover in front of it. Read against the cloth's own *surface*,
+    // which runs between its vertices: measured against the nearest vertex instead, an
+    // opening drawn properly on the chest reads as sinking into it wherever the surface
+    // bulges forward of the vertices on either side of the point.
+    expect(jersey.surfaceOff, 'the opening should be readable against the cloth').not.toBeNull()
+    console.log(`the opening stands ${jersey.surfaceOff.off[0]} to ${jersey.surfaceOff.off[1]} `
+      + `rig off the cloth's own surface (${jersey.surfaceOff.count} of its vertices read)`)
+    expect(
+      jersey.surfaceOff.off[0],
+      'every vertex of the opening should be in front of the cloth, not inside it',
+    ).toBeGreaterThan(0)
+    expect(jersey.surfaceOff.off[1], '...and within a touch of it, not hovering')
+      .toBeLessThan(BUTTON_GAP_MAX)
+    expect(jersey.standOff.gap[1], 'and near the cloth\'s own vertices as well')
+      .toBeLessThan(BUTTON_REACH_MAX)
+    // ...and *along the whole opening*: the cloth's own front stops below the collar, and a
+    // station the cloth does not reach has to hold the height of the one below it rather
+    // than fall back to a default — which is what had the opening diving a third of the way
+    // into the body under the collar, 0.033 rig behind the cloth's own front, so that its
+    // top three stations read nothing at all.
+    expect(
+      jersey.surfaceOff.fromY,
+      'the opening has to read all the way down to the belt',
+    ).toBeLessThanOrEqual(LINE_READ_BOTTOM_MAX_Y)
+    expect(
+      jersey.surfaceOff.count,
+      'with nearly every vertex of it in front of the cloth',
+    ).toBeGreaterThanOrEqual(LINE_READ_MIN)
+    // ...and it has to run *on* the cloth the whole way up. The cloth's own front stops
+    // below the collar, so a station above that holds the height of the one below it; what
+    // it must not do is fall back to a default, which leaves a step in the line — measured,
+    // the opening's top three stations stepped 0.031 rig *backwards* into the body and came
+    // back 0.047 forward again at the collar.
+    const steps = jersey.line.slice(1).map(([, z], at) => Number((jersey.line[at][1] - z).toFixed(4)))
+    console.log(`the opening's own line, station by station: y ${jersey.line[0][0]} to `
+      + `${jersey.line[jersey.line.length - 1][0]}, worst step backwards ${Math.max(...steps)}`)
+    expect(jersey.line.length, 'the line is read station by station').toBeGreaterThanOrEqual(LINE_STATIONS_MIN)
+    expect(
+      Math.max(...steps),
+      'no station of the opening may step backwards into the body',
+    ).toBeLessThan(LINE_STEP_BACK_MAX)
+    // The buttons are the opening's own tone — they are the seam's colour, sewn beside
+    // it — so what is asserted is that the two agree rather than that they differ.
+    expect(
+      Math.abs(jersey.tones.max - jersey.tones.min),
+      'the buttons and the seam are one tone, not two',
+    ).toBeLessThan(0.01)
+    // And both of them *dark*: a seam in pale-blue fabric reads darker than the cloth,
+    // so an opening drawn lighter than the cloth it is on is not drawn at all.
+    expect(jersey.tones.max, 'the opening is drawn darker than the cloth it sits on')
+      .toBeLessThanOrEqual(OPENING_GREY_MAX)
+  })
+
+  test('the batter wears eyebrows, over each eye', async ({ page }) => {
+    // The face has nothing drawn on it above the eyes, and the eyes are painted flat
+    // black, so a brow has to be *added*: a bar over the top of each eye plate, in the
+    // face's own tone taken down.
+    await openPhase(page, 'stance')
+    const kit = await readKit(page)
+    const brows = kit.brows
+    const eyes = kit.eyes
+    // The brim, read the way the eyes' own test reads it: the shell that juts to the
+    // helmet's own front-most z, and the lowest vertex of it.
+    const frontZ = Math.max(...kit.helmet.shells.map((shell) => shell.box.z[1]))
+    const brimUnderside = Math.min(...kit.helmet.shells
+      .filter((shell) => shell.box.z[1] >= frontZ - 0.005)
+      .map((shell) => shell.box.y[0]))
+    console.log(`the brows: ${JSON.stringify(brows)}`)
+    expect(brows, 'the face should wear brows').not.toBeNull()
+    expect(eyes.length, 'two eyes to wear them').toBe(2)
+    expect(brows.count, 'one brow per eye').toBe(BROWS_MIN)
+    expect(brows.pieces.length, 'and one piece each').toBe(BROWS_MIN)
+    for (const [at, brow] of brows.pieces.entries()) {
+      const eye = eyes[at]
+      const width = brow.box.x[1] - brow.box.x[0]
+      const height = brow.box.y[1] - brow.box.y[0]
+      // Over its own eye: the brow sits across the same side of the face, reaches down
+      // over the eye's own top edge, and stops under the brim.
+      const sameSide = (brow.box.x[0] > 0) === (eye.box.x[0] > 0)
+      expect(sameSide, 'each brow is over its own eye, not the other one').toBe(true)
+      expect(
+        width,
+        'a brow is a bar across the eye it belongs to',
+      ).toBeGreaterThanOrEqual(BROW_WIDTH_MIN)
+      expect(height, 'and a bar rather than a line').toBeGreaterThanOrEqual(BROW_HEIGHT_MIN)
+      // A brow sits *over* its eye with skin between the two: laid on the eye's own top
+      // edge the brow and the black plate below it read as one long dark shape, which is
+      // what an eye with no brow above it looks like.
+      expect(
+        brow.box.y[0] - eye.box.y[1],
+        'skin has to show between the brow and the eye it is over',
+      ).toBeGreaterThanOrEqual(BROW_SKIN_MIN)
+      expect(
+        brow.box.y[0] - eye.box.y[1],
+        '...but only a little: it is a brow over an eye, not a hat brim',
+      ).toBeLessThanOrEqual(BROW_SKIN_MAX)
+      expect(
+        brow.box.y[1],
+        'and stays under the brim, which is the whole of the room above an eye',
+      ).toBeLessThanOrEqual(brimUnderside - 0.002)
+      // Where the two ends of it go. A brow runs on out towards the temple and stops
+      // short of the nose, so its own outer end reaches further past the corner of the
+      // eye than its inner end does towards the midline — measured, 0.024 out against
+      // 0.010 in, where the first pass gave both ends the same 0.016.
+      const outboard = eye.box.x[1] > 0
+      const outOver = outboard ? brow.box.x[1] - eye.box.x[1] : eye.box.x[0] - brow.box.x[0]
+      const inOver = outboard ? eye.box.x[0] - brow.box.x[0] : brow.box.x[1] - eye.box.x[1]
+      expect(
+        outOver,
+        'a brow should run on past the corner of its eye, towards the ear',
+      ).toBeGreaterThanOrEqual(BROW_OUT_MIN)
+      expect(
+        outOver - inOver,
+        'and reach further that way than it does in towards the nose',
+      ).toBeGreaterThan(0.008)
+      expect(
+        inOver,
+        'its inner end still reaches past the eye it is over, towards the nose',
+      ).toBeGreaterThan(0)
+    }
+    // The two brows are the same brow mirrored, and both are hung on the face: in front
+    // of the head's own surface, close to it, and in the face's own tone taken down
+    // (measured, the face is 0.775 in luminance and the eyes are painted black at 0.05).
+    expect(
+      Math.abs(brows.pieces[0].box.x[1] + brows.pieces[1].box.x[0]),
+      'the two brows are mirrored about the midline',
+    ).toBeLessThan(0.002)
+    expect(brows.standOff.out[1], 'a brow stands proud of the face it is drawn on')
+      .toBeGreaterThan(0)
+    // ...and follows it: the brow hugs the face where it crosses it, and its own ends run
+    // on past the outer corner of the eye, where the face falls away behind it — so the
+    // nearest *vertex* of the body is further off there than along the middle.
+    expect(brows.standOff.gap[0], 'a brow hugs the face it is drawn on')
+      .toBeLessThan(0.02)
+    expect(brows.standOff.gap[1], '...and its own ends stay on the face as well')
+      .toBeLessThan(BROW_REACH_MAX)
+    expect(brows.tones.max, 'a brow is darker than the face it sits on, and lighter than the eye')
+      .toBeLessThanOrEqual(BROW_GREY_MAX)
+    expect(brows.tones.min, 'and not black: it is not more eye')
+      .toBeGreaterThan(0.05)
+  })
+
+  test('the shoes are laced, and wear no sock above their own rim', async ({ page }) => {
+    // Two things are being held here. First that the laces are *drawn*: twelve bars of
+    // them were on the model and not one on screen, because a bar built across the foot
+    // and along it comes out wound face-down into the shoe, which is a face the renderer
+    // draws from behind and so never draws. Second that nothing is worn above the shoe's
+    // own rim: measured, the trousers already cover the leg down past it (the leg shell
+    // reaches y 0.2716 against the shoes' 0.2992), so the band that used to sit there
+    // read as a sock pulled out over the trouser rather than as part of the shoe.
+    await openPhase(page, 'stance')
+    const kit = await readKit(page)
+    const feet = kit.feet
+    const shoes = kit.shoes
+    console.log(`the shoes: rim ${feet?.rim}, laces ${feet?.laceBars} `
+      + `(${feet?.laceUpFaces} faces looking up), tongues ${feet?.tongues}, `
+      + `pieces ${feet?.pieces}, sock bands ${feet?.sockBands} (highest ${feet?.sockTop})`)
+    expect(shoes, 'the shoes should have their detail on').not.toBeNull()
+    expect(feet, 'and the body its own shoes').not.toBeNull()
+    expect(shoes.parent, 'the detail is skinned with the body it sits on').toBe(kit.body.parent)
+    expect(shoes.boundToBody, 'and rides the body\'s own skeleton').toBe(true)
+    expect(shoes.vertexColors, 'the laces are a shade of the uniform\'s own tone').toBe(true)
+    // Laces across the instep: five a foot at least, which on a foot this size is a bar
+    // every 0.024 rig down it. Every face of them has to look up or away from the shoe,
+    // which is what the winding above is for — and what the count cannot show: they were
+    // all there, and all invisible, when the winding was the other way round.
+    expect(feet.laceBars, 'the shoes should be laced, not plain')
+      .toBeGreaterThanOrEqual(LACE_BARS_MIN)
+    expect(
+      feet.laceUpFaces,
+      'and every bar drawn: a lace is laid on the shoe\'s top surface, so it has to be '
+      + 'wound out of it, or the renderer draws it from behind and never draws it at all',
+    ).toBeGreaterThanOrEqual(feet.laceBars)
+    // The tongue under them, running down the instep.
+    expect(feet.tongues, 'a tongue on each instep, under the laces')
+      .toBeGreaterThanOrEqual(TONGUES_MIN)
+    // And nothing above the shoe's own rim.
+    expect(feet.sockBands, 'nothing should be worn over the trouser above the shoe')
+      .toBe(0)
+    expect(feet.sockTop, 'so the highest piece of detail is at the rim itself')
+      .toBeLessThanOrEqual(feet.rim + 0.01)
+    // The shoe's own two pieces — the edge of its sole and the tongue — are welded into
+    // the shoe's own mesh, so what they carry in their vertex colours is the *share* of
+    // the leather there they are drawn at, which the model's own material multiplies into
+    // the texel under it (see weldDetail in src/util/batterLook.js): both are the shoe
+    // taken down, and the sole's edge is the darker of the two.
+    expect(shoes.tones.max, 'the shoe\'s own pieces are the leather taken down')
+      .toBeLessThan(1)
+    expect(shoes.tones.min, 'the sole\'s edge is darker than the tongue above it')
+      .toBeLessThan(shoes.tones.max)
+    // ...and a lace is not the shoe at all: it is the kit's own pale cloth, drawn in a
+    // tone of its own on its own mesh, well clear of anything the leather can say.
+    expect(kit.laces, 'the laces are a piece of the kit in their own right').not.toBeNull()
+    expect(kit.laces.tones.max, 'a lace tone, close to white')
+      .toBeGreaterThan(0.8)
+    expect(kit.laces.tones.min, 'and every lace the same pale tone')
+      .toBeGreaterThan(0.7)
+    // It has to stand off the shoe to be drawn at all, and hug it rather than hover.
+    expect(shoes.standOff.out[1], 'the detail should stand proud of the shoe somewhere')
+      .toBeGreaterThan(0)
+    expect(shoes.standOff.gap[1], 'and stay within a touch of it').toBeLessThan(SHOE_GAP_MAX)
+  })
+})
+
 test.describe('harness', () => {
   test('the debug fade reaches the parts it names', async ({ page }) => {
     // `npm run pose-sheet -- --fade=arms,head` is how a pose gets inspected by
@@ -2820,4 +3508,554 @@ test.describe('harness', () => {
       expect(state.frames).toBeGreaterThan(3)
     }
   })
+})
+
+// ---------------------------------------------------------------------------
+// The set stance's idle bounce.
+//
+// The batter is never still while he waits on a pitch, and the one thing that
+// bounce must never do is lift a foot: a batter's weight comes off his feet only
+// when he *decides* to move them. The old stance bob was authored as a hip height
+// that rose and fell around the stance, and above the stance the rig's legs are at
+// full stretch — so the ankles rose with the hips and the shoes came off the
+// ground, 3.9 cm of it, heel first (the driver rolls a foot onto its toe the moment
+// a hip outruns its leg). It shipped like that for as long as it did because the
+// suite's `stance` phase renders with the idle held off: the defect only exists in
+// the frames between the shots.
+//
+// This sweeps the idle's own clock (which the harness pins when `?idle=1` is
+// asked for, see sweepIdle) across a whole period and holds the bounce to what it
+// claims to be: the feet do not move, the hips never rise above the stance, and
+// the travel there is the knees' own.
+test.describe("the set stance's idle bounces off the knees, not the feet", () => {
+  // The idle's own period, from the tuning that drives it (sin/cos of
+  // elapsed * swaySpeed), and a step fine enough that a foot lifting between two
+  // samples cannot hide.
+  const PERIOD_S = (2 * Math.PI) / DEFAULT_TUNING.batter.swaySpeed
+  const STEP_S = 0.01
+  // A foot that is planted moves by nothing at all; 2 mm is the width of the
+  // antialiasing on the shoe. The old bob moved the ankles 39 mm.
+  const FOOT_TRAVEL_MAX = 0.002
+  // The bounce has to be there: the reference idle's own pelvis travels 4.4 cm.
+  const TRAVEL_MIN = 0.03
+  // ...and it has to be the knees carrying it, not a body sliding up and down.
+  const KNEE_TRAVEL_MIN = 10
+
+  test('both feet stay planted through the whole bounce', async ({ page }) => {
+    // The stance's own pose first, with the idle held off: the frame every
+    // reading below is measured against.
+    await openPhase(page, 'stance')
+    const rest = await readRig(page)
+    const restFoot = {
+      ankleL: rest.bone('footL'),
+      ankleR: rest.bone('footR'),
+      toeL: rest.bone('toeL'),
+      toeR: rest.bone('toeR'),
+    }
+    const restHip = rest.bone('spine')[1]
+
+    await openPhase(page, 'stance', '&idle=1')
+    const rows = await page.evaluate(
+      ([to, step]) => window.__vr.sweepIdle(0, to, step, ['probeBones', 'probeBat']),
+      [PERIOD_S, STEP_S],
+    )
+    expect(rows.length, 'the idle period should be swept in several samples').toBeGreaterThan(20)
+
+    const named = {
+      ankleL: 'footL', ankleR: 'footR', toeL: 'toeL', toeR: 'toeR',
+    }
+    // A joint's own interior angle, the same reading the flicker test uses.
+    const angleAt = (apex, a, c) => {
+      const u = sub(a, apex)
+      const v = sub(c, apex)
+      return degrees(Math.acos(Math.min(1, Math.max(-1, dot(u, v) / (norm(u) * norm(v) || 1)))))
+    }
+    const travel = {}
+    let hipLow = Infinity
+    let hipHigh = -Infinity
+    let kneeLow = Infinity
+    let kneeHigh = -Infinity
+    let batYawLow = Infinity
+    let batYawHigh = -Infinity
+
+    for (const row of rows) {
+      const { origin, scale, bones } = row.probeBones
+      const rig = (p) => [p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]].map((v) => v / scale)
+      for (const [label, bone] of Object.entries(named)) {
+        const y = rig(bones[bone])[1]
+        travel[label] = travel[label] ?? { low: y, high: y }
+        travel[label].low = Math.min(travel[label].low, y)
+        travel[label].high = Math.max(travel[label].high, y)
+      }
+      const hip = rig(bones.spine)[1]
+      hipLow = Math.min(hipLow, hip)
+      hipHigh = Math.max(hipHigh, hip)
+      const knee = angleAt(bones.shinL, bones.thighL, bones.footL)
+      kneeLow = Math.min(kneeLow, knee)
+      kneeHigh = Math.max(kneeHigh, knee)
+      // The bat's own line: how far the barrel has swung away from straight ahead
+      // is the waggle (the harness reports the barrel's world direction).
+      if (row.probeBat) {
+        const yaw = degrees(Math.atan2(row.probeBat.axis[0], -row.probeBat.axis[2]))
+        batYawLow = Math.min(batYawLow, yaw)
+        batYawHigh = Math.max(batYawHigh, yaw)
+      }
+    }
+
+    for (const [label, bone] of Object.entries(named)) {
+      const restY = restFoot[label][1]
+      const span = travel[label].high - travel[label].low
+      expect(span, `${bone} should not move vertically while the batter waits (was ${(span * 1000).toFixed(1)} mm)`)
+        .toBeLessThanOrEqual(FOOT_TRAVEL_MAX)
+      expect(Math.abs(travel[label].high - restY), `${bone} should not sit above its planted height`)
+        .toBeLessThanOrEqual(FOOT_TRAVEL_MAX)
+      expect(Math.abs(travel[label].low - restY), `${bone} should not sit below its planted height`)
+        .toBeLessThanOrEqual(FOOT_TRAVEL_MAX)
+    }
+
+    expect(hipHigh - restHip, 'the hips should never rise above the set stance')
+      .toBeLessThanOrEqual(FOOT_TRAVEL_MAX)
+    expect(restHip - hipLow, `the crouch should be there (hips travel ${((restHip - hipLow) * 100).toFixed(1)} cm)`)
+      .toBeGreaterThanOrEqual(TRAVEL_MIN)
+    expect(kneeHigh - kneeLow, `the knees should carry the crouch (they move ${(kneeHigh - kneeLow).toFixed(1)} degrees)`)
+      .toBeGreaterThanOrEqual(KNEE_TRAVEL_MIN)
+    expect(batYawHigh - batYawLow, `the bat should waggle in the hands (it turns ${(batYawHigh - batYawLow).toFixed(1)} degrees)`)
+      .toBeGreaterThanOrEqual(3)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The pre-pitch read: the batter is leaning in, and holding it, before the ball
+// is thrown.
+//
+// The lean-in is a ramp across the pitcher's windup, and the windup is the one
+// window of the cycle nothing else here reads: the shots are taken at 0.00-1.10 s
+// of the clock, and every sweep starts at the swing (0.18 s) or the way home. So
+// the ramp could sit at "arrives exactly on the release frame, held for no time at
+// all" with the suite green — which is what it did. At that reading the batter is
+// only just arriving at his lean as the ball leaves the hand, where the moment
+// should read as a batter already set and waiting on it.
+//
+// The lean is a rotation the driver writes on the upper body, so it is read off the
+// bones' own axes rather than off where they sit (their positions stay at rest): the
+// chest's up axis, tipped along the way the batter leans. The harness renders the
+// stance's idle off by default, so the reading is the authored lean alone.
+// ---------------------------------------------------------------------------
+test('the batter is fully leaned in before the ball is released', async ({ page }) => {
+  const STEP_S = 0.01
+  // The lean's own travel across the windup: the set lean (setLean) is 0.3 rad, and
+  // its whole excursion has to be there to be held.
+  const LEAN_TRAVEL_MIN = 10
+  // The set is two beats — the lean in, then the weight shift onto the back leg that
+  // opens *from* it — so the lean's lead is not its own tuning alone: it has to be in by
+  // the time the coil needs to start, or the batter would be loading before he had
+  // leaned in, which is the defect this replaced. Both authored leads are floors (see
+  // loadLead in the tuning) and two steps of the sweep are allowed either way: this is a
+  // clock, and the assertion is that the authored lead is honoured, not that a sample
+  // lands on it.
+  const LEAD_S = Math.max(
+    DEFAULT_TUNING.batter.leanLead,
+    DEFAULT_TUNING.batter.loadTime + DEFAULT_TUNING.batter.loadLead,
+  )
+  const LEAD_TOLERANCE_S = 2 * STEP_S
+  // What the trunk may do *after* the lean lands: the coil settles it back over the back
+  // leg by loadLeanBack, which is a beat of its own and not the lean coming undone — so
+  // the settle is bounded by a share of the lean itself rather than by a constant. Under
+  // half: the batter keeps the lean he leaned in for while he shifts his weight. (It
+  // reads 3.3 degrees against 11.8 of travel at the shipped loadLeanBack of 0.08 rad, and
+  // doubling that back-settle reddens this.)
+  const LEAN_SETTLE_SHARE = 0.5
+  // The reading may never go back *up* past the lean it arrived at: the batter settling
+  // onto his back leg tips the trunk back, never forward again.
+  const LEAN_RISE_DEG = 0.05
+  // "Complete" to within a quarter of a degree — half the deadband the joint test
+  // calls breathing, and a fiftieth of the lean's own travel.
+  const LEAN_DONE_DEG = 0.25
+  // What the lean may not be: one that snaps into place instead of leaning. The
+  // shipped ramp covers its travel in 1.2 s, so a step carries an eighth of a
+  // degree; 1.5 degrees in one step is 125 deg/s, an order of magnitude past
+  // anything the body does at the set, and still far under a snap.
+  const MAX_STEP_DEG = 1.5
+  // 1.3 s of window at 10 ms steps is 133 settled frames in one page, and the sweep
+  // is one long evaluate: on a loaded machine that outruns the suite's own timeout.
+  test.slow()
+
+  await openPhase(page, 'followThrough')
+  const rows = await page.evaluate(
+    ([from, to, step]) => {
+      // probeAxes reads whichever bones it is handed, and a sweep calls a probe with
+      // no argument, so the page's own default is re-aimed at the pelvis and the
+      // chest — the two the lean runs between.
+      const readAxes = window.__vr.probeAxes
+      window.__vr.probeAxes = () => readAxes(['spine', 'spine002'])
+      return window.__vr.sweep(from, to, step, ['probeAxes'])
+    },
+    [WINDUP_WINDOW.start, WINDUP_WINDOW.end, STEP_S],
+  )
+  expect(rows.length, 'the windup should be swept, not sampled').toBeGreaterThan(100)
+
+  // The direction the lean is *read along* is the lean's own motion: the chord from the
+  // chest's direction while the batter stands to its direction at the release. A lean
+  // read as a projection onto a single frame's direction keeps the sideways wobble of
+  // the idle and the body's own turn out of the number, but only the chord reads the
+  // whole excursion at its own scale — the release frame is *after* the coil has settled
+  // the trunk back onto the back leg, so taking the axis from it alone mis-scales the
+  // same lean (measured on the shipped build: 8.3 degrees along the release frame's own
+  // direction against 11.8 along the motion).
+  const standDir = rows[0].probeAxes?.spine002?.y?.dir
+  const releaseDir = rows[rows.length - 1].probeAxes?.spine002?.y?.dir
+  expect(releaseDir && standDir, 'the harness should report the chest bone').toBeTruthy()
+  const flat = (dir) => {
+    const length = Math.hypot(dir[0], dir[2]) || 1
+    return [dir[0] / length, dir[2] / length]
+  }
+  const standFlat = flat(standDir)
+  const releaseFlat = flat(releaseDir)
+  const chordX = releaseFlat[0] - standFlat[0]
+  const chordZ = releaseFlat[1] - standFlat[1]
+  const chord = Math.hypot(chordX, chordZ) || 1
+  const leanAxis = [chordX / chord, chordZ / chord]
+  const readings = rows.map((row) => {
+    const dir = row.probeAxes?.spine002?.y?.dir
+    // The chest's own up axis, tipped off the world's up and read along the lean's
+    // direction, signed: a tilt, with the direction kept.
+    return {
+      time: row.time,
+      lean: dir
+        ? degrees(Math.asin(Math.min(1, Math.max(-1, dir[0] * leanAxis[0] + dir[2] * leanAxis[1]))))
+        : NaN,
+    }
+  })
+  expect(readings.every((reading) => Number.isFinite(reading.lean)), 'every sample should read a lean').toBe(true)
+
+  // The lean's own completeness is read off the windup itself rather than off the last
+  // frame: the coil settles the trunk a fraction of a degree back over the back leg once
+  // it opens, so the release frame is not where the lean's full value lives.
+  const full = Math.max(...readings.map((reading) => reading.lean))
+  const start = readings[0].lean
+  expect(
+    full - start,
+    `the windup should carry the whole lean (the chest travels ${(full - start).toFixed(1)} degrees) `
+      + `— it reaches ${full.toFixed(1)} and is ${start.toFixed(1)} when the windup starts`,
+  ).toBeGreaterThanOrEqual(LEAN_TRAVEL_MIN)
+
+  // The ask itself: when the lean is complete, and that it does not come undone after.
+  const complete = readings.find((reading) => reading.lean >= full - LEAN_DONE_DEG)
+  expect(complete, 'the lean should complete somewhere in the windup').toBeTruthy()
+  const held = WINDUP_WINDOW.end - complete.time
+  expect(
+    held,
+    `the batter should be fully leaned in before the release (it settles ${held.toFixed(2)} s before the ball is thrown)`,
+  ).toBeGreaterThanOrEqual(LEAD_S - LEAD_TOLERANCE_S)
+  const settled = readings.slice(readings.indexOf(complete))
+  const rose = settled.find((reading) => reading.lean > full + LEAN_RISE_DEG)
+  expect(
+    rose,
+    'the trunk should tip back onto the back leg as it coils, never forward off the lean'
+      + (rose ? ` (it came back up to ${rose.lean.toFixed(2)} at ${rose.time.toFixed(2)}s)` : ''),
+  ).toBeUndefined()
+  const lowest = Math.min(...settled.map((reading) => reading.lean))
+  expect(
+    full - lowest,
+    `the trunk should settle onto the back leg while it coils, not unwind off the lean `
+      + `(it falls ${(full - lowest).toFixed(2)} of the ${(full - start).toFixed(2)} degrees it `
+      + `leaned in, after settling at ${complete.time.toFixed(2)}s)`,
+  ).toBeLessThanOrEqual(LEAN_SETTLE_SHARE * (full - start))
+
+  let worst = { degrees: 0, at: 0 }
+  for (let i = 1; i < readings.length; i += 1) {
+    const step = Math.abs(readings[i].lean - readings[i - 1].lean)
+    if (step > worst.degrees) worst = { degrees: step, at: readings[i].time }
+  }
+  expect(
+    worst.degrees,
+    `the lean should arrive by leaning, not by jumping (worst step ${worst.degrees.toFixed(2)} degrees `
+      + `in ${STEP_S} s, at ${worst.at.toFixed(2)} s)`,
+  ).toBeLessThanOrEqual(MAX_STEP_DEG)
+})
+
+// ---------------------------------------------------------------------------
+// The *other* half of the set: the weight shift onto the back leg opens from the
+// leaned-in pose, and is finished — coiled and held — before the arm comes through.
+//
+// The load used to be timed off the swing: it opened on the release frame itself and
+// ran into the ball's flight, so the batter was still sinking onto his back leg as
+// the pitch came to him and only read as loaded once the ball was halfway in. The
+// lean test above cannot see that, because the trunk is exactly what the coil
+// settles; the weight shift owns the *hips*, so it is read off the pelvis's own
+// height — the driver drops the whole upper body by hipSettle * load, and with the
+// idle rendered off by the harness nothing else in the window moves it (the stride
+// lifts the front foot, not the hips).
+//
+// Two bounds make the read, and they pull against each other, which is the point:
+// the shift may not open before the lean lands (or the batter is leaning and loading
+// on one frame again), and it must be finished and holding by the release (or he is
+// still loading as the arm comes through).
+// ---------------------------------------------------------------------------
+test('the batter coils from the leaned-in pose, and is coiled before the ball is released', async ({ page }) => {
+  const STEP_S = 0.01
+  const LOAD_TIME = DEFAULT_TUNING.batter.loadTime
+  const LOAD_LEAD = DEFAULT_TUNING.batter.loadLead
+  const TOLERANCE_S = 2 * STEP_S
+  // "Complete" to within a quarter of a degree — half the deadband the joint test
+  // calls breathing, and a fiftieth of the lean's own travel. The same reading the
+  // lean test makes, so the frame the coil opens on is the frame that test calls the
+  // lean's arrival.
+  const LEAN_DONE_DEG = 0.25
+  // A frame where the hips have moved, and where they have stopped: a fifth of a
+  // millimetre, well under the 3.8 cm the coil carries, and above the sweep's own
+  // float noise.
+  const MOVED_RIG = 0.0002
+  // What the coil is worth: it has to be a real transfer of weight onto the back leg.
+  // Measured 0.038 rig at the shipped hipSettle of 0.06.
+  const COIL_DROP_MIN_RIG = 0.025
+  test.slow()
+
+  await openPhase(page, 'followThrough')
+  const rows = await page.evaluate(
+    ([from, to, step]) => {
+      // probeAxes reads whichever bones it is handed, and a sweep calls a probe with
+      // no argument, so the page's own default is re-aimed at the chest — the bone the
+      // lean is read off, in the same sweep as the hips.
+      const readAxes = window.__vr.probeAxes
+      window.__vr.probeAxes = () => readAxes(['spine', 'spine002'])
+      return window.__vr.sweep(from, to, step, ['probeBones', 'probeAxes'])
+    },
+    [WINDUP_WINDOW.start, WINDUP_WINDOW.end, STEP_S],
+  )
+  expect(rows.length, 'the windup should be swept, not sampled').toBeGreaterThan(100)
+
+  const samples = rows.map((row) => ({
+    time: row.time,
+    hips: row.probeBones?.bones?.spine?.[1] ?? NaN,
+    chest: row.probeAxes?.spine002?.y?.dir ?? null,
+  }))
+  expect(samples.every((sample) => Number.isFinite(sample.hips)), 'every sample should read the pelvis').toBe(true)
+  expect(samples.every((sample) => sample.chest), 'every sample should read the chest').toBe(true)
+
+  // When the lean lands, on the same reading the lean test makes (see it for why the
+  // axis is the lean's own motion rather than one frame's direction).
+  const flat = (dir) => {
+    const length = Math.hypot(dir[0], dir[2]) || 1
+    return [dir[0] / length, dir[2] / length]
+  }
+  const stand = flat(samples[0].chest)
+  const end = flat(samples[samples.length - 1].chest)
+  const chord = Math.hypot(end[0] - stand[0], end[1] - stand[1]) || 1
+  const leanAxis = [(end[0] - stand[0]) / chord, (end[1] - stand[1]) / chord]
+  const leans = samples.map((sample) => degrees(Math.asin(
+    Math.min(1, Math.max(-1, sample.chest[0] * leanAxis[0] + sample.chest[2] * leanAxis[1])),
+  )))
+  const leanFull = Math.max(...leans)
+  const leanAt = leans.findIndex((lean) => lean >= leanFull - LEAN_DONE_DEG)
+  expect(leanAt, 'the lean should land somewhere in the windup').toBeGreaterThan(0)
+  const leanLand = samples[leanAt].time
+
+  // The coil's own clock, read off the hips: when they first leave the height they
+  // hold while the batter stands, the bottom they settle to, and that they hold there.
+  const rest = samples[0].hips
+  const opened = samples.find((sample) => rest - sample.hips > MOVED_RIG)
+  expect(opened, 'the hips should settle onto the back leg somewhere in the windup').toBeTruthy()
+  const lowest = samples.reduce((best, sample) => (sample.hips < best.hips ? sample : best), samples[0])
+  const bottom = samples.find((sample) => Math.abs(lowest.hips - sample.hips) < MOVED_RIG)
+  expect(bottom, 'the hips should reach the bottom of the coil').toBeTruthy()
+
+  // The ask itself: the shift starts *from* the leaned-in pose. It is timed off the
+  // lean for exactly this reason — a coil that opens before the batter has leaned in is
+  // the leaning-and-loading-on-one-frame read this replaced.
+  expect(
+    opened.time,
+    `the weight shift should open from the leaned-in pose, not before it (the hips start `
+      + `settling at ${opened.time.toFixed(2)}s, the lean lands at ${leanLand.toFixed(2)}s)`,
+  ).toBeGreaterThanOrEqual(leanLand - STEP_S)
+
+  // ...and the arm comes through with the batter already coiled and holding it.
+  const lead = WINDUP_WINDOW.end - bottom.time
+  expect(
+    lead,
+    `the batter should be coiled and waiting before the ball is released (it reaches the `
+      + `bottom ${lead.toFixed(2)} s before the ball is thrown)`,
+  ).toBeGreaterThanOrEqual(LOAD_LEAD - TOLERANCE_S)
+  const after = samples.filter((sample) => sample.time > bottom.time)
+  const drift = Math.max(...after.map((sample) => Math.abs(sample.hips - lowest.hips)))
+  expect(
+    drift,
+    `the coil should hold from its bottom to the release, not keep sinking (it drifts `
+      + `${(drift * 100).toFixed(2)} cm after its bottom at ${bottom.time.toFixed(2)}s)`,
+  ).toBeLessThanOrEqual(MOVED_RIG * 2)
+
+  // The coil is its own authored beat, not whatever is left of the windup: it takes
+  // loadTime. (The ease leaves and arrives flat, so the readings bracket it from
+  // inside — a sixth of the coil either way.)
+  const coil = bottom.time - opened.time
+  expect(
+    coil,
+    `the coil should take its own loadTime (it takes ${coil.toFixed(2)} s of ${LOAD_TIME.toFixed(2)})`,
+  ).toBeGreaterThanOrEqual(LOAD_TIME - 0.06)
+  expect(coil, `the coil should take its own loadTime (it takes ${coil.toFixed(2)} s)`)
+    .toBeLessThanOrEqual(LOAD_TIME + TOLERANCE_S)
+
+  // And it has to be worth reading as a weight shift at all.
+  expect(
+    rest - lowest.hips,
+    `the batter should shift his weight onto the back leg (the hips drop ${((rest - lowest.hips) * 100).toFixed(2)} cm)`,
+  ).toBeGreaterThanOrEqual(COIL_DROP_MIN_RIG)
+})
+
+// ---------------------------------------------------------------------------
+// The take's own coil.
+//
+// A taken pitch used to be a batter who never shifted his weight: the coil was
+// computed only when the swing was called for, so a take got the lean-in and the
+// stride and nothing else — the batter stood in his stance with his hands up while
+// the ball went by. A batter taking a pitch is not idle. He sets himself on the
+// pitcher's clock exactly as he does for a swing, holds the coil while the ball
+// comes, and lets it go once it has passed: the hold is what a take reads as.
+//
+// So the take's coil is held to the same two bounds the swing's is — it opens from
+// the leaned-in pose, and it is complete and holding before the release — and then
+// to the two things a take has to do with it: hold it through the ball's crossing,
+// and come back out of it afterwards rather than standing coiled until the next
+// pitch. The swing is also witnessed *not* to have fired, because a take that turned
+// out to be a swing would satisfy every one of those bounds.
+// ---------------------------------------------------------------------------
+test('the batter coils on a taken pitch, and holds it while the ball comes', async ({ page }) => {
+  const STEP_S = 0.01
+  const LOAD_TIME = DEFAULT_TUNING.batter.loadTime
+  const LOAD_LEAD = DEFAULT_TUNING.batter.loadLead
+  const LEAN_OUT = DEFAULT_TUNING.batter.leanOutTime
+  const TOLERANCE_S = 2 * STEP_S
+  // A frame where the hips have moved, and where they have stopped: the same
+  // fifth-of-a-millimetre the swing's own coil test reads them at.
+  const MOVED_RIG = 0.0002
+  // What the coil is worth on a take as much as on a swing: a real transfer of
+  // weight onto the back leg. This take reads 0.060 rig of hip drop, and the swing's
+  // own coil test reads the same 3.8 cm of it — its sweep hands back world metres,
+  // this one reads the animation's own frame — so the two are one and the same
+  // motion on two different pitches.
+  const COIL_DROP_MIN_RIG = 0.025
+  // The take's own clock: the ball crosses the plate at CONTACT_TIME_S, and the
+  // coil, the front foot and the stride all come home over the LEAN_OUT after that
+  // (see takeSettleEnd in Batter.jsx).
+  const SETTLE_END_S = CONTACT_TIME_S + LEAN_OUT
+  // The bat on a take stays in the load. The coil now carries the hands back with
+  // it, which swings the tip 0.147 rig off the stance's own place, and the idle's
+  // waggle is frozen at one phase for both readings. The swing's contact frame, on
+  // the same reading, is 1.668 rig away — so the load is bounded well inside it.
+  const BAT_TAKE_SLACK_RIG = 0.3
+  const SWING_OFF_STANCE_MIN_RIG = 0.3
+  test.slow()
+
+  const tipOf = async () => {
+    const bat = await readBat(page)
+    return add(bat.origin, mul(bat.axis, bat.length))
+  }
+  // The idle is frozen at one phase of its own bounce, so every pose read below
+  // carries the same amount of it — and it stays frozen through the sweeps, which is
+  // what makes their readings comparable at all.
+  await openPhase(page, 'take', '&idleTime=0')
+  const take = await readRig(page)
+  const takeHips = take.bone('spine')[1]
+  // A sweep hands back probeBones' own readings, which are world metres; the pelvis
+  // is read in the animation's own units, as every other reading in this suite is.
+  const hipsOf = (rows) => rows.map((row) => ({
+    time: row.time,
+    hips: take.toRig([0, row.probeBones?.bones?.spine?.[1] ?? NaN, 0])[1],
+  }))
+  const takeTip = await tipOf()
+
+  // The pitch itself, swept from the release through the flight and on into the set
+  // the take comes back to; then the windup that set the batter in the first place.
+  const hold = hipsOf(await page.evaluate(
+    ([from, to, step]) => window.__vr.sweep(from, to, step, ['probeBones']),
+    [0, SETTLE_END_S + LEAN_OUT + 0.4, STEP_S],
+  ))
+  const windup = hipsOf(await page.evaluate(
+    ([from, to, step]) => window.__vr.sweep(from, to, step, ['probeBones']),
+    [WINDUP_WINDOW.start, WINDUP_WINDOW.end, STEP_S],
+  ))
+  expect(hold.length, 'the take should be swept, not sampled').toBeGreaterThan(100)
+  expect(windup.length, 'and so should the windup it was taken from').toBeGreaterThan(50)
+  expect(hold.every((sample) => Number.isFinite(sample.hips)), 'every sample should read the pelvis').toBe(true)
+
+  // The height the take settles back to: the tail of the sweep, once the coil and
+  // the stride are both home. Read here rather than off the stance phase so it is
+  // the same page, the same idle phase and the same clock as the rest of it.
+  const settled = hold.filter((sample) => sample.time >= SETTLE_END_S + LEAN_OUT + 0.05)
+  const rest = Math.max(...settled.map((sample) => sample.hips))
+  expect(
+    Math.max(...settled.map((sample) => Math.abs(sample.hips - rest))),
+    'the take should settle onto the stance, not drift about it',
+  ).toBeLessThanOrEqual(MOVED_RIG * 2)
+
+  // The ask itself: a take shifts the batter's weight onto his back leg, and holds
+  // it. Both halves are read — the drop, and the frame the ball crosses inside it.
+  const flight = hold.filter((sample) => sample.time <= SETTLE_END_S)
+  const lowest = Math.min(...flight.map((sample) => sample.hips))
+  console.log(
+    `the take: hips ${takeHips.toFixed(4)} against a settled stance at ${rest.toFixed(4)} `
+      + `(${((rest - takeHips) * 100).toFixed(2)} cm down); through the flight the coil sits at `
+      + `${lowest.toFixed(4)} and moves ${((Math.max(...flight.map((s) => s.hips)) - lowest) * 100).toFixed(2)} cm`,
+  )
+  expect(
+    rest - takeHips,
+    `a taken pitch has to shift the batter's weight onto the back leg (the hips drop ${((rest - takeHips) * 100).toFixed(2)} cm)`,
+  ).toBeGreaterThanOrEqual(COIL_DROP_MIN_RIG)
+  expect(
+    Math.max(...flight.map((sample) => sample.hips)) - lowest,
+    'the coil should hold through the ball\'s crossing, not keep moving',
+  ).toBeLessThanOrEqual(MOVED_RIG * 2)
+  expect(
+    Math.abs(takeHips - lowest),
+    'and the frame the ball crosses is inside that hold, which is the pose a take is read as',
+  ).toBeLessThanOrEqual(MOVED_RIG * 2)
+
+  // ...and it lets the coil go once the ball has passed, on the take's own clock,
+  // rather than standing coiled until the next pitch.
+  const back = hold.find((sample) => sample.time >= SETTLE_END_S + LEAN_OUT
+    && Math.abs(sample.hips - rest) <= MOVED_RIG * 2)
+  expect(back, 'the coil should unwind after the pitch, on the take\'s own clock').toBeTruthy()
+  expect(
+    back.time,
+    `it should be back at the stance within the take's own settle (by ${(SETTLE_END_S + LEAN_OUT).toFixed(2)} s)`,
+  ).toBeLessThanOrEqual(SETTLE_END_S + LEAN_OUT + TOLERANCE_S)
+
+  // The windup, on the take's own clock: the coil takes loadTime, and it is finished
+  // and holding before the ball leaves the pitcher's hand — the same two bounds the
+  // swing's coil is held to, because it is the same set.
+  const opened = windup.find((sample) => rest - sample.hips > MOVED_RIG)
+  expect(opened, 'the batter should coil somewhere in the windup he takes the pitch from').toBeTruthy()
+  const bottom = windup.reduce((best, sample) => (sample.hips < best.hips ? sample : best), windup[0])
+  const coil = bottom.time - opened.time
+  expect(
+    coil,
+    `the coil should take its own loadTime (it takes ${coil.toFixed(2)} s of ${LOAD_TIME.toFixed(2)})`,
+  ).toBeGreaterThanOrEqual(LOAD_TIME - 0.06)
+  expect(coil, `and not run on past it (it takes ${coil.toFixed(2)} s)`)
+    .toBeLessThanOrEqual(LOAD_TIME + TOLERANCE_S)
+  const lead = WINDUP_WINDOW.end - bottom.time
+  expect(
+    lead,
+    `the batter should be coiled and waiting when the ball is released (${lead.toFixed(2)} s before)`,
+  ).toBeGreaterThanOrEqual(LOAD_LEAD - TOLERANCE_S)
+
+  // And the swing did not fire: the bat is where the load leaves it, while the same
+  // frame of the swing has it out on the ball (witnessed, so this cannot pass by
+  // reading a batter that never moves at all).
+  await openPhase(page, 'stance', '&idleTime=0')
+  const stanceTip = await tipOf()
+  await openPhase(page, 'contact', '&idleTime=0')
+  const contactTip = await tipOf()
+  const takeOffStance = norm(sub(takeTip, stanceTip))
+  const swingOffStance = norm(sub(contactTip, stanceTip))
+  console.log(
+    `the bat: on the take it sits ${takeOffStance.toFixed(3)} rig off the stance's own place, `
+      + `where the swing's contact frame is ${swingOffStance.toFixed(3)} away`,
+  )
+  expect(swingOffStance, 'the swing a take is read against should be a real swing')
+    .toBeGreaterThan(SWING_OFF_STANCE_MIN_RIG)
+  expect(
+    takeOffStance,
+    'a take leaves the bat in the load: it is a take, not a swing',
+  ).toBeLessThan(BAT_TAKE_SLACK_RIG)
 })

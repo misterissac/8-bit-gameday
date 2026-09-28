@@ -54,6 +54,17 @@ export const SWING_PITCH = {
   trajectory: TRAJECTORY,
 }
 
+// The same ball on the same trajectory, *taken*: the swing called off (``swing:
+// false``) with the pitch still coming. A take is not the stance held — the batter
+// sets himself for it exactly as he does for a swing, and then holds the coil while
+// the ball passes — so the two have to be read off one clock to tell the coil from
+// the swing that follows it.
+export const TAKE_PITCH = {
+  ...SWING_PITCH,
+  play_id: 'visual-harness-take',
+  swing: false,
+}
+
 // No trajectory => the batter holds its set stance (loaded hands, crouch, bat
 // cocked, head on the pitcher). That is the pose the app shows before a pitch's
 // trajectory arrives, so it is the honest "stance" baseline.
@@ -90,11 +101,31 @@ export const RECOVERY_WINDOW = { start: HOLD_END_S, end: HOLD_END_S + batterTuni
 // the poses anyone would think to pick.
 export const WAY_HOME_WINDOW = { start: FOLLOW_THROUGH_END_S, end: RECOVERY_WINDOW.end }
 
+// The pitcher's windup, on the shared cycle: the frame the batter starts his
+// forward lean-in, through to the release itself. The cycle's own clock documents
+// the release as landing on the wrap (t = 0 of the next cycle, "pitch released,
+// batter loaded"), and the pitcher's windup is authored as the last
+// ballReleaseTime of the cycle — the same window Batter.jsx maps its lean onto
+// (see windupStart there). Nothing else in the suite reads this window: every
+// other reading starts at the swing or the way home, and the shots are taken at
+// 0.00-1.10 s, so the lean-in's own timing lives only here.
+export const WINDUP_WINDOW = {
+  start: CYCLE_DURATION_S - DEFAULT_TUNING.playback.ballReleaseTime,
+  end: CYCLE_DURATION_S,
+}
+
 // The shots the suite captures. ``time`` is the shared simulation clock time
 // (seconds into the pitch cycle) the harness pins before rendering.
 export const PHASES = {
   // Loaded set stance, before the swing fires.
   stance: { pitch: STANCE_PITCH, time: 0 },
+  // A taken pitch, at the frame the ball crosses the plate: the batter coiled onto
+  // the back leg and holding it, having set himself on the pitcher's own clock. Read
+  // here rather than earlier or later because it is the pose the pitch is taken in —
+  // the coil has held through the whole flight and has not yet been let go — and
+  // because the same frame of the *swing* is `contact`, so the two can be read against
+  // each other: one batter arrives on the ball and the other is still sitting on it.
+  take: { pitch: TAKE_PITCH, time: CONTACT_TIME_S },
   // Mid-swing: the barrel is on the swing plane, partway from load to contact, at the
   // swing's own clock midpoint. Read here rather than at half of the swing's *progress*:
   // the swing's ease (SWING_EASE) puts its fastest frame on the ball, so half of the

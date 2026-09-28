@@ -227,30 +227,206 @@ the chain would have given the torso's offset — so the swing's geometry, the a
 solves and the bat's contact are untouched (the arm stretch reads the same to
 three decimals).
 
-The feet are carried with it, horizontally. A pelvis that walks forward under a
-planted foot would be walking away from a leg that cannot follow it: the socket
-travels the pelvis's ~0.33 and the ankle does not, and this skeleton has no slack
-— the drive leg is already at full extension, so the driver's over-reach rule
-would lift the foot 0.4 rig units out of the ground. Carrying the feet by the
-pelvis's own drive is what the tuning already does with the drive the hips lead
-(the front foot rides forward with it), so it is the same motion continued, and it
-keeps the legs' shapes: the hip crease reads 0.164 either way. What it costs is
-that the drive leg's shoe rides forward with the pelvis instead of staying put.
-The drive foot leaves the ground either way — the tuning drives the hips further
-forward than the leg is long, so the shoe comes up — and *how* it comes up is the
-drive's own business. Lifting the ankle straight up carried the whole shoe with
-it, toe and all (its toe read 0.05 rig at mid-swing and contact instead of the
-0.021 it stands at, so both shoes were off the ground at once: a levitating
-batter). `rollFootOnToe` in the driver instead turns the ankle about the shoe's
-own toe — the point the tuning planted the ball of the foot on, hinged on the
-axis a foot actually flexes about — by as much as the leg needs and no more, so
-the toe stays at 0.021 rig in *every* phase while the ankle rises to 0.19-0.21.
-The roll is bounded: it stops with the ankle over the toe, it is skipped for a
-foot the roll pulls *away* from the hips (the front foot, which the tuning lifts
-on purpose), and an ankle the hips have outrun further still lifts the rest of the
-way, so the leg cannot stretch. `the feet stay on the ground through the drive`
+The drive's footing is a place on the *dirt*, not a place in the batter's turning
+frame. The rear shoe is the plant the swing turns on, so its footprint — the ball
+of the shoe, where the stance plants it — is authored once in the ground's own
+frame, and the ankle is authored about it: the shoe pivots on its ball as the hips
+open, so the ball stays on the dirt and the ankle swings round it rather than the
+other way about. Authored in the batter's frame instead, the drive carried it:
+measured, the rear shoe slid **0.26 rig** across the dirt through the swing, and
+the shoe sat 0.034 rig *in* the dirt besides (it was never quite standing on it).
+Planted, it moves only by the tuning's own push forward along the line it stands
+on (`legBackPushForward` 0.05 rig) plus the shoe's own levelling roll (0.018
+measured), and the toe stands at **0.021 rig in every phase** — the set stance's
+own height — while the rear ankle holds **0.106-0.113** instead of riding up.
+
+What keeps the batter from walking off that footprint is the bound in `Batter.jsx`
+(`rearPlanted`), and it is the leg's own geometry: the pelvis's ride forward and
+its turn are read *together* against the socket's own place over the footprint,
+because the rear leg has one span to cover both with. The tuning asks the drive to
+carry the body **0.762 rig** by contact; the planted rear leg spans **0.365** of
+it, and what it cannot span it does not take. Neither does it take a turn it
+cannot hold: the legs are posed again on the turn that survives, and the extra
+rotation is simply not taken by the pelvis — the chest's own opening moves no
+socket and is untouched, so the belt takes the difference. The ride that survives
+is handed to the contact geometry, which re-fits the bat to it (0.74 m of bat, the
+sweet spot 0.789 of the way up it, on the ball to 3 mm).
+
+The shoe's own give is in that bound too, and only as far as the leather can tip.
+A shoe that tips onto its ball swings its toe box down through the dirt —
+measured, 0.2 rad of tip leaves it 0.02 rig under and 0.65 rad leaves it 0.135
+under — and the driver's ground rule answers anything under the surface by lifting
+the whole foot, which takes the toe 0.126 rig up off the footprint it was planted
+on and stands the rear ankle 0.21 rig above its own stance. So the bound reads the
+tip no further than `REAR_BALL_TIP` (0.2 rad), past which the *pelvis* gives
+instead, and the rear shoe holds its sole level on the dirt besides (the driver's
+`leg.flat`): a sole left to bank with the leg's own turn stands on a corner
+(0.03 rig of it) and the ground rule lifts the foot to stand it on the surface. `rollFootOnToe` in the driver still turns the ankle about the
+shoe's own toe — the point the tuning plants the ball of the foot on, hinged on
+the axis a foot actually flexes about — and its own rules are unchanged: it stops
+with the ankle over the toe, it is skipped for a foot the roll pulls *away* from
+the hips (the front foot, which the tuning lifts on purpose), and an ankle the
+hips have outrun further still lifts the rest of the way, so the leg cannot
+stretch. What the rework changed is that the bound above never asks it for more
+than the shoe can tip without leaving the dirt, so the roll is the emergency it
+reads as here rather than the drive's everyday answer: measured across all six
+phases, the rear shoe is planted (`lifted` 0.001 rig) and never rolled at all. `the feet stay on the ground through the drive`
 bounds the feet from above as well as below and requires the lowest toe to stay
 down, so the pivot cannot quietly become a levitation again.
+
+### The lead foot stays flat, opens with the hips, and lifts its toes at the finish
+
+The lead foot is the swing's anchor, so it may not give the way the pivot foot
+does: its **heel stays on the dirt all swing long**, it **turns with the hips**,
+and only at the finish does the **toe** end come up. Three tuning values say so —
+`legFrontUnplantLift` **0.03** (was 0.08: the foot no longer floats as the drive
+fires, and the little that is left is the leg's own elbow room rather than a
+levitation — the ground rule lands the shoe on the dirt either way), `frontFootPivot`
+**1** (was 0.2: the shoe takes the whole of the body's turn instead of refusing
+four fifths of it), and `legFrontToeLift` **0.18 rad** (new: the toes tip up over
+the ankle at the swing's arrival) — and one rule in the driver, `leg.heelDown`,
+which the pose asks for on the lead foot alone.
+
+`heelDown` does two things. It **skips `rollFootOnToe`**, so a leg the drive has
+outrun cannot take its shortfall out of the shoe by pivoting it onto its toe -
+which is what used to happen, and what read as a batter stepping out of his own
+swing. And it keeps the **skid** as the fallback it now is: the ankle target slides
+back along the ground until the leg spans it, at the height the pose asked for, for
+any frame the pose's own sink below has not already answered. Two things about that
+skid had to be measured rather than assumed. It runs **along the line the shoe
+stands on** and not along the line to the socket: a shoe's edge bites sideways, and
+the socket-line version dragged the lead ankle **0.12 rig across the box** by
+contact, which is the batter's foot walking in toward the plate (`the front foot
+steps straight at the front line` caught it; sliding along the length reads 0.000).
+And it is **eased in**, because the shortfall arrives through a square root: a hard
+handover made the lead knee swing **22° and back inside 5 ms** (0.285 s) and the hip
+17° and back inside 50 ms (0.39-0.44 s), which `no joint turns back on itself`
+refused. It is blended over `SLIDE_EASE` **0.04 rig**, which leaves at most half of
+that on the table for the leg's own miss to take.
+
+### The pelvis sinks onto the lead leg, instead of the shoe giving the drive its ride
+
+That skid was the *solver* answering a pose, not the pose answering itself, and
+what it was answering was the drive: the pelvis rides forward over a foot that is
+planted, and at the contact the socket used to sit **further from its own footprint
+than the leg is long** — 0.33 rig of over-reach on the build this replaced, all of
+it coming out of the shoe. `poseLegs` now holds the pelvis inside the lead leg's own
+span instead. For every leg the swing is *standing* on, the rule takes the socket's
+horizontal offset from the footprint (the pose's own geometry, at the pelvis's own
+yaw), asks how high the pelvis may be for that leg to reach it with `REACH_SLACK`
+**0.04** of its 1.0576 rig still in hand, and sinks the pelvis by the deepest
+answer — the legs share one pelvis, and the leg with the most to reach is the one
+the crouch has to satisfy. It eases over `REACH_EASE` **0.04**, so the frame the
+pelvis starts giving is not a corner in the body's height (see `idleCrouch` for the
+same reason on the idle's flex).
+
+Two details are load-bearing. It is a **geometry and not a number**: it holds on
+every frame of the drive, at any drive distance, on either foot, because it is read
+from the sockets and the targets that frame was just built from. And a planted foot
+is measured from **the dirt** and not from its own target: read off the target's own
+lift, the recovery's step-lift let the pelvis back up and the ankle came out 0.035
+rig below what the leg could reach.
+
+Measured over the whole swing, the lead leg is left **0.046 rig of its own span over
+at the finish and 0.019 at its tightest** (contact, 0.38 s), and the driver's own
+skid reads **0.000 at every frame of it** — the pose reaches on its own, which is
+the whole point of the change. The hip and the knee each turn once in the swing
+cycle (their budgets are 1) with no flicks. `the feet stay on the ground through the
+drive` reads the lead foot **0.095-0.115 rig above its own heel** against the set
+stance's 0.105, its toe **0.039 rig over that heel at the follow-through** where it
+stands 0.020 at the set, and the shoe's own angle against the pelvis's line within
+**6.3°** of its set-stance value across all six phases — the shoe turns with the
+hips rather than holding its own line while the ankle carries the turn.
+`the front foot steps straight at the front line` reads the front ankle **0.000 rig
+across the box and 1.049 rig forward**, with the pelvis at world z 0.294 m, so the
+step itself is untouched by any of it.
+
+The sink is the **pelvis's**, and the whole body rides it down. The hips drop onto
+the lead leg and the chest, the shoulders, the head and the frame the bat hangs in
+all come with them: the joint between the two blocks the belt sits between turns and
+does not slide (`PELVIS_DRIVE_SHARE` is all of the drive, and the waist is given no
+translation at all), so `the body is rigid parts joined by narrow bands` reads the
+pelvis-to-torso distance **0.281 rig in every one of the six phases** — where the
+rise this replaced parted the two edges by the sink, 0.081 at the contact and 0.131
+by the follow-through, and only the sleeve's own **0.14** of headroom covered it.
+The rig's chest therefore sits `legs.reachDrop` **lower** than the tuning authored
+it, and every consumer is handed the frame the body really has: the bat hangs in the
+sunk frame and is raised inside it by the same sink, so the bat itself is exactly
+where the contact geometry put it — `contact puts the sweet spot on the ball` still
+reads **0.0151 m** off the ball's centre, where the bat left in the sunk frame reads
+0.0377 m, the ball's own radius; the arm solve's own frame offset carries the same
+drop, so the shoulder its elbow hints are read from is the live one; and the legs
+are solved onto the same sunk hips, which is the sink they asked for in the first
+place. The hip's forward ride is untouched, the lead foot never skids (the driver's
+own skid still reads **0.000** at every frame of it) and no shoe rolls onto its toe.
+
+What the drop *is*, then, is a lower body — which is worth saying, because it is
+what the pose is for. The hips go down onto a front foot the batter has already
+planted, as a hitter's do, and the swing's reach into the bottom of the zone comes
+with it: the shoulder is `legs.reachDrop` nearer a low pitch than it was, and a
+two-bone arm is exactly what runs out of reach first down there.
+
+The two other answers are worth recording, because both were measured. Leaving the
+bat in the sunk frame carries it down with the body and misses the pitch by the
+whole sink (**0.047 m** at the contact). Lifting it out of a sunk frame whose chest
+has *not* sunk with it is the same distance the other way round — the grip comes
+`reachDrop` nearer the shoulder than the pose has it — and the trailing arm, whose
+chord grazes its span through the follow-through, answers by folding **27° inside 50
+ms** where the pose asks it straight: `no joint turns back on itself` read that as a
+flick at 0.405 s and 0.460 s. Handing the frame its own drop is the third answer and
+the one the pose takes: the arms are solved from the shoulder the body really has to
+the handle the bat really has, the elbows' hints are read from that same live
+socket, and the whole swing cycle turns **0 flicks** on every joint of it.
+
+The fold is the two-bone solve's own **square root**: a two-bone chain's elbow angle
+is the angle of a triangle whose legs are the bones and whose base is the chord, so
+near full extension the bow grows as the root of how far the target sits inside the
+span — an arm a centimetre inside it is *already* visibly bent. The pose has one
+place where it comes inside: through the follow-through's pinch, at 0.46 s, the
+trail arm's chord reads **0.9979 of the span** — two millimetres, where the pose's
+own chord (with the shoulder at rest) is 1.12 — and the elbow paid for it in a 2.4°
+turn over 15 ms that the pose never asked for. The solve now takes that whisker out
+of the **chord** rather than out of the elbow: for the first `ELBOW_FOLD_SLACK`
+(**0.006**) of the shortfall the chord the bones are solved against — and aimed at —
+is held out to the arm's own span, so the arm is straight across the pinch, and the
+shortfall comes off in full beyond it (the curve is flat at both ends, so the
+elbow's angle is a plain function of the chord on either side and neither side turns
+over where they meet). The hand keeps the difference, and it is under **1.3 mm** at
+its worst, on a fist closed on a handle.
+
+The other half is the *clamp* every two-bone circle carries: the reach is clamped
+just inside the two bone lengths so a target at the very end of the chain leaves a
+circle to walk rather than a point, and at 0.999 that clamp was also a millimetre the
+arm could not cover — everywhere the pose had the wrists stretched past the arm's
+own length, which is the whole outward half of the swing. The hand landed that far
+short of what it was aimed at, and near full extension the angle at the elbow turned
+that fraction into **0.7° of drift** as the pose came back off its stretch: a turn
+the joint never made. `MIDDLE_CLAMP` is **0.9999** (0.04° of drift) — as tight as a
+walk on the circle can stand, and the elbow's real reserve is the shoulder's
+(`ARM_SHOULDER_BEND` 0.97), not this.
+
+Measured over the cycle, the trail elbow reads **4 turns of its 5** and the lead
+**6 of 9**, with **no flicks anywhere** on any joint. The fists hold the handle, the
+arms solve onto the bat in every phase, the hands stay clear of the torso and the
+trail arm still comes round the chest rather than across it — the same tests that
+would show an elbow a centimetre adrift. What the tighter clamp does move is where
+the elbow *is* where the arm is stretched (it sits on its own line instead of on the
+old clamp's bow), which the pose baselines pin.
+
+What that costs is the **belt**, and the belt is cut for it. The surface is cut open
+along the belt's own top edge with a band of the same surface hidden under it, so a
+hem that stands with the chest while the hips drop does not tear anything — it
+*slides up over the belt*, and what shows under it is more jersey. The seam's own
+opening is the sink: **0.000 rig** at the set stance (no drive), 0.063 at mid-swing,
+**0.081** at the contact and **0.131** at the follow-through, and the hidden sleeve
+is cut to cover it (`SLEEVE_MARGIN` **0.14**, up from the 0.09 that covered only the
+spin's own fraction of a face). Both of the belt's own tests read that seam in every
+phase: `the belt is cut open, with a sleeve hidden under it` opens it against the
+sleeve's coverage, and `the body is rigid parts joined by narrow bands` now holds the
+two blocks' parting to the same number rather than to a flat 0.02 rig — the 0.465 rig
+the drive once tore the belt open with is still refused, and the *shear* rule
+(the pelvis and the chest differing by a spin and by nothing else) is unchanged and
+still holds to **1°**.
 
 What the drive decides is *which* skin absorbs it and in what shape: the weights
 alone cannot tune it away, and the band's width and the drive are the other
@@ -623,6 +799,221 @@ ends (contact) or outside it, so every baseline stands: `contact puts the sweet
 spot on the ball`, `the barrel rides the swing plane into contact and follows
 through`, `the swing keeps opening after contact` and the pose baselines all pass.
 
+### The set stance's idle bounces off its knees
+
+The batter waiting for a pitch used to bob his *hips*: a hip height that rose and
+fell around the stance's own. Above the stance the rig's legs are at full stretch,
+so the ankles rose with the hips and the shoes came off the ground — **3.9 cm of
+it, heel first**, the rig rolling a foot onto its toe the moment a hip outran its
+leg. The suite never caught it because the `stance`
+phase renders with the idle held off; the defect only lived in the frames between
+the shots.
+
+Asked to reauthor it against the reference set (solomon-gumball's `BattingIdle`),
+the bounce is now the **knees' own flex**, and the wave is *one-sided*: the crouch
+is `(1 - cos) / 2`, which is 0 at the stance and 1 at the deepest point, so the
+stance's own pose is the top of the wave and the body has nowhere to go but down.
+`(1 - cos) / 2` rather than `|sin|` for the reason the old bob looked like a bob:
+a rectified sine has a corner at the top, where this leaves and returns smoothly.
+
+The hips' drop is not a second number to tune — it is what the flex *costs*. A leg
+is two rigid links on a planted foot, so the hip sits at whatever distance the
+knee's own angle puts it from the ankle (`idleCrouch`), and the driver takes the
+smaller drop of the two legs. That is the whole reason a foot cannot leave the
+ground: there is no hip height to disagree with the legs about. The flex itself is
+**0.4 rad**, which costs 4.1 cm here — and it costs **24 degrees of knee** where
+the reference's own 12 would move this batter 1.6 cm, because the rig's legs stand
+within 5 mm of their own span at the set and the first degrees of flex are where
+all the drop is. The rock, the lean and the bat's waggle ride the same clock: the
+weight shift *is* the crouch (read off the reference, the pelvis reaches its
+deepest *and* its most-lateral point on the same frame — there is no frame of that
+clip where he is crouched and centred), the torso tips over the lead foot as the
+knees give, and the bat turns in the hands at twice the tempo so it reads loose
+rather than metronomic.
+
+Measured on the harness across one period (0.01 s steps, one 1.23 s clock), against
+the reference's own clip:
+
+| | reference | ours |
+| --- | --- | --- |
+| bounce period | 1.23 s (two cycles in 2.46 s) | **1.23 s** |
+| pelvis drops | 4.37 cm | **4.0 cm** |
+| pelvis travels across | 3.05 cm | **3.0 cm** |
+| torso tips | 1.8° | **1.75°** |
+| bat turns in the hands | 8.2° | **7.7° yaw**, 3.6° pitch |
+| the grip's own travel | — | **0.001 rig** |
+| knee travel | — | **24.6° / 21.3°** |
+| the hips' own bones | — | 4.9° / 1.1° (they ride the knees) |
+| **feet** | planted | **0.0000 rig** on all four bones |
+
+The lean is worth a note: `swayLeanAmount` is the tip at the *deepest* point, and
+the wave only ever goes one way, so the constant is the reference's own range — it
+was authored at 0.016 rad, which is half of the 1.8° the comment beside it quoted,
+and read **0.90°** until it was doubled to 0.031.
+
+`?idle=1` pins the idle's clock (the app drives it off real elapsed time, so no two
+frames would otherwise agree) and `sweepIdle` walks it, which is what makes the
+bounce measurable at all. The guard is `both feet stay planted through the whole
+bounce`: a whole period at 0.01 s, where each of the four foot bones must sit
+within 2 mm of its planted height and never above or below it, the hips may not
+rise above the stance, and the travel that *is* there has to be the knees' (≥ 10°)
+and the bat's (≥ 3°). It bites: authored the old way — hips rising — it reddens on
+the first foot it reads.
+
+### The batter is leaned in before the ball is released
+
+The forward lean-in ramps across the pitcher's windup, and it used to *arrive* on
+the release frame: the ramp hit full exactly on the wrap (`t = 0`, the frame the
+ball leaves the hand), so there was no frame of a batter already leaning in and
+waiting on the pitch — the lean was still on its way as the arm came through.
+
+`leanLead` now comes off the **end** of that ramp, never off its start: the lean still
+begins with the windup's first frame, which is the cue the batter is reading, and it
+is complete well before the release and holds into it. Taking the lead off the end is
+the same thing as speeding the whole lean up — `windupDur / (windupDur - leanLead)`,
+half again as fast at the shipped 1.32 s windup and 0.45 s of lead — so "faster" and
+"done early" are one change here, not two. The ramp is front-loaded on top of that
+(`1 - (1 - u)²` across its own window): the batter takes the lean in the first part of
+the windup and stands in it, instead of arriving at it as the arm comes through, and
+it still arrives *by leaning* — the shape's own slope goes to nothing at its end.
+
+Measured on the harness over the windup (2.68 s → 4.00 s at 0.01 s steps, reading
+the chest's own up axis *along the lean's own direction* — taken from the release
+pose, which is what keeps the idle's sideways wobble out of the number):
+
+| | before | shipped |
+| --- | --- | --- |
+| the lean's own travel across the windup | 14.7° | 16.2° (−7.5° → 8.7°) |
+| complete (within a quarter degree) at | **4.00 s** (the release frame) | **3.45 s** |
+| held before the release | **0.00 s** | **0.55 s** |
+| the fastest 10 ms step | 11.0°/s | **0.37°** (37°/s, against the 1.5° the guard allows) |
+
+After it lands the trunk settles 3.3° back onto the back leg, which is the coil's own
+beat and not the lean coming undone (see the next section), and stays there to the
+release.
+
+The lead it takes is now its own rather than the coil's own floor (see the next
+section): the floor asks the lean to be in by `loadTime + loadLead` — 0.30 s — and the
+authored 0.45 s is the tighter of the two, which is what moves the *coil* earlier
+rather than the lean later. The two ramps read the same at the windup's start (both
+−7.5°, the stance) and the same at the release (both 5.35°, the coil's own bottom),
+and differ in between only by the lead's own share of the travel: the lead comes off
+the end rather than the start for exactly that reason — the frame the ball leaves the
+hand is untouched, so a change of pacing cannot move a pose the suite has a baseline
+for.
+
+The window is one nothing else here read: the shots are taken at 0.00-1.10 s of the
+clock and every other sweep starts at the swing (`SWING_START_S`, 0.18 s) or in the
+way home, all of which end at 1.37 s — so the lean-in could sit at "arrives on the
+release frame, held for no time at all", which is what it did, with the suite green.
+The guard is `the batter is fully leaned in before the ball is released`: it sweeps
+the fixture's `WINDUP_WINDOW` (the cycle's last `ballReleaseTime`, 2.68 → 4.00 s) at
+0.01 s and holds the lean to four things — the windup carries the whole lean
+(≥ 10°), the lean is complete at least `max(leanLead, loadTime + loadLead)` (less two
+steps of tolerance) before the release, it never falls a quarter degree off that
+completion again before the ball goes, and it gets there by leaning: no 10 ms step may
+move more than 1.5°, which is 125°/s against the shipped ramp's 12°/s. It bites: on the
+old build it reddens with `it settles 0.02 s before the ball is thrown`.
+
+### The batter coils from the leaned-in pose, and is coiled before the ball is released
+
+The set is two beats, and the loading beat was on the wrong clock. The weight shift
+ran off the *swing* — `loadStart = swingStart - loadTime` — and the swing fires 0.18 s
+*after* the ball leaves the hand, so the whole crouch lived in the ball's flight.
+Swept over the windup (2.68 → 4.00 s at 0.01 s, reading the pelvis's own height) the
+old build does not move at all there: the hips hold 0.6822 rig from the windup's first
+frame to the release, and the coil's 3.8 cm of drop happens after the ball has gone.
+The batter was leaning and loading as the pitch came to him instead of being coiled and
+waiting for it.
+
+The coil's window is now read off the pitcher's release, like the lean's: it opens on
+the frame the lean lands (`coilOpen = windupStart + leanRampDur`) and closes
+`loadTime` later — `leanLead - loadTime`, i.e. 0.27 s at the shipped set — before the
+ball is thrown (`coilEnd = coilOpen + loadTime`), which is never later than `loadLead`
+(0.08 s) allows because the lean's own lead is floored there. That makes the lean's own lead a *floor* rather than a tuning of its own —
+`leanLead = max(leanLead, loadTime + loadLead)` — because a coil that opened earlier
+would be the batter loading before he had leaned in. The two beats can be timed apart,
+but never overlapped: that is the structural half of "not leaning and loading on the
+same frame". `loadLead` and `leanLead` both have a slider in the debug drawer
+(`Coiled before release`, `Lean-in lead before release`).
+
+| | before | after |
+| --- | --- | --- |
+| the coil's window | the swing's lead, 0.18 s *after* the release | the lean's landing → 0.27 s before the release |
+| the hips over the windup | flat at 0.6822 rig, all 133 frames | flat to 3.56 s, then 3.78 cm of drop |
+| the coil opens | — (never in the windup) | 3.56 s, the frame the lean lands |
+| the coil's bottom | — | 3.73 s, **0.27 s before the release** |
+| the coil's own length | — | 0.17 s of the authored 0.22 s |
+| the coil's hold | — | drift 0.000 cm from its bottom to the release |
+| the coil's own drop | — | 0.0600 rig (**3.78 cm**) |
+
+The coil reads as 0.17 s of its 0.22 s because the ease leaves and arrives flat and
+both readings are bracketed from *inside* — 0.2 mm of movement to call it open, the
+same to call it at its bottom — which is why the suite allows a sixth either way.
+
+The guard is `the batter coils from the leaned-in pose, and is coiled before the ball
+is released`. It sweeps the same `WINDUP_WINDOW` at 0.01 s and reads the *pelvis*,
+which the lean test above cannot see (the coil is exactly what settles the trunk that
+test measures), against five things: the hips may not leave the height they hold while
+the batter stands before the frame the lean lands; they must reach the bottom of the
+coil `loadLead` (less two steps) before the release; they must hold there to the
+release (drift under 0.4 mm); the coil must take its own `loadTime`; and it must be
+worth reading as a weight shift at all (≥ 2.5 cm). It bites both ways — with the coil
+back on the swing's clock it reddens on the first bound, `the hips should settle onto
+the back leg somewhere in the windup`, and with the coil opened off the *windup's*
+start instead of the lean's landing it reddens with `the weight shift should open from
+the leaned-in pose, not before it (the hips start settling at 2.69s, the lean lands at
+3.73s)`. The lean's own guard reads the same floor, so the two cannot disagree about
+when the lean has to be in.
+
+This is a clock, not a pose: the four swing baselines pass unchanged, and the bones at
+mid-swing read **identical** to the pre-turn build (65 readings, no difference) — the
+load is 1 on both clocks from the release to the hold.
+
+### A taken pitch coils, and holds it while the ball comes
+
+The coil above belongs to the *set*, not to the swing — but it used to be computed
+only when the swing was called for. A take therefore got the lean-in and the stride
+and nothing else: the batter leaned in, his weight settled, and then he stood there
+with his hands up while the ball went by. Nothing about him read as *waiting* for it.
+
+The window is now shared and only the way *out* of the hold differs. A swing unwinds
+it over its own recovery (`coilHoldEnd = holdEnd`, `coilOutEnd = recoverEnd`); a take
+holds it while the ball comes and eases back to the stance on the same window its
+stride comes home on (`coilHoldEnd = takeSettleEnd`, `coilOutEnd = takeSettleEnd +
+leanOutTime`). The lean, the coil's opening and its `loadTime` are the same set of
+motions on the same pitcher's clock — which is the point: a batter taking a pitch
+sets himself exactly as he does for a swing.
+
+Measured at the frame the ball crosses the plate, against the height the take settles
+back onto in the same page and at the same idle phase: the hips sit **6.00 rig-cm
+(0.0376 rig) lower**, the same 3.76 cm the swing's coil reads, and the *whole body* is
+behind it — the neck 6.17 cm, the lead shin 9.92 cm, the head and both hands 4–6 cm —
+so it reads as a batter who loaded, not one who only sat down. Through the flight the
+hips drift **0.00 cm**: the coil is held, and the frame the ball crosses is the pose
+the pitch is taken in. The bat stays in the load with it, 0.147 rig off the stance's
+own place where the same frame of the swing has it 1.668 away.
+
+The phase is its own harness fixture (`phase=take`: the same pitch on the same
+ball, `swing: false`, pinned at `CONTACT_TIME_S`) with its own baseline,
+`batter-take.png`, so the pose is pinned rather than only measured.
+
+The guard is `the batter coils on a taken pitch, and holds it while the ball comes`.
+It sweeps the take's own clock at 0.01 s (the flight, then the windup the pitch was
+taken from) and reads the *pelvis*, converted from the sweep's world metres into the
+animation's own frame. Four things are held: the drop from the settled stance (≥ 2.5
+rig-cm); the hold through the ball's crossing (drift under 0.4 mm); the crossing
+frame itself inside that hold; and the coil's own clock in the windup — its
+`loadTime`, finished before the release and holding through it, the same two bounds
+the swing's coil is held to, because it is the same set. It also witnesses the swing *did not*
+fire (0.147 rig against the swing's 1.668), because a take that turned out to be a
+swing would satisfy every one of those bounds.
+
+It bites on the ask: with the coil put back inside `if (swing)` — the pre-change
+build — the assertion named for it reddens first, `a taken pitch has to shift the
+batter's weight onto the back leg (the hips drop 0.00 cm)`, and the windup bound
+follows, `the coil should take its own loadTime (it takes 0.00 s of 0.18)`.
+
 ### The swing's fastest frame is the ball, and the follow-through only slows
 
 A bat's speed peaks at the ball. The swing's own clock did not: its progress used to
@@ -685,6 +1076,64 @@ from the load to the path's end (317.8° before) and **11.1°** more over the ho
 before), with the tip travelling **0.323 rig** past the path's end where it travelled
 0.277 and the grip moving 0.140 over both, so the whole of the extra 0.046 is the bat's
 own end coming round — the bat keeps swinging after the swing has stopped.
+
+### The chain's leads arrive on the ball, and the legs leave the stance with them
+
+Every motion after the legs is *drawn forward* by a lead — the hips by `hipsLead`, the
+body's turn by `bodyTurnLead` — and each was written as a **gain**: `e * lead`, clamped
+at 1. A gain has to be clamped (2.6 of the barrel's own progress is past 1 a third of
+the way through the swing), and a clamp means the motion arrives *early and then
+stops*: the body took its whole turn a tenth of a second before the ball and sat in it
+while the bat was still gathering speed, and every one of those motions then had to be
+*started again* on the far side of contact. Swept off the driver's own report at 0.02 s
+steps, the old build read: the chest's own turn 682°/s at 0.38 s, **0°/s on the contact
+frame**, 518°/s on the next — a stall and a restart in the two frames the ball is met
+in — the pelvis **0°/s from 0.34 to 0.40 s** and then **1530°/s at 0.42 s**, the 55°
+between the contact turn and the finish taken in four frames, and the legs' own first
+frames at **25°/s and 106°/s** while the barrel was already at 400.
+
+Two things are changed and neither touches a pose the suite has a baseline for.
+
+**The lead is a shape rather than a gain** (`leadCurve`): a Hermite on the barrel's own
+progress, nought at the set and one at the ball, leaving the set on `lead` of the
+barrel's own slope (a phase lead *is* the kinetic chain) and arriving with an end slope
+chosen as the speed its own follow-through picks it up at — the chord it keeps turning
+onto after contact over the chord it turned through, times the follow-through's own
+starting rate over the barrel's (`bodyTurnArrival`, `hipArrival`; both are computed from
+the tuning, so a retuned finish re-times the contact frame with it). The pelvis' own
+follow-through chord rides the chest's own `f` clock rather than a 2.6 gain of it, so
+the 55° is carried over the whole follow-through instead of four frames of it.
+
+**The legs ride their own clock** (`HIPS_EASE = 1.8`, against the barrel's 2.4): the
+chain fires from the ground up, so the lower body is the one motion that is *not* on
+the barrel's ease. It is 0 on the swing's first frame and 1 on the ball as before —
+only the pace between them moves — and it stops short of the barrel's own exponent
+deliberately: a leg drive that was a quarter of the way open on the frame the swing
+fires is a twitch, not a drive.
+
+Measured after, on the same sweep: the barrel's own turn peaks at **2437°/s on the
+contact frame** (it was 2180 there and peaked a frame early), the chest's turn reads
+**12 → 550 on the ball → 518, 482, 434, 373, 300, 214, 116, 48** — one hump, no stall,
+and its fastest frame is the ball's — the pelvis reads **102, 267, 293, 355 … 589 at
+0.42 s** and then decays the same way, and the legs' own first two frames are **102°/s
+and 267°/s**. Every motion's fastest frame is the frame on the ball, and everything
+after it is the body running down.
+
+The pelvis' *forward* ride is not on either clock and still peaks a fifth of a second
+before the ball, because it is the footing rather than the push: the ride is the budget
+the planted rear leg can span at the yaw the pelvis has reached (see the rear-foot
+bound above), so its shape is the cap's own excursion across the turn. That excursion
+is smoothed by the retiming rather than re-timed — the reverse reads −0.5, −1.0, −0.9,
+−0.7, −0.5 rig/s against the old −1.5, −2.1, −2.7, −1.1 and a re-acceleration — and
+the rear leg is asked for *less* than before: the socket's worst reach over the leg's
+span falls from 1.0885 to 1.0824 against the 1.0576 limb, with the ground rule moving
+the shoe 0.11 rig where it moved 0.13, and the shoe's own roll onto its ball ends at
+0.40 s rather than 0.48.
+
+Front-loading the *bat's* rotation this way was built, measured and dropped (see the
+section above) — the trail hand is on the handle and a bat turning faster early folds
+that elbow. Nothing here touches the bat's own path: the barrel's rotation is the same
+curve it was, and what moved is the body the hands and the grip ride.
 
 ### A limb that cannot hold a direction fails the suite
 
@@ -1831,6 +2280,54 @@ stretches the arm's bones along their own axes where a grip sits beyond this
 model's span, and swings the clavicle up to a real clavicle's worth of protraction
 first. Both are bounded, and the suite pins the bounds.
 
+### The way home carries the bat out to the line of the pitch before it folds
+
+The trailing arm has to *point* on the way home as well as reach: out until its
+chord lies square to the front line of the box — straight at the pitcher — and only
+then fold inwards into the set stance. Left where the hold puts it, the fold runs
+*through* the crossing instead of after it: the retraced pose that crosses the line
+at 1.07 s has the arm already folded to **0.874** of its own span (a 152.5-degree
+elbow), so the arm is bending while it swings out to the line, and the elbow's own
+bend reverses **10 times** on the way home instead of closing once.
+
+`RECOVERY_CARRY` (0.15 rig) presses the grip on out along the trailing chord over
+the first two fifths of the recovery, held to 1.13 s and given back by 1.33 s, with
+the reach bound lifted over it from the reset's own `TRAIL_REACH_MAX` to
+`TRAIL_REACH_STRAIGHT` (0.972 of the arm's own span) so the push cannot walk the
+bones past their length: one lever carries the grip out, the other is the ceiling
+it is carried to, and the straightness is held by the bound rather than by the
+arithmetic of the push.
+
+The push is aimed along the trailing chord **tilted toward the batter's own lead
+side** (`RECOVERY_CARRY_ACROSS`, a 0.75 share of the push's own length). Both arms
+hold the one grip and the trailing shoulder sits a shoulder's width behind it, so a
+push along the chord alone lengthens the lead arm by 0.7 of what it lengthens the
+trailing one — measured, it took the lead arm to 0.97 of its span and reddened
+`the lead arm keeps a real bend on the way home`. Aimed across, the push carries
+the grip toward the lead shoulder as much as it carries it away from the trailing
+one, and the trailing arm is the one that lengthens. Read off the bones over the
+way home (0.85-1.36 s at 0.01 s):
+
+| | before | after |
+| --- | --- | --- |
+| the chord's nearest the line of the pitch | 1.07 s, **0.6°** off | 1.08 s, **1.3°** off |
+| the trailing arm's span *there* | 0.874 (a 152.5° elbow) | **0.964 (a 165.4° elbow)** |
+| frames within 12° of the line | 4 (1.06-1.09 s), span 0.812-0.903 | **5 (1.07-1.11 s), span 0.934-0.966** |
+| the chord's own heading swept in all | −146.9° | −146.9° (largest frame 7.8°) |
+| the elbow's own bend reversals after it | **10** | **6** |
+| the lead arm's span, mid-way home | 0.912 | 0.939 (its 0.95 bound holds) |
+
+The heading sweeping under 180 in all is the reading that would call out an arm
+flipping through its own socket; the straightness *at* the crossing is the reading
+that separates this path from the retrace's. `the trailing arm goes out to the line
+of the pitch before it folds, and folds one way` sweeps the recovery and pins both —
+four frames within 12° of the line with the span over 0.9 of its reach and the elbow
+over 158° there, the whole way home's heading under 170° with no frame turning it
+more than 15°, and past the crossing the elbow's own bend closing by over 25° without
+re-opening more than 2° off its own floor. Turned off (`RECOVERY_CARRY` 0) it reddens
+on the first of those with the retrace's own readings — `1.07s 0.874, 1.08s 0.841,
+1.09s 0.812` — which is what the push is for.
+
 The harness mounts the batter the way the app does — with no pitch at all first,
 waiting for the body's own asset to load, then the pitch — so the suite covers the
 late-pitch mount as well as the poses themselves.
@@ -2056,6 +2553,363 @@ out are the poses they were — the one baseline this work moves is the follow-t
 (`batter-follow-through.png`, where the bat now sits 0.09 rig further out and the knob has
 crossed the lead shoulder's plane).
 
+### The kit the model ships with, put right
+
+The loaded body's own kit is edited once per instance, in `applyBatterLook`
+(`src/util/batterLook.js`), from inside the body memo in `Batter.jsx` — after the
+rig has shaped the body, so it edits this instance's copy of the geometry and the
+cached asset (and every other player drawn from it) keeps the shape it shipped
+with. Five things were wrong with it, and each is a reading off the model rather
+than a number kept in two places.
+
+**The helmet shipped a flap on both ears, and only half of one came off.** A shell
+of the helmet that hangs below the crown (every other shell carries up to y 1.99)
+and lies wholly on one side of the midline is a flap: the model has two, 58
+vertices at x[0.078, 0.196] and 36 at x[-0.196, -0.122]. A batting helmet has one,
+over the ear the batter turns toward the pitcher — his *lead* ear, the model's own
++x for a right-hander — so the flap on the other side goes, and the 50 triangles
+that drew it with it. Only the index is rebuilt: the vertices stay where they are
+and still carry their weights, which is cheaper and safer than compacting every
+attribute of a skinned mesh. A left-handed batter is the same edit mirrored, keyed
+on `bat_side`.
+
+That is the shell off, but not the cover: a band of the *main* shells hangs below
+the brim beside the same ear, and taking that off leaves the helmet's own lower
+edge behind, down to **y 1.6442 just behind the ear, 0.15 rig below the brim** —
+which still read as a rear ear flap. So that band goes too, and *how* it goes is
+what the edge looks like afterwards. Cutting it off level leaves a straight edge
+across the side of the face with a step at either end of it, and the step in front
+of the ear — where the edge has to climb 0.075 back up to the brim over 0.06 of z
+— is the worst of it: measured on the build before this, the trailing rim was a
+flat line at exactly y 1.72 spanning the whole width of the shell, from x -0.064 to
+-0.196, with nothing between it and the brim at z -0.02 but a near-vertical rise.
+What a helmet's own edge does instead is sweep, so the band leaves along a *curve*:
+the brim's underside (1.7954) in front of the ear, down over the ear to its own
+*middle* (the head's ear runs y 1.7346-1.8165 at z -0.0187 to 0.0531, so its middle
+is 1.7756) and back into the nape's own line (1.6584 at z -0.10, 1.6831 at -0.17)
+behind it. Read as **one curve with the slope turning through it** rather than as a
+run of its own stations joined by smoothsteps: each smoothstep is level at both of
+its own ends, so the run of them drew a level rim across the side of the face — 0.14
+of z carrying 0.02 of height, dead flat over the ear — with a step where it turned
+down into the nape, which is a level edge with a corner in it, and a corner is a
+rectangle. A cubic through the same three stations, with the slope stated at each of
+them (**none at all leaving the brim** — a slope stated *into* the level run is the
+corner itself, so the edge arrives there dead level and eases off the brim instead —
+0.50 over the ear, 1.90 into the nape, where the helmet's own back edge is already
+falling away at 0.35 and the two meet), has the slope carried through the whole of
+it: measured, the edge holds its level to within 0.001 of the brim out to z 0.06
+(against the 0.11 the old 0.10 slope held it to) and comes down over all 0.14 of z
+between there and the ear's own station all the same, so the turn in front of the
+ear is a sweep rather than a step, and no two of its own windows read the same
+height. And the
+edge runs *on under the brim* to the cover's own front end (z 0.19, measured: that
+side of the shell still hangs below 1.79 out to z 0.181 at x 0.097, y 1.63), because
+the model's two sides are not mirror images — the cover it ships on its *left* ear is
+the long one, and a **left-handed** batter's trailing side is the left ear, where a
+two-station curve left the band from z 0.12 to 0.18 hanging beside the face, a lobe
+of shell under the brim in front of the ear. Read as one number for the cover rather
+than for a side, so it is the model's asymmetry and not the batting hand that decides
+where the cover stops. Mid-ear, and not the ear's own bottom: hung to the ear's bottom — where
+the first pass at this put it, at 1.72 — the edge is a lobe of shell 0.075 below
+the brim beside an ear that carries no flap, which is an ear flap where the helmet
+has none, and reads as a jaw guard. Half an ear showing under the shell is what a
+helmet with no flap over it looks like.
+
+What the band does along that curve is **fold back up onto it, not get cut off**,
+and the difference is the whole of what the trailing side looks like. A cut is not
+available here: the band and the shell it hangs from are *one* surface, and the
+line is a curve limited to the stretch of the head the ear is on, so the piece to
+remove is not a half-space and no clipping plane expresses it — and dropping whole
+triangles (a triangle going only when all three of its corners are inside the
+piece) leaves the rim ragged by up to a triangle's own height, and, where a
+triangle's corners are all outside the piece while its own surface is mostly inside
+it, a plate of the cover left hanging beside the ear: measured that way, **56
+vertices up to 0.162 rig below the line**, which is a jaw guard on the side of the
+helmet that has no flap. Moving the vertices instead keeps the surface whole: every
+vertex below the line is put *on* it, the band's own triangles collapse to nothing
+along it, the wall above it is left exactly as the helmet's own shape has it, and
+the edge the shell ends with *is* the line, to the resolution of the mesh. It is
+idempotent by construction (a vertex already on the line is not below it) and
+nothing outside the line's own stretch of the head is touched, so the nape and the
+brim keep their own edges. Measured after: **nothing the helmet draws on that side
+is below the line at all**, the trailing rim's lowest vertex is **1.6725** (0.123
+below the brim, against the guard's 0.2108 on the lead side) and that vertex is the
+nape's own back, nothing on that side hangs below the nape's own 1.6584-1.70, and
+the rim reads **1.7081 behind the ear, 1.7740 over it and 1.7938 in front of it** —
+0.0659 of sweep up from the nape to the ear and 0.0198 more on out to the brim,
+where a rim run level past the ear measures 0.013 in the same three windows. The
+same three windows read the same way within 0.002 on a *left-handed* batter's
+trailing side — which is the model's *left* ear, and the long cover — where with the
+edge read off z alone they read 1.68 behind, 1.775 over the ear and **1.602 in
+front of it**: 0.19 rig of cover left hanging under the brim beside the face, on an
+ear that carries no flap, because the edge stopped at z 0.12 and that cover runs on
+to 0.18. The
+ear's own middle is 1.7756, so the shell covers its top half and leaves the bottom
+half showing. The cover that *stays* is lengthened further: stretched 1.24
+about its hinge under the crown and carried 0.03 forward as it goes, so the guard
+comes down to **1.5476** (against 1.5652) and flares over the cheek to **z 0.207**
+(against 0.1966), a jaw guard rather than an ear muff. The lengthening stops below
+y 1.78, because the brim's own band runs 1.7915-1.821 and falling inside the
+cover's region (so falling inside it): pulled down with the guard it would tilt the
+brim's edges and eat into the clearance under it.
+
+**The eyes reached up behind the brim, and half of each was inside the face.**
+They ship 0.153 rig tall (y 1.681-1.834) and the brim's underside is at **1.795**,
+so its own cap hid the top 0.039 of each one. Each eye is taken down about its own
+bottom-centre — a uniform shrink, so the plate keeps the modelled shape (its width
+stays 0.515 of its height) and stays where it hangs on the face — until its top is
+under the brim, which leaves it 0.0856 by 0.044 with **0.029 rig of clearance**
+under the brim. The body-parts model's own eye is 0.265 of its head's height and
+this head is 0.355 tall, so the reference's own eye would be 0.094 here: this one
+lands between the two, which is what was asked for — a shade smaller than the
+reference's so that a brow has somewhere to sit above it (below). Read as a target
+rather than a factor, so an eye already under the brim is left alone.
+
+Under the brim was only half the job. The plate is flat and the face is not, so
+**36 of each eye's 53 vertices** were inside the head — up to **0.026 rig deep** at
+the inner corner, where the cheek and the nose take it — and what is inside the
+head is not drawn. Reading the face's own front off the *vertices* near an eye
+vertex is what missed it: the head's own shells are coarse (the face is 63
+vertices for the whole thing) and the surface drawn between two of them bulges
+forward of both, which is exactly where the plate sinks in. So the front is read
+off the *triangles*: every head triangle that covers an eye vertex down the
+model's own front, interpolated at it and taken front-most — the eyes excluded
+from the reading, so a plate cannot hold itself up — and the vertex is put
+**0.003 rig** in front of it. That conforms each plate to the face it is drawn on
+while leaving the plate's own paint and outline alone, and it misses nothing but
+the nose's own inner corners, which the same reading takes in. Measured after:
+**0 of 53 vertices behind the head on either eye, the most marginal one 0.003
+clear.**
+
+**The face wore no eyebrows at all.** The skin is one flat tone in the atlas
+(0.898, 0.773, 0.435 — a luminance of 0.775) with the eyes painted black on it
+(0.059, 0.008, 0.016) and nothing above them, so a brow has to be drawn: a bar
+laid *above* each eye plate, with a band of skin between the two of them, in the
+face's own tone taken down per channel into a **brown** — skin darkened evenly comes
+back grey, and a brow is not grey: measured, the face's own texel is (0.898, 0.773,
+0.435) and the brow is **(0.238, 0.100, 0.027), a luminance of 0.124** — against
+0.161 before the second darkening pass and the 0.226 the first drew, which read too
+near the skin it sits on, and still well clear of the eye's painted black at 0.05.
+It spans the eye's own width plus **0.024 towards the ear and 0.010 towards the
+nose** — a brow runs on out towards the temple rather than stopping at the corner of
+the eye (**0.078 rig long against the eye's own 0.044**, against 0.076 when both
+ends were given the same) — and its shape is **a rectangle with its four corners
+rounded and nothing else tapered**: the two long sides stay straight and full-depth
+to the last station and only the corners are filleted, a quarter-circle of **0.0064
+rig** at each of the four — 0.8 of the brow's own half-depth, so a corner is most of
+the way to a round end — with the end left to read as a short vertical edge between
+the two. Measured station by station down the bar, it is **the full 0.0160 deep from
+0.0064 rig inside either end, closing to 0.0032 at the very end itself**: a fifth of
+the bar's own depth at the end against its middle's eight eighths, which is a bar
+with its corners turned rather than the *point* the first pass drew at either end
+(which read as a leaf laid beside the eye) or the 0.0108 stub the 0.0026 corner left
+(which read sharp). It costs the brow nothing it is read by — the box its stations
+span is **0.0171 rig deep against the 0.0175 no corner at all spans**. Its depth is
+**0.016, drawn at 0.0160**, with its middle arched 0.0015 above its own ends, on 31
+stations bunched towards the two ends where the corners are, and it sits **0.0092
+rig** above the eye's own top edge
+— laid on that edge, the brow and the black plate below it read as one long dark
+shape, which is what an eye with no brow above it looks like. It stops under the
+brim's underside at 1.7954 (measured, its own top is 1.7931), which is the whole of
+the room above an eye: the skin band, the brow and its arch are the three things
+that have to come out of the 0.029 rig between the eye's own top (1.7664) and the
+brim, and a thicker brow is bought out of the skin band and the arch — 0.0092 of
+skin, the suite's own floor, and 0.0015 of arch, against the 0.010 and the 0.003 of
+the first pass, which is what pays for the 0.0160. Each vertex's z is read off the face's own front surface
+at that station (the eyes excluded, as for the eyes' own conforming) and put 0.005
+rig in front of it, so the brow follows the face rather than floating off it:
+measured, **0.010-0.034 rig from the nearest body vertex — the inner end of it
+hugging the face at 0.010 and its own outer ends further off, where the face falls
+away towards the temple** — standing up to 0.019 proud.
+
+**The jersey had no front on it.** The chest is one flat colour with nothing on
+the fabric, so the pass draws an opening on it: a *line* down the chest's own
+centreline, 0.003 rig across, from the belt (y 1.292, the trunks' band running
+1.258-1.293) up to the jersey's own collar (1.548, its rim being at 1.5544) — its
+depth read per height off the front-most vertex within a short window of it, so it
+hugs the sternum's crease instead of bridging it — and **six hollow buttons**
+hard against it on the wearer's right, from the top of the line to the bottom (y
+1.5475 down to 1.2925, one every 0.0548 rig), each a ring 0.023 rig across with a
+0.011 hole in it, set so that the outward edge of a ring comes to **0.0015 rig of
+the line's own edge** — a men's placket is one piece of cloth with the seam down
+its edge and the buttons a buttonhole's width in from it, and a column of rings a
+centimetre out on a bare chest is two things laid on the jersey rather than one
+jersey that buttons.
+
+Three things about that opening had to be read rather than assumed. The first is
+*what the cloth is*: the chest's own front is read off the shells that carry it —
+they reach down to the belt and stop at the collar, and their own front is the
+chest's — because the *neck* stands proud of the collar (measured, its front is at
+z 0.1003 by y 1.5586 against the collar's own 0.0143) with the jaw above that, so
+a front read off the whole body near the midline finds the neck the moment the line
+reaches the collar and the jaw above it. Read that way, an opening drawn to 1.588
+left the jersey and ran up onto the face; drawn to the collar's own rim, on the
+chest's own shells, it stops where a jersey's opening does. The second is its
+tone: a seam in pale-blue cloth reads *darker* than the cloth, and the 0.78 and
+0.94 of the cloth's luminance this used to be drawn at (0.54 and 0.65 — lighter
+than the cloth's own shading) did not read on it at all. Both are taken down off
+the cloth's own colour now, **per channel** rather than as a grey of its luminance:
+the seam to **0.42 of it (0.286, 0.285, 0.338 — a luminance of 0.29)** and the
+buttons to **0.62 (0.423, 0.420, 0.498 — 0.426)**, which keeps the buttons a shade
+brighter than the seam and both of them the jersey's own blue rather than black.
+Measured on the render, a seam at 0.42 of the cloth reads 0.29 in luminance against
+the cloth's 0.69 — a line drawn on the chest rather than a suggestion of one.
+
+The third is that a station has to be read *on the cloth's own front*, and that the
+cloth's front stops before the collar does. Three separate ways of getting that
+wrong all had the opening leaving the cloth, and all three are measured. Reading a
+station off a triangle it only nearly misses (a third of a triangle of slack) reads
+the surface *extended past its own edge*: the opening's top stations came back at z
+0.014, 0.001 and −0.010 against the cloth's own 0.036 to 0.042. So a station has to
+be on the triangle it is read from (-0.02 of slack, and its own height has to reach
+out to the cloth's front at all). The shoulders are the torso's own bone, and their
+slope crosses the opening's stations *above* the cloth's own top edge from the
+inside: covering a station at y 1.53 from z 0.008 where the cloth's front there is
+0.036. So a triangle has to reach out past z 0.02 to count as the front. And where
+the cloth's front has genuinely stopped, a station **holds the height of the one
+below it** rather than falling back to a default — which is what makes the line run
+*on* the cloth from the belt to the collar instead of diving a third of the way into
+the body under it 0.031 rig and coming back out at the top.
+
+All of it is one small skinned mesh — 50 vertices for the line and 24 a button,
+**194 vertices and 192 triangles** — whose tone is read off the model's own
+base-colour texture at the chest (0.682, 0.678, 0.804) rather than kept as a second
+copy of the uniform's blue, and which wears **a copy of the cloth's own material**:
+the body's own roughness and metalness, and the double side and hair of polygon
+offset a detail drawn on the cloth needs. What makes a piece of detail read as drawn
+*on* a body rather than laid over it is not how close it sits — a strip of a second
+material, a millimetre this side of the cloth, is still a strip — but that it is lit
+the way the surface under it is, so each vertex takes the cloth's own **normal** at
+its own station, mixed across the triangle its height was read off, the same way its
+bone weights are. Reading the cloth's own *texel* there instead (the way the cloth
+itself is painted) was tried and thrown out: the chest is coarse, so a station beside
+a seam lands on a different triangle, and a different uv, than the cloth around it —
+measured, it put the top button's ring across the uniform's own red trim. Its own
+vertex weights are the *surface*'s, mixed across the triangle under each station, so
+linear blend skinning carries the detail with the cloth it is sewn in. Measured against the cloth
+it is sewn on — and against the cloth's own *surface*, which runs between its
+vertices, rather than against the nearest vertex of it — it stands **0.0015 to 0.0024
+rig in front of** the chest over 162 of its 194 vertices, with the line's own
+stations read at every one of the 25 heights from 1.293 (the belt) to 1.548 (the
+collar) and never stepping back into the body by more than 0.014: laid *on* the
+cloth, never floating and never sunk. It used to stand clear of the chest — 0.008
+under the collar ramping to 0.014 at the hem, measured at **0.009 to 0.0165** — out
+of the fear that the cloth would swallow a line laid flat on it, and at that
+stand-off the opening read as a raised strip laid over the jersey rather than as a
+seam in it. What is left is a coat of paint's worth, plus a hair of polygon offset
+on the detail's own material, so a depth test between two surfaces a millimetre
+apart always settles the same way.
+
+**The shoes carried laces nobody could see, and a sock nobody wanted.** The shoe
+is one shell per foot (155 vertices, y -0.010 to 0.299) and the trouser leg comes
+down into it — the body's own mesh reaches y 0.2716, *below* the shoes' own rim at
+0.2992 — so the trousers are over the ankle already. The detail the pass had laid
+there had two faults. Twelve lace bars were drawn and not one of them was on
+screen: a bar is built as a row across the foot and a row along it, and those two
+rows give a quad whose own normal points *down*, into the shoe — a face the
+renderer draws from behind and so never draws at all. And above the rim sat a band
+in the sock's own tone, which read as a sock pulled out over the trouser rather
+than as part of a shoe.
+
+Both are gone, and every quad of what remains is wound to face the way it should:
+each reads its own three corners' positions and is turned to the direction it is
+meant to look along, so the tops look up the instep, the walls of a strap look out
+at the shoe's sides, and the ends close at the shoe's own edges. What the pass
+puts on each shoe, all read off the shoe's own shell:
+
+- the edge of its **sole**, 0.03 up from the ground, in the shoe's own tone taken
+  0.62;
+- a **tongue** over the instep, in that tone taken 0.45 — a shade *darker* than the
+  shoe, so it reads as the tongue under the laces rather than as more shoe —
+  following the shoe's own top surface from the throat down towards the toe, and
+  standing 0.003 rig off it; and
+- **six lace bars** across that instep, one every 0.024 rig, in the trousers' own
+  pale tone taken 0.9 towards white. A bar is a strap, not a sheet: a top face and
+  two walls 0.005 deep, standing 0.01 rig off the surface, so a lace reads from the
+  side as well as from above, and it stops 0.021 short of the shoe's own ridge on
+  both sides.
+
+The detail is 700 triangles over 16 pieces (a sole, a tongue and six bars a foot),
+and it hugs: measured, its vertices sit **within 0.042 rig** of the nearest body
+vertex and reach **0.031 rig** in front of it. Nothing of it rises above the shoes'
+own rim any more — read, the highest piece of it is at the rim's own 0.2992 — and
+nothing of it is invisible either: **168 of its faces look up** out of the instep.
+The bars' own ridges are read with a band that opens out until it finds one (the
+shell's vertices are sparse towards the toe), so a station cannot draw a bar a
+hair wide out at the shoe's edge.
+
+**The guard reads the geometry, not the pass.** `the batter's kit` (five tests in
+`e2e/batter.visual.spec.js`) takes the shipped model apart through the harness's
+`probeKit`: every separate shell of the helmet and the body with its own bounds,
+the ear cover either side of the head, each eye's own occlusion against the head's
+surface, each brow's own place and tone, the opening's stand-off from the body *and
+from the cloth's own surface*, the line's own heights station by station, and the
+pieces the shoe detail is made of, told apart by shape. It then holds the kit to
+facts — exactly one hang-down shell, on the lead side, reaching the jaw, with the
+trailing rim *swept* above the ear rather than run level past it, stopped over the
+ear's own **middle** (1.7740 against the ear's own 1.7346-1.8165, so half of that ear
+shows under it) and left **on the line it was folded onto** rather than hanging
+0.162 below it; two eyes, tops clear
+of the brim's underside and *every* vertex in front of the face, each within
+0.085-0.13 rig tall with its own aspect and the two of them the same size; a brow
+over each eye, wide enough to be a brow, with **skin showing between it and the eye
+under it** (its own 0.009-0.02 band), clear of the brim, in a tone darker than the
+face and lighter than the painted eye; a line down the chest from the belt to the
+collar, darker than the cloth it is drawn on, with a column of hollow buttons top
+to bottom, skinned to the body's own skeleton, proud of the cloth's own surface at
+*every* vertex of it and reading *every* station from the belt to the collar without
+stepping back into the body; and shoes with a tongue, five lace bars a foot *and*
+faces of those bars looking up, and nothing at all above the shoes' own rim.
+
+Run against the kit as it shipped before any of this, all five redden: **2 flaps**
+with the trailing rim 0.151 below the brim, eyes with **36 of 53 vertices behind
+the head** (0.026 deep), a **0.007-wide ribbon** in greys *lighter* than the cloth
+(0.54 and 0.65 against its 0.69) carrying **5 buttons** clustered in the middle of
+the chest, **8 lace bars** with **no tongue on the shoe at all**, and nothing
+whatever above the eyes. Run against the look pass as it stood before *this*
+change, three of them redden: no brows at all; the opening still in that same
+lighter grey and reaching y 1.588, off the jersey and onto the neck and jaw; and a
+band above each shoe's rim in the sock's own tone over **twelve lace bars not one
+face of which looked up** out of the shoe — measured, winding them the other way
+leaves **0 of 12** bars with a face the renderer draws, which is exactly how they
+shipped. And each of the three things *this* change is about reddens when it is put
+back: with the fold dropped, the trailing side carries ear cover again (its rim
+0.151 below the brim and a band hanging where the line is); with the fold's own
+forward end read off z alone rather than off the cover, a *left-handed* batter's
+trailing side — the model's left ear, whose cover runs on to z 0.18 — carries
+**0.19 rig** of it again (the rim 1.602 in front of the ear against the 1.794 the
+right-handed one reads in that window); with the curve's low
+point put back at the ear's own bottom (1.72, where the first pass had it), the
+shell over the ear reads 1.7198 — a lobe hanging where the helmet has no flap — and
+the ear's own half-covered assertion reddens; with the brow's own band of skin back
+at 0.008, the brow and the eye read as one shape; and with a station allowed to be
+read off a triangle it only nearly misses, the opening's own stations step **0.020
+rig backwards into the body** under the collar and come back out at the top.
+
+Measured against the committed baselines — the tree as it was before any of this —
+eight of the nine pose baselines move, every one of them within the batter's own
+figure and none of them larger than the kit itself: **`batter-contact.png`**
+(26,894 px, 3.89% of the frame), the faded contact pose
+**`batter-contact-faded.png`** (24,537 px, 3.55%), **`batter-recovery.png`**
+(24,102 px, 3.49% — the chest faces the camera in this pose, so the whole opening
+is read across it), **`batter-mid-swing.png`** (6,897 px, 1.00%),
+**`batter-follow-through.png`** (6,093 px, 0.88%), **`batter-stance.png`** (5,212
+px, 0.75%), the belt close-up **`batter-belt-mid-swing.png`** (1,142 px of a
+240x130 crop) and the new **`batter-take.png`**, which had no baseline at all until
+the taken pitch got one. Read band by band, the changes fall where the kit is —
+the helmet's rim and edge and the brows in the top fifth of the figure, the chest's
+opening in the middle, the laces at the ankles — with nothing changed above the
+helmet, at the ground, or anywhere the pose is; the other belt close-up,
+**`batter-belt-contact.png`**, does not move by a pixel.
+
+The last of those passes — the ear's edge up to the ear's own middle and the brows
+darker, thicker and longer towards the ear — moves 1,200-3,800 px of each of the
+same poses, all of it in the head's top fifth: inside the pose baselines' own
+tolerance, which is the tolerance a change of two or three pixels on a brow needs.
+What holds *that* shape is the kit test above — the rim read over the ear's own span
+and the brow's own tone, width and skin band, each measured off the geometry — rather
+than a pixel baseline at a distance where a brow is two pixels tall.
+
 ## Pose sheet
 
 `npm run pose-sheet` renders the same harness (same lighting, same frozen clock,
@@ -2087,7 +2941,7 @@ The harness takes these debug-only query parameters for looking at a pose by
 hand, and never passes them for a baseline, so they cannot move the committed
 renders: `?view=front|side|back|low|top`, `?zoom=` (framing distance multiplier),
 `?focus=torso|arms` (frame on those joints instead of the whole body),
-`?fade=` and `?phase=stance|midSwing|contact|followThrough`.
+`?fade=` and `?phase=stance|take|midSwing|contact|followThrough|recovery`.
 
 Placing a height by hand has its own aids, since a pose is what gets tuned here:
 `?dot=1.17,1.23,1.29` draws a small coloured dot either side of the body at each

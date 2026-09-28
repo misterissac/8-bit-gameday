@@ -63,8 +63,10 @@ export const ARM_BONES = {
   },
 }
 export const LEG_BONES = {
-  L: { hip: 'thighL', knee: 'shinL', ankle: 'footL', toe: 'toeL' },
-  R: { hip: 'thighR', knee: 'shinR', ankle: 'footR', toe: 'toeR' },
+  // ``heel`` is the ball of the shoe's own sole, which the driver only ever reads:
+  // a planted foot is held out of the ground by it (see the leg solve).
+  L: { hip: 'thighL', knee: 'shinL', ankle: 'footL', toe: 'toeL', heel: 'heel02L' },
+  R: { hip: 'thighR', knee: 'shinR', ankle: 'footR', toe: 'toeR', heel: 'heel02R' },
 }
 
 // Meshes the batter does not wear: the cap and both gloves (a batter wears a
@@ -91,6 +93,25 @@ const SHOULDER_MAX_SWING = THREE.MathUtils.degToRad(20)
 // gives the elbow a couple of centimetres of bow to be pushed out of the chest
 // with, which is what the hint is for.
 const ARM_SHOULDER_BEND = 0.97
+// How far inside its own reach a two-bone chain is clamped when the target is at
+// the very end of it (see `middleJointCircle`). Measured at the follow-through,
+// each step of this away from one left the hand that much of the chord short of
+// its target, and the elbow's angle — read off the bones, where the two-bone
+// triangle is all but degenerate at full stretch — moved about four times as much
+// in degrees over the swing's outward half: 0.999 gave a turn of 0.7 degrees that
+// the pose never asked for, 0.9999 gives 0.04.
+const MIDDLE_CLAMP = 0.9999
+// How much of the arm's own span the pose may put the wrist inside before the
+// elbow will fold for it, as a share of the span (see `heldChord`). A two-bone
+// solve folds as the *square root* of how far inside the span its target sits,
+// so a hand that grazes the arm's own length reads as a fold appearing out of
+// nothing: measured at the follow-through's pinch, the pose's chord came 0.2 per
+// cent inside the span and the elbow's angle turned over 2.4 degrees on it in
+// fifteen milliseconds. Taking that first whisker out of the chord solved for
+// rather than out of the elbow holds the arm straight across it instead — the
+// bones reach the wrist exactly, stretched or not, so nothing else about the arm
+// moves — and this is where the whisker ends and the elbow starts folding again.
+const ELBOW_FOLD_SLACK = 0.006
 // How far the arm's bones may stretch. The reference rig's limbs were elastic
 // cylinders (its forearm nearly doubled in length through the swing), and the
 // tuning's hand path is authored against that: at contact, and mid-swing, its
@@ -130,6 +151,38 @@ const ARM_STRETCH_MAX = 1.25
 // Exported because the suite asserts against the same numbers it reads here.
 export const WRIST_BEND_MAX = THREE.MathUtils.degToRad(30)
 export const WRIST_TWIST_MAX = THREE.MathUtils.degToRad(10)
+// The most a bare arm's elbow may straighten, and how finely the ring it rides is
+// walked when the trunk has to move it. An arm folds *around* a body and never
+// through it, and a chain that has reached its own span has no bend left in it at
+// all — a hand at the exact end of a straight arm reads as a hyper-extended limb
+// however long the arm is. Both belong to the open arm's solve: a fist on a bat
+// answers to the handle instead and has its own rules (see WRIST_BEND_MAX above).
+export const ELBOW_BEND_MAX = THREE.MathUtils.degToRad(165)
+const ELBOW_CLEAR_STEPS = 32
+// How much of the trunk's own girth an elbow may share with it before the ring is
+// asked for a better point: contact is what an arm against a body *is*, so the
+// guard is only about the solve putting a joint inside the flesh.
+const ELBOW_CLEARANCE = 0.008
+// How much of its own span an arm may fold to keep itself out of the body, and how
+// finely that is walked. Folding is the arm's own answer to a trunk in the way: a
+// chain at nearly full extension has no freedom left in it — the ring its elbow
+// rides has shrunk onto the shoulder-to-hand line — so an arm asked to cross a
+// chest that way has nowhere to put its elbow but through the ribs. A real arm
+// folds instead (a follow-through across the body comes down with the elbow bent),
+// and this is the limit on what that costs the pose's own reach.
+const ARM_FOLD_MAX = 0.34
+const ARM_FOLD_STEPS = 8
+// The height bands the trunk's girth is read in, in model units.
+const TRUNK_BAND = 0.02
+// How many of a shoe's own lowest vertices the ground rule stands a foot on (see
+// `measureSole`): a shoe rolls on its edge as the ankle turns, and the corner that
+// would dip under the surface is one of them.
+const SOLE_PROBES = 24
+// How far a foot the pose holds flat slides before its skid is at its own rate (see
+// the lead foot in the leg solve). The shortfall appears through a square root, so it
+// arrives with the slope of a step function; this is the length over which the skid
+// takes it up instead, in rig units (0.025 of the batter's own height, ~1.6 cm).
+const SLIDE_EASE = 0.04
 // And how upright the plane's own normal has to be before "below the plane" is a
 // direction at all. The plane's normal is taken as its upward half, so as the bat
 // comes back up over the shoulder the normal sweeps through horizontal and its own
@@ -222,16 +275,22 @@ export const LEG_BONES_ALL = Object.values(LEG_BONES).flatMap((side) => [side.hi
 // ...)``, the head's look relative to the torso), so blending them is free.
 export const HEAD_BONES = [PLAYER_BONES.neck, PLAYER_BONES.head]
 
-// Where the bands between them sit, in rig units. The hip crease is placed on the
-// hip joints themselves (thighL / thighR rest at rig 1.158), which is where a
-// doll's legs hinge. The waistband is not a constant at all: it is the uniform's
-// own trouser band, read off the model's base-color texture at load time (see
-// ``measureWaistband``), so another player model or another uniform still gets
-// its twist taken at its own waistband. Each band is left as wide as the
-// reference skinning's own (its 25-75% spanned ~0.12), since a narrower one
-// pinches.
-const HIP_BAND_BOTTOM = 1.10
-const HIP_BAND_TOP = 1.18
+// Where the bands between them sit. The hip crease is placed on the hip joints
+// themselves — the band is written as an *offset from the joint* rather than as a
+// height, because the rig's unit is not the same one in every frame the driver is
+// asked for. The reference model's sockets rest at 1.158 rig units in the batter's
+// frame, which is where these two numbers come from (1.10 to 1.18); the pitcher's
+// frame is metres and its sockets rest at 0.936, and a band left at 1.10-1.18 there
+// puts the crease through the middle of the trunks — with the surface cut that
+// follows it, and the trunks' twist with the legs, tearing the belt open exactly
+// where a pitcher's stance turns the pelvis hardest. The waistband itself is not a
+// constant at all: it is the uniform's own trouser band, read off the model's
+// base-color texture at load time (see ``measureWaistband``), so another player
+// model or another uniform still gets its twist taken at its own waistband. Each
+// band is left as wide as the reference skinning's own (its 25-75% spanned ~0.12),
+// since a narrower one pinches.
+const HIP_BAND_LOW = -0.058
+const HIP_BAND_HIGH = 0.022
 // The neck, where the head hinges, placed on the neck joint itself (the neck bone
 // rests at rig 1.885) the way the hip crease is placed on the hip joints — read
 // off the model's own skeleton rather than hard-coded. The model blends the
@@ -304,14 +363,35 @@ const WAISTBAND_TRIM_GAP = 0.15
 // perpendicular to it onto itself, so the seam opens by a fraction of that.
 //
 // ``INSET`` is how much smaller than the body it is, as a share of its radius, and
-// it is not a small number for a reason worth recording: the waist's section is
-// much wider than it is deep, so the swing *rotates* that section past the belt,
-// and where the section is widest the jersey's hem swings inward by a fifth of the
-// radius — a sleeve any bigger than that is poked through by the jersey it is
-// meant to hide under. The suite measures that swing in every phase
-// (`probeSleeve`) and requires the inset to cover it.
-const SLEEVE_MARGIN = 0.09
-const SLEEVE_INSET = 0.25
+// it is small for a reason worth recording. The copy carries the skin of the
+// vertex it was copied from, so it is the surface contracted toward the body's
+// axis and it is inside that surface however the pose moves it — it does not have
+// to out-run the hem it hides under. What it *does* have to do is stay outside the
+// **naked body** the uniform is worn over: the body's own surface is cut at the
+// belt too, and a copy sunk deeper than the body is one the tear in the uniform
+// shows the body through instead of backing it with cloth. The copy is therefore
+// placed a few millimetres inside the uniform — enough that the two are not the
+// same surface (they would z-fight), and no more. At the waist this is about 3 mm.
+// It is cut longer than that fraction because the seam also opens *vertically*.
+// What opens it is the swing's own turn, which the pelvis and the torso share, and
+// the drive's sink, which the whole torso now rides down with the pelvis rather
+// than being held up out of (the joint between the two blocks turns and does not
+// slide — see PELVIS_DRIVE_SHARE): the two edges of the cut stand the model's own
+// distance apart in every phase. The band underneath is cut to cover it with room
+// in hand, which is what it is for: what the skin between the two bones does is the
+// skin's, and past this edge the copy's own tear would show through the cloth.
+// Measured by the belt's own test (`probeSleeve`), which pins the seam's opening
+// against this number in every phase.
+const SLEEVE_MARGIN = 0.14
+const SLEEVE_INSET = 0.02
+// How far the hem's own edge stands off the belt's, as a share of the body's
+// radius there. The cut leaves the seam's two sides coincident — in the rest pose
+// they *are* the same surface — and two surfaces in the same place are a z-fight:
+// the belt renders torn into patches, and at a grazing angle the body under the
+// uniform shows through the hairline between them. The hem takes the outer of the
+// two, standing a fraction of a millimetre (0.9 mm at the waist) off the belt it
+// covers, which is what clothing does rather than meeting it edge to edge.
+const SEAM_LIP = 0.006
 
 // How much of the torso's own forward drive the pelvis carries. The drive is
 // authored in Batter.jsx as the upper body coming forward over the hips — the
@@ -323,13 +403,16 @@ const SLEEVE_INSET = 0.25
 // reads as the torso having slid off the pelvis. Given to the pelvis instead,
 // the whole lower body travels forward *with* the torso — the two blocks keep
 // their distance, the belt only ever takes the swing's turn, and what the hip
-// crease absorbs is the legs' angle, which is the joint's own motion. Either way
-// the chest lands in the same place, so the swing's geometry, the arm solves and
-// the bat's contact are untouched. Measured on the cut: the belt band is pulled
-// 0.465 rig units apart at mid-swing with the slide left on the torso and 0.139
-// with it given to the pelvis (0.373/0.043 at contact), while the hip crease
-// reads 0.179 either way — the tear moves off the belt without landing anywhere
-// else.
+// crease absorbs is the legs' angle, which is the joint's own motion. All of it is
+// given to the pelvis: a share left above the waistband slides the torso over a
+// pelvis that stays behind, and with the waist taking no translation at all (see
+// the drive) that slide is the only thing a share could buy, which is the stretch
+// this is here to refuse. The chest therefore lands where the pelvis is asked to
+// put it, and the drive's own sink carries both blocks together (see Batter.jsx's
+// REACH_SLACK). Measured on the cut: the belt band is pulled 0.465 rig units apart
+// at mid-swing with the slide left on the torso and 0.139 with it given to the
+// pelvis (0.373/0.043 at contact), while the hip crease reads 0.179 either way —
+// the tear moves off the belt without landing anywhere else.
 const PELVIS_DRIVE_SHARE = 1
 
 // The parts, by the bones that carry them, for anything that has to name them
@@ -405,6 +488,7 @@ const _planeNormal = new THREE.Vector3()
 const _circleCentre = new THREE.Vector3()
 const _circleAxis = new THREE.Vector3()
 const _elbowPoint = new THREE.Vector3()
+const _heldWrist = new THREE.Vector3()
 const _handAim = new THREE.Vector3()
 const _foreAim = new THREE.Vector3()
 const _perpHand = new THREE.Vector3()
@@ -437,6 +521,46 @@ const _handHome = new THREE.Vector3()
 const _reachHome = new THREE.Vector3()
 const _elbowPosed = new THREE.Vector3()
 const _elbowShift = new THREE.Vector3()
+// Scratch for a bare arm's solve (see `solveOpenArm`): the place the pose put the
+// hand, the direction it aimed the hand's line along, the shoulder the offset was
+// measured from, the elbow the pole asks for, the hand's own line's end, and where
+// the ball it is holding rides.
+const _openTarget = new THREE.Vector3()
+const _openAim = new THREE.Vector3()
+const _openElbow = new THREE.Vector3()
+// Scratch for the trunk's own volume (see `trunkDepth`/`holdArmClear`): the live
+// axis' two ends and the point of it a read is measured against, the arm's own two
+// middles, the place a pose asked a hand for and the reach a fold walks down from
+// it, and the ring a middle joint rides while a rule walks it.
+const _trunkFrom = new THREE.Vector3()
+const _trunkTo = new THREE.Vector3()
+const _trunkCentre = new THREE.Vector3()
+const _armMid = new THREE.Vector3()
+const _armFore = new THREE.Vector3()
+const _armAsked = new THREE.Vector3()
+const _foldTarget = new THREE.Vector3()
+const _ringU = new THREE.Vector3()
+const _ringV = new THREE.Vector3()
+const _ringEdge = new THREE.Vector3()
+const _ringPoint = new THREE.Vector3()
+const _foreMid = new THREE.Vector3()
+const _openShoulder = new THREE.Vector3()
+const _openLocal = new THREE.Vector3()
+const _openHand = new THREE.Vector3()
+const _openBall = new THREE.Vector3()
+// Scratch for the ground rule's own read (see `measureSole` and the leg solve):
+// one probe vertex of the shoe, in the model's frame.
+const _solePoint = new THREE.Vector3()
+// ...and for the foot a pose stands flat: the sole's own normal as the ankle
+// carries it, at rest and as posed, and the line that normal is levelled about
+// (see the leg solve's roll).
+const _footAxisModel = new THREE.Vector3()
+const _soleRest = new THREE.Vector3()
+const _soleNow = new THREE.Vector3()
+const _qFootRest = new THREE.Quaternion()
+const _qFootNow = new THREE.Quaternion()
+const _qFootWant = new THREE.Quaternion()
+const _qFootRoll = new THREE.Quaternion()
 // The square parts of two vectors about an axis — what a roll about that axis
 // actually moves — and the axis crossed with the first of them: what
 // `squareAngle` reads its answer off.
@@ -452,6 +576,15 @@ const _squarePivot = new THREE.Vector3()
  * direction the forearm would take, and which side of a plane the elbow would be
  * on) without solving the chain again.
  *
+ * The reach is clamped just inside the two bone lengths (MIDDLE_CLAMP) so that a
+ * target at the very end of the chain's reach leaves a circle to walk rather than
+ * a point. That clamp is also, wherever the chain is stretched to its target, a
+ * millimetre the arm cannot cover: the hand lands that far short of what it was
+ * aimed at, and near full extension the angle at the middle joint turns that
+ * millimetre into degrees. It is set as tight as a walk on the circle can stand
+ * rather than as loose as looks safe, because the elbow's own reserve is the
+ * shoulder's (ARM_SHOULDER_BEND), not this.
+ *
  * @param {THREE.Vector3} root the chain's first joint
  * @param {THREE.Vector3} target the joint being reached
  * @param {number} length1 the first bone's length
@@ -460,7 +593,7 @@ const _squarePivot = new THREE.Vector3()
  */
 function middleJointCircle(root, target, length1, length2) {
   _circleAxis.copy(target).sub(root)
-  const distance = Math.min(_circleAxis.length(), (length1 + length2) * 0.999)
+  const distance = Math.min(_circleAxis.length(), (length1 + length2) * MIDDLE_CLAMP)
   _circleAxis.normalize()
   const along = (length1 * length1 - length2 * length2 + distance * distance) / (2 * distance)
   _circleCentre.copy(root).addScaledVector(_circleAxis, along)
@@ -833,6 +966,17 @@ const _handRotation = new THREE.Matrix4()
 const _qHand = new THREE.Quaternion()
 const _qHandRest = new THREE.Quaternion()
 const _qCurl = new THREE.Quaternion()
+// The open hand's own palm: the direction the palm points (read off the model, see
+// `palmFacing`), where it points as the arm solve has left it, the direction a pose
+// asked for, the hand's own line the roll turns about, and the turn itself (see the
+// open-hand arm solve's `palm`).
+const _palmFace = new THREE.Vector3()
+const _palmNow = new THREE.Vector3()
+const _palmWant = new THREE.Vector3()
+const _palmAxis = new THREE.Vector3()
+const _qPalmRoll = new THREE.Quaternion()
+const _qHandNow = new THREE.Quaternion()
+const _qHandWant = new THREE.Quaternion()
 
 /**
  * The model's own statement of how its hands hold a bat. Its rig came with a
@@ -961,6 +1105,8 @@ const IDENTITY = new THREE.Quaternion()
 const _v1 = new THREE.Vector3()
 const _v2 = new THREE.Vector3()
 const _v3 = new THREE.Vector3()
+const _v4 = new THREE.Vector3()
+const _slip = new THREE.Vector3()
 const _q1 = new THREE.Quaternion()
 const _q2 = new THREE.Quaternion()
 const _q3 = new THREE.Quaternion()
@@ -999,11 +1145,18 @@ function collectBones(root) {
  * @param {number} options.spriteNominalHeightM height of the tuning's body frame
  * @returns {object} metrics in rig units, plus unitScale and the model's height
  */
-export function measurePlayerRig(scene, { spriteNominalHeightM }) {
+export function measurePlayerRig(scene, { spriteNominalHeightM = null } = {}) {
   scene.updateMatrixWorld(true)
   const box = new THREE.Box3().setFromObject(scene)
   const modelHeight = box.max.y - box.min.y
-  const unitScale = spriteNominalHeightM / modelHeight
+  // How many rig units the tuning's frame is worth. The batter's frame is a
+  // sprite of a fixed nominal height, so its units are that sprite's (see
+  // SPRITE_NOMINAL_HEIGHT_M in Batter.jsx) and a batter of any listed height
+  // keeps the proportions the animation was tuned at. A component that renders
+  // the model at its own scale — the pitcher, whose body already stands at world
+  // size — passes no nominal height and gets the model's own frame back: one rig
+  // unit to the model unit, so its joint targets are metres.
+  const unitScale = spriteNominalHeightM == null ? 1 : spriteNominalHeightM / modelHeight
 
   const pos = (name) => {
     const bone = scene.getObjectByName(name)
@@ -1032,6 +1185,19 @@ export function measurePlayerRig(scene, { spriteNominalHeightM }) {
     ? handTargets[0].getWorldPosition(new THREE.Vector3())
       .distanceTo(handTargets[1].getWorldPosition(new THREE.Vector3())) * unitScale
     : null
+  // How far down the hand's own axis the model carries what it is holding: its
+  // palm marker (the node the fist is solved onto, see handFrames), projected on
+  // the direction the fingers run in. It is the reach of a ball as much as of a
+  // bat's handle — the marker is the point of the hand a bar or a ball rests on —
+  // so the pitcher's release anchor is its own arm's length (see
+  // util/pitcherSequence.js) rather than a number tuned for one model.
+  const palm = {}
+  for (const [side, name] of Object.entries(PALM_HANDLES)) {
+    const node = scene.getObjectByName(name)
+    const fingers = scene.getObjectByName(ARM_BONES[side].fingers)
+    if (!node || !fingers || fingers.position.lengthSq() < 1e-9) continue
+    palm[side] = node.position.dot(fingers.position.clone().normalize()) * unitScale
+  }
 
   return {
     modelHeight,
@@ -1047,6 +1213,9 @@ export function measurePlayerRig(scene, { spriteNominalHeightM }) {
     },
     // How far apart the two fists grip the handle (see BAT_HAND_TARGETS).
     grip: { separation: gripSeparation },
+    // What each hand carries, from its own wrist (see above): the distance a
+    // held ball sits down the hand's axis.
+    palm,
     // Leg sockets: where the hips sit (the leg targets are anchored to them, and
     // the component shifts the model so their z lands on the body centreline),
     // how far apart they are, the foot's rest height, and the toe's offset from
@@ -1080,12 +1249,14 @@ function partOfBone(name) {
  * @param {number} height in rig units
  * @param {number} cut the waistband's own top edge, which is where the surface
  *   changes hands from the pelvis to the torso (see ``measureWaistband``)
+ * @param {number[]} hip the hip crease band, [bottom, top], from the model's own
+ *   hip sockets (see ``HIP_BAND_LOW``)
  * @param {number[]} neck the neck band, [bottom, top], from the model's own neck
  *   joint (see ``NECK_BAND_HALF_WIDTH``)
  */
-function partShares(height, cut, neck) {
-  if (height < HIP_BAND_TOP) {
-    const up = THREE.MathUtils.smoothstep(height, HIP_BAND_BOTTOM, HIP_BAND_TOP)
+function partShares(height, cut, hip, neck) {
+  if (height < hip[1]) {
+    const up = THREE.MathUtils.smoothstep(height, hip[0], hip[1])
     return { legs: 1 - up, pelvis: up, torso: 0, head: 0 }
   }
   if (height >= neck[1]) return { legs: 0, pelvis: 0, torso: 0, head: 1 }
@@ -1294,6 +1465,126 @@ export function measureWaistband(root, metrics) {
 }
 
 /**
+ * The trunk's own girth, by height, in model units: how far the model's body —
+ * the vertices its own skinning weights to a spine or pelvis bone — reaches
+ * sideways from its own midline at each height. It is the volume an arm has to
+ * fold *around*, and it is what the open arm solve holds an elbow out of, so that
+ * no pose can put a forearm through a chest.
+ *
+ * The read is the trunk's own vertices in each height band, as *two* reaches:
+ * how far the body runs out sideways from the line it stands on, and how far it
+ * runs out in front of and behind it. Both are read because an arm crosses a body
+ * in both directions — a hand coming down across the chest is stopped by the chest
+ * being *deep*, not by it being wide, and a body read only sideways is a body an
+ * arm may pass through front to back (measured on this model: the elbow 10 cm from
+ * the trunk's own line read a centimetre clear of it while the chest it was inside
+ * reached 28 cm the same way). The pair makes the trunk's cross-section an ellipse
+ * rather than a circle, which is what a torso's is. The arms and the head are
+ * weighted to their own bones and so are not part of the trunk, however close they
+ * hang. A model whose geometry cannot be read gets no rule rather than a guessed
+ * one: the profile comes back empty and the solve skips the guard.
+ *
+ * @param {THREE.Object3D} root the loaded model, at its rest pose
+ * @returns {{from: number, to: number, step: number, radii: number[], depths:
+ *   number[]}} the trunk's own height range, the band height, and the half-width
+ *   (sideways) and half-depth (fore and aft) at each band
+ */
+export function measureTrunk(root) {
+  const trunk = new Set([...PELVIS_BONES, ...TORSO_BONES])
+  const bands = new Map()
+  let lo = Infinity
+  let hi = -Infinity
+  root.traverse((node) => {
+    if (!node.isSkinnedMesh) return
+    const { position, skinIndex, skinWeight } = node.geometry.attributes
+    if (!position || !skinIndex || !skinWeight) return
+    for (let vertex = 0; vertex < position.count; vertex += 1) {
+      let onTrunk = false
+      for (let slot = 0; slot < 4 && !onTrunk; slot += 1) {
+        if (skinWeight.array[vertex * 4 + slot] < 0.2) continue
+        const bone = node.skeleton.bones[skinIndex.array[vertex * 4 + slot]]
+        if (bone && trunk.has(bone.name)) onTrunk = true
+      }
+      if (!onTrunk) continue
+      const height = position.getY(vertex)
+      const band = Math.round(height / TRUNK_BAND)
+      const seen = bands.get(band) ?? { wide: 0, deep: 0 }
+      seen.wide = Math.max(seen.wide, Math.abs(position.getX(vertex)))
+      seen.deep = Math.max(seen.deep, Math.abs(position.getZ(vertex)))
+      bands.set(band, seen)
+      lo = Math.min(lo, height)
+      hi = Math.max(hi, height)
+    }
+  })
+  if (!bands.size) return { from: 0, to: 0, step: TRUNK_BAND, radii: [], depths: [] }
+  const from = Math.round(lo / TRUNK_BAND) * TRUNK_BAND
+  const to = Math.round(hi / TRUNK_BAND) * TRUNK_BAND
+  const radii = []
+  const depths = []
+  for (let height = from; height <= to + 1e-9; height += TRUNK_BAND) {
+    // A band the trunk has no vertices in is a gap between parts, not a waist:
+    // the last band's own girth carries over rather than pinching the body shut.
+    const seen = bands.get(Math.round(height / TRUNK_BAND))
+    radii.push(seen?.wide ?? radii[radii.length - 1] ?? 0)
+    depths.push(seen?.deep ?? depths[depths.length - 1] ?? 0)
+  }
+  return { from, to, step: TRUNK_BAND, radii, depths }
+}
+
+/**
+ * The points a foot stands on: the lowest vertices of each shoe, read off the
+ * skin so the leg solve holds the *shoe* out of the ground rather than a bone that
+ * sits somewhere inside the leather.
+ *
+ * The read is the model's own geometry, per side — the vertices the foot, toe and
+ * heel bones carry — of which the lowest `SOLE_PROBES` are kept: a shoe rolls on
+ * its own edge as the ankle turns, and the corner that would dip under the surface
+ * is one of them. The height the kept points rest at is the ground the solve
+ * stands the foot on, so a model whose own rest pose stands on the ground needs no
+ * number from the caller. A model whose geometry cannot be read gets no rule rather
+ * than a guessed one (the solve then leaves the foot where the pose put it).
+ *
+ * @param {THREE.Object3D} root the loaded model, at its rest pose
+ * @returns {{L: object|null, R: object|null}} per side, the vertices kept (each
+ *   with the mesh it belongs to, which is what a posed read is skinned by) and the
+ *   height they rest at, in the model's own units
+ */
+export function measureSole(root) {
+  const found = { L: [], R: [] }
+  root.traverse((node) => {
+    if (!node.isSkinnedMesh) return
+    const { position, skinIndex, skinWeight } = node.geometry.attributes
+    if (!position || !skinIndex || !skinWeight) return
+    for (const side of ['L', 'R']) {
+      const foot = new Set([LEG_BONES[side].ankle, LEG_BONES[side].toe, LEG_BONES[side].heel])
+      for (let vertex = 0; vertex < position.count; vertex += 1) {
+        let onFoot = false
+        for (let slot = 0; slot < 4 && !onFoot; slot += 1) {
+          if (skinWeight.array[vertex * 4 + slot] < 0.5) continue
+          const bone = node.skeleton.bones[skinIndex.array[vertex * 4 + slot]]
+          if (bone && foot.has(bone.name)) onFoot = true
+        }
+        if (!onFoot) continue
+        found[side].push({ mesh: node, index: vertex, y: position.getY(vertex) })
+      }
+    }
+  })
+  const out = { L: null, R: null }
+  for (const side of ['L', 'R']) {
+    const vertices = found[side].sort((a, b) => a.y - b.y).slice(0, SOLE_PROBES)
+    if (!vertices.length) continue
+    out[side] = {
+      // Read once and kept: a posed read is these vertices skinned by the bones the
+      // solve has written (see the driver's leg solve), so the mesh has to be kept
+      // with them.
+      probes: vertices.map(({ mesh, index }) => ({ mesh, index })),
+      height: vertices[0].y,
+    }
+  }
+  return out
+}
+
+/**
  * Where the torso's twist *reads*: the height at which the pelvis's share of the
  * pelvis-plus-torso skin crosses 0.5, in rig units. With the weights cut into
  * parts at the waistband's top edge this is that edge — which is the point of the
@@ -1361,6 +1652,8 @@ function shapeRigidParts(root, metrics, waistband) {
   const cut = waistband.top
   // The neck band, on the joint the model hinges the head about.
   const neck = [metrics.neckY - NECK_BAND_HALF_WIDTH, metrics.neckY + NECK_BAND_HALF_WIDTH]
+  // ...and the hip crease, on the hip sockets the legs hinge about.
+  const hip = [metrics.hip.y + HIP_BAND_LOW, metrics.hip.y + HIP_BAND_HIGH]
   // Where a part's weight goes when the vertex carries none of that part's own
   // bones at all: any bone of a rigid part moves it the same way, so the part's
   // lowest joint is used — and for a leg, the side the vertex sits on (the model
@@ -1402,7 +1695,7 @@ function shapeRigidParts(root, metrics, waistband) {
       if (body <= 0.001) continue
 
       const height = position.getY(vertex) * metrics.unitScale
-      const shares = partShares(height, cut, neck)
+      const shares = partShares(height, cut, hip, neck)
       // The head is what the model itself skinned to the head, and only where the
       // neck is. A collar, a shoulder or a chest strap that happens to sit at the
       // neck's height is still the torso, so a vertex keeps none of the head's
@@ -1479,8 +1772,8 @@ function shapeRigidParts(root, metrics, waistband) {
       // band is for.
       const after = { pelvis: 0, torso: 0, legs: 0, head: 0 }
       for (const slot of slots) if (slot.part && slot.weight > 0) after[slot.part] += slot.weight
-      if (height <= HIP_BAND_BOTTOM) leaks.legs = Math.max(leaks.legs, after.pelvis + after.torso + after.head)
-      else if (height >= HIP_BAND_TOP && height <= waistband.bottom) {
+      if (height <= hip[0]) leaks.legs = Math.max(leaks.legs, after.pelvis + after.torso + after.head)
+      else if (height >= hip[1] && height <= waistband.bottom) {
         leaks.pelvis = Math.max(leaks.pelvis, after.legs + after.torso + after.head)
       } else if (height >= cut && height <= neck[0]) {
         leaks.torso = Math.max(leaks.torso, after.pelvis + after.legs + after.head)
@@ -1494,7 +1787,7 @@ function shapeRigidParts(root, metrics, waistband) {
   })
 
   return {
-    hip: [HIP_BAND_BOTTOM, HIP_BAND_TOP],
+    hip: [hip[0], hip[1]],
     waist: [waistband.bottom, waistband.top],
     neck: [neck[0], neck[1]],
     // Where the surface is *cut* open rather than blended: the belt's own top
@@ -1527,19 +1820,22 @@ function shapeRigidParts(root, metrics, waistband) {
  * @param {object} metrics result of measurePlayerRig
  * @param {{top: number}} waistband where the uniform's waistband is (its top edge
  *   is the cut: see ``measureWaistband``)
- * @returns {{cut: number, margin: number, inset: number, seam: number, sleeve: number,
- *   axis: number[], ring: number[][]}} the cut height in rig units, the sleeve's own
- *   numbers, how many vertices the cut and the sleeve added, and the cut's own ring —
- *   its body axis in the mesh's space and one point per direction of the seam, which
- *   is what `probeSleeve` measures the sleeve's coverage against
+ * @returns {{cut: number, margin: number, inset: number, lip: number, seam: number,
+ *   sleeve: number, axis: number[], ring: number[][]}} the cut height in rig units,
+ *   the sleeve's own numbers and how far the hem stands off the belt, how many
+ *   vertices the cut and the sleeve added, and the cut's own ring — its body axis in
+ *   the mesh's space and one point per direction of the seam, which is what
+ *   `probeSleeve` measures the sleeve's coverage against
  */
 function cutBeltAndSleeve(root, metrics, waistband) {
+  if (globalThis.__NO_BELT_CUT) return { cut: waistband.top, margin: SLEEVE_MARGIN, inset: SLEEVE_INSET, lip: SEAM_LIP, seam: 0, sleeve: 0, axis: [0, 0], ring: [] }
   const cutY = waistband.top / metrics.unitScale
   const marginY = SLEEVE_MARGIN / metrics.unitScale
   const shape = {
     cut: waistband.top,
     margin: SLEEVE_MARGIN,
     inset: SLEEVE_INSET,
+    lip: SEAM_LIP,
     seam: 0,
     sleeve: 0,
     axis: [0, 0],
@@ -1583,6 +1879,15 @@ function cutBeltAndSleeve(root, metrics, waistband) {
       index[0] = bone
       weight[0] = 1
       return { skinIndex: index, skinWeight: weight }
+    }
+    // The skin a vertex already carries, read before the cut appends anything, so
+    // a copy of it can be placed by the same matrices it is (see the sleeve below).
+    const skinOf = (vertex) => {
+      const read = (name) => Array.from(
+        { length: attributes[name].itemSize },
+        (_, k) => attributes[name].values[vertex * attributes[name].itemSize + k],
+      )
+      return { skinIndex: read('skinIndex'), skinWeight: read('skinWeight') }
     }
     // ``sources`` is one vertex, or two and a blend between them, so a cut face
     // interpolates the surface it was cut out of; ``weights`` says which part's
@@ -1657,30 +1962,79 @@ function cutBeltAndSleeve(root, metrics, waistband) {
           push([[from, 1 - t], [to, t]], lifted === 1 ? torso : pelvis),
           push([[from, 1 - t], [to, t]], lifted === 1 ? pelvis : torso),
         ])
-        const near = lifted === 1 ? one : two
-        const far = lifted === 1 ? two : one
-        opened.push([ring[0], near[0], far[0]])
-        opened.push([near[1], ring[1], ring[2]])
-        opened.push([near[1], ring[2], far[1]])
+        // Which of the pair is the torso's copy and which the pelvis's depends on
+        // which side of the cut the *lone* vertex fell on: ``one`` is the copy on the
+        // lone vertex's own side, so it is the torso's copy in the one-above case and
+        // the pelvis's in the two-above one. Two crossings, each added twice (once per
+        // side's weights): the count is how many vertices the cut adds, which is what
+        // the suite reports.
+        const torsoCopy = lifted === 1 ? one : two
+        const pelvisCopy = lifted === 1 ? two : one
+        // The hem's own copy is stood a hair off the belt's, along the radius —
+        // the surface's own normal at the belt — so the two sides of the seam are
+        // never in the same place (see SEAM_LIP).
+        const lip = (copy) => {
+          const offset = copy * 3
+          const x = attributes.position.values[offset] - axisX
+          const z = attributes.position.values[offset + 2] - axisZ
+          attributes.position.values[offset] = axisX + x * (1 + SEAM_LIP)
+          attributes.position.values[offset + 2] = axisZ + z * (1 + SEAM_LIP)
+        }
+        lip(torsoCopy[0])
+        lip(torsoCopy[1])
+        // The triangle comes apart into a triangle on one side of the cut and a quad
+        // on the other, and **both** pieces are the surface: the cut opens the skin,
+        // it does not delete half of it. Emitting the pieces wrongly is invisible in
+        // the geometry — the missing area is a hole the body under the uniform shows
+        // through — and that was what read as the belt being torn, because the sleeve
+        // (which is only meant to be seen while the two sides slide apart) was what
+        // showed through the gaps, in patches of the belt texture pulled inward.
+        if (lifted === 1) {
+          // The lone vertex is the torso's, so the triangle is the torso's piece of
+          // the surface and the pelvis gets the quad.
+          opened.push([ring[0], torsoCopy[0], torsoCopy[1]])
+          opened.push([pelvisCopy[0], ring[1], ring[2]])
+          opened.push([pelvisCopy[0], ring[2], pelvisCopy[1]])
+        } else {
+          // The lone vertex is the pelvis's, and the quad is the torso's.
+          opened.push([ring[0], pelvisCopy[0], pelvisCopy[1]])
+          opened.push([torsoCopy[0], ring[1], ring[2]])
+          opened.push([torsoCopy[0], ring[2], torsoCopy[1]])
+        }
+        // Each crossing is two vertices, one per side's weights.
         shape.seam += 4
       }
       // And the sleeve: the same surface, in the band around the cut, again with
-      // its own vertices so it can move rigidly with the pelvis alone. The inset
-      // goes on the copy's own position — the body's surface again, scaled toward
-      // the body's axis — so the sleeve is the belt continuing under the jersey.
+      // its own vertices so it can be inset without moving the surface itself. The
+      // inset goes on the copy's own position — the body's surface again, scaled
+      // toward the body's axis — so the sleeve is the belt continuing under the
+      // jersey.
+      //
+      // Each copy carries the skin of the vertex it was copied from, and that is
+      // the whole of what keeps it hidden. A copy forced onto the pelvis alone is
+      // only as deep inside the body as its inset is *measured* to be, and the
+      // measurement is of the swing the pose happens to make: a chest turned hard
+      // past the hips swings the waist's own section — much wider than it is deep
+      // — inward by more than a quarter of its radius, and the copy then stands
+      // out through the jersey it is meant to hide under, which reads as the belt
+      // torn into patches. Placed by the same matrices as the surface, the copy is
+      // the surface contracted toward the body's axis — a blend of matrices is
+      // linear in the position it is given, so contracting and blending commute —
+      // and a contracted copy is inside the surface it came from in every pose,
+      // whatever the pose does.
       const centre = (heights[0] + heights[1] + heights[2]) / 3
       if (Math.abs(centre - cutY) > marginY) continue
       const copies = corners.map((vertex) => {
-        const copy = push([[vertex, 1]], pelvis)
+        const copy = push([[vertex, 1]], skinOf(vertex))
         const at = copy * 3
         attributes.position.values[at] = axisX + (attributes.position.values[at] - axisX) * (1 - SLEEVE_INSET)
         attributes.position.values[at + 2] = axisZ + (attributes.position.values[at + 2] - axisZ) * (1 - SLEEVE_INSET)
         return copy
       })
-      sleeved.push(copies)
+      if (!globalThis.__NO_SLEEVE) sleeved.push(copies)
       shape.sleeve += 3
     }
-    if (!sleeved.length) return
+    if (!sleeved.length && !globalThis.__NO_SLEEVE) return
 
     for (const [name, attribute] of Object.entries(attributes)) {
       geometry.setAttribute(
@@ -1724,6 +2078,34 @@ function cutBeltAndSleeve(root, metrics, waistband) {
 export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0, 0]) {
   if (!modelRoot.getObjectByName('armature')) throw new Error('player.glb is missing its armature')
   const bones = collectBones(modelRoot)
+  // The trunk's own girth, read off the model once: what the open arm solve holds
+  // an arm out of (see holdArmClear).
+  const trunkProfile = measureTrunk(modelRoot)
+  // ...and the shoes' own lowest points, which is what a planted foot stands on
+  // (see the leg solve's ground rule).
+  const sole = measureSole(modelRoot)
+  // The lowest point of one shoe as the solve has just posed it, in the driver's
+  // own frame (where the bones were written), or null on a model whose geometry
+  // could not be read.
+  const soleLowest = (side) => {
+    const probes = sole[side]?.probes
+    if (!probes?.length) return null
+    // The posed bones have not been through the renderer yet: what the probes are
+    // skinned by is the model's own matrices, so they are brought up to date here.
+    modelRoot.updateMatrixWorld(true)
+    let lowest = Infinity
+    for (const probe of probes) {
+      // `getVertexPosition` is the model's own geometry skinned by the bones as
+      // they have just been written (three's `applyBoneTransform` alone reads the
+      // vector it is handed rather than the vertex, and would skin the previous
+      // probe's place).
+      probe.mesh.getVertexPosition(probe.index, _solePoint)
+      probe.mesh.localToWorld(_solePoint)
+      modelRoot.worldToLocal(_solePoint)
+      if (_solePoint.y < lowest) lowest = _solePoint.y
+    }
+    return lowest
+  }
 
   // Rig units -> the skeleton's own frame, as the component places the model:
   // unwind the uniform scale the model was given and the half turn that faces it
@@ -1737,6 +2119,15 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
   const modelOrigin = toModelVector(placement)
   // Positions in the rig frame: where the model actually sits is subtracted out.
   const toModelPoint = (point) => toModelVector(point).sub(modelOrigin)
+  // A *direction* in the rig frame, in the model's: the same mapping as a place
+  // with the frame's own origin taken out of it, so the pose can name a line — which
+  // is what a pole for a lifted limb is (see the leg solve's ``kneeDir``) — rather
+  // than only a place.
+  const modelFrameOrigin = toModelVector([0, 0, 0])
+  const toModelDirection = (point, into) => {
+    const v = toModelVector(point)
+    return (into ?? v).copy(v).sub(modelFrameOrigin).normalize()
+  }
   // Uniform, but read it rather than assume: a rig-unit length becomes this many
   // model units.
   const unitLength = _v3.set(0, 1, 0).applyMatrix4(toModel).length()
@@ -1746,7 +2137,7 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
   const toRigVector = (point) => new THREE.Vector3(-point.x * metrics.unitScale, point.y * metrics.unitScale, -point.z * metrics.unitScale)
   // The model's own palm markers, read once (see handFrames).
   const handGrip = handFrames(modelRoot, restPose)
-  // Which way round the handle each hand closes (see FINGER_CURL), read off the
+  // Which way round the bar each hand closes (see FINGER_CURL), read off the
   // model rather than assumed. A fist folds about the bar it is closing on, so
   // the axis is the handle's own direction; the *sign* is the fact about this
   // model: the knuckle is where the rig puts the fingers' joint, a finger
@@ -1754,7 +2145,16 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
   // the fingers toward the handle's own point in the palm. Whichever turn takes
   // the fingers that way is the one this hand closes with — and it is the same
   // turn for every pose, since it is written in the fist's own frame.
+  //
+  // The same sign is read for a *ball*: a bare hand (the pitcher's, see the
+  // open-hand arm solve below) closes about its own knuckle line rather than
+  // about a bar it is holding, and the line between the knuckles of a hand whose
+  // fingers run out along the hand's +Y is the hand's own +X. The rule is
+  // otherwise the model's own: the fold carries the fingertips toward the palm's
+  // side, which is where the palm marker sits.
   const curlSign = {}
+  const ballCurlSign = {}
+  const KNUCKLE_AXIS = new THREE.Vector3(1, 0, 0)
   for (const [side, names] of Object.entries(ARM_BONES)) {
     const fist = handGrip[side]
     if (!fist) continue
@@ -1762,14 +2162,17 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
     // along the hand's axis.
     const joint = (restPose?.get(bones[names.fingers]) ?? bones[names.fingers]).position
     _curlJoint.copy(joint).normalize()
-    _curlHandle.copy(fist.point).sub(joint)
-    // Only the part of that offset that crosses the handle counts: a fold turns
-    // the fingers about the handle's own direction.
-    _curlHandle.addScaledVector(_curlAxis.copy(fist.handle), -_curlHandle.dot(_curlAxis))
-    // Which way a finger starts to swing when it folds: the handle's direction
-    // crossed with the direction the finger reaches in.
-    _curlTurn.crossVectors(_curlAxis, _curlJoint).normalize()
-    curlSign[side] = Math.sign(_curlTurn.dot(_curlHandle)) || 1
+    // Which way a finger starts to swing when it folds, and the part of the palm
+    // marker's offset that crosses the fold's own axis: the two rules the bat's
+    // sign above is read from, with the axis swapped.
+    const signFor = (axis) => {
+      _curlHandle.copy(fist.point).sub(joint)
+      _curlHandle.addScaledVector(_curlAxis.copy(axis), -_curlHandle.dot(_curlAxis))
+      const turn = _curlAxis.clone().cross(_curlJoint).normalize()
+      return Math.sign(turn.dot(_curlHandle)) || 1
+    }
+    curlSign[side] = signFor(fist.handle)
+    ballCurlSign[side] = signFor(KNUCKLE_AXIS)
   }
 
   // --- Forward kinematics over the driven chain ------------------------------
@@ -2021,6 +2424,11 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
   const footLever = new THREE.Vector3()
   const footRolled = new THREE.Vector3()
   const footRoll = new THREE.Quaternion()
+  // Scratch for a leg that hangs off its own knee (see the leg solve's ``hang``):
+  // the knee the pose asks for, and the ankle that hangs under it.
+  const hangKnee = new THREE.Vector3()
+  const hangAnkle = new THREE.Vector3()
+  const hangDir = new THREE.Vector3()
   const hipsRotation = new THREE.Quaternion()
   const leanRotation = new THREE.Quaternion()
   const upperRotation = new THREE.Quaternion()
@@ -2054,6 +2462,454 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
     }
   }
 
+  // The arm's own span, in model units: what the clavicle's reach, the stretch
+  // budget and the two-bone IK are all measured against (the bat solve reads the
+  // same number per arm).
+  const armSpan = len(metrics.arm.upper + metrics.arm.fore)
+  // How far a bare hand carries what it is holding, from the wrist down the hand's
+  // own line: the model's palm marker (see measurePlayerRig) in model units, so a
+  // released ball's place is the arm's own geometry rather than a tuned number.
+  const ballCarry = {}
+  for (const [side, names] of Object.entries(ARM_BONES)) {
+    const fingers = rest.get(names.fingers)
+    if (!fingers || !handGrip[side] || fingers.position.lengthSq() < 1e-9) continue
+    ballCarry[side] = handGrip[side].point.dot(fingers.position.clone().normalize())
+  }
+  // ...and which way each hand's *palm* faces, in that same frame: the model's palm
+  // marker with the part of it that runs along the fingers' line taken out. What is
+  // left points from the hand's own axis out to the side of it the marker sits on —
+  // the marker is what a bat's handle closes on, so that side is the palm's, and
+  // this is the palm's normal rather than the back of the hand's. It is the channel
+  // the open-hand solve rolls the hand about its own line to line up with a pose's
+  // own ``palm`` (see solveOpenArm), and the number a probe reads the glove's turn
+  // with: the hand's own line leaves exactly one turn free, and this is it.
+  const palmFacing = {}
+  for (const [side, names] of Object.entries(ARM_BONES)) {
+    const fingers = rest.get(names.fingers)
+    const fist = handGrip[side]
+    if (!fingers || !fist || fingers.position.lengthSq() < 1e-9) continue
+    _palmFace.copy(fist.point).addScaledVector(
+      fingers.position,
+      -fist.point.dot(fingers.position) / fingers.position.lengthSq(),
+    )
+    if (_palmFace.lengthSq() < 1e-12) continue
+    palmFacing[side] = _palmFace.clone().normalize()
+  }
+
+  /**
+   * One open arm: a pitcher's (or a fielder's) hand, rather than the batter's
+   * fist.
+   *
+   * The bat solve below is a *grip*: its whole problem is where a fist's one free
+   * axis — the roll about the barrel — has to turn to hold the wrist's limits, and
+   * every rule it answers is stated about the handle. A hand not holding a bat has
+   * no barrel to roll about and no handle to close on, so none of that applies.
+   * What is left is the part of the arm solve that is about the *arm*, and it is
+   * the same machinery the batter's arms go through:
+   *
+   *   * the clavicle swings its socket toward the hand, as far as a clavicle can
+   *     (``reachWithShoulder``),
+   *   * what the shoulder cannot cover the bones stretch for, up to the same
+   *     ARM_STRETCH_MAX the bat solve is allowed,
+   *   * and a two-bone IK places the elbow on the pose's own pole, so the pose owns
+   *     the elbow's *shape* while the clavicle and the stretch own the reach.
+   *
+   * The pose gives the wrist's place and the direction the hand's own line (the
+   * fingers) points, which is two of the three turns a hand has: what is left is the
+   * roll about that line, and a pose may name it as ``palm`` — the direction the
+   * *palm* is to face, written in the same two frames the aim may be (see
+   * `palmFacing` for where the model says the palm is). A pose that names none is
+   * left with the roll the rig authored, which is what ``aim`` does for every other
+   * joint it drives. The place may be written two ways, blended by ``mix``: ``local``, an offset from the live
+   * shoulder in the chest's own turned frame — what a pose wants while the body is
+   * turning, since "the hands together at the chest" has to turn with the chest
+   * or the arm is dragged round with it — and ``hand``, a place in the rig frame
+   * outright, which is what a pose that is putting the hand on a *place in the
+   * world* wants. The pitcher's release is the second kind: the whole point of the
+   * frame it is authored in is that the hand lands on the trajectory's own first
+   * sample (see util/pitcherSequence.js).
+   *
+   * @param {object} arm ``side``, ``local``/``hand`` (+ ``mix``), ``aim`` for the
+   *   rig frame and ``aimLocal`` for the chest's, ``palm`` for the rig frame and
+   *   ``palmLocal`` for the chest's (the direction the palm is to face, ``palmMix``
+   *   for how much of the turn that takes, or none to leave the roll as the rig
+   *   authored it), ``elbow`` (a place in the rig
+   *   frame, the same one ``hand``/``grip`` are written in — a pole reads only the
+   *   direction from the live shoulder to it, and the bat solve reads its own pole
+   *   the same way), and ``curl`` for how far the fingers close, in radians
+   * @param {object} names ARM_BONES for the side
+   * @param {string} side 'L' or 'R'
+   */
+  // The trunk's own volume, and how deep a point sits inside it, in model units:
+  //
+  //   * the *axis* is the live pelvis-to-neck line, so a leaning or turning pose is
+  //     guarded by the trunk it actually has rather than by the one it stands in;
+  //   * the *girth* is the model's own profile (`measureTrunk`), read at the height
+  //     the point's own fraction along the trunk is, and it is a reach in *both*
+  //     directions the body runs out in: the half-width it is sideways and the
+  //     half-depth it is fore and aft. The cross-section is the ellipse those two
+  //     make, looked up along the line the point sits on, so a hand carried down
+  //     across the chest meets the chest's own depth and a hand held out in front
+  //     of a *narrow* waist is not ruled inside it for the waist's being narrow.
+  //
+  // Nought where the point is clear of the body, or where the model could not be
+  // measured at all — a rig the driver has no profile for gets no guard rather than
+  // a guessed one.
+  const trunkDepth = (point) => {
+    const profile = trunkProfile
+    if (profile.radii.length < 2) return 0
+    _trunkFrom.copy(liveChain.of(bones[PLAYER_BONES.spine]).position)
+    _trunkTo.copy(liveChain.of(bones[PLAYER_BONES.neck]).position)
+    const span = _trunkTo.y - _trunkFrom.y
+    const along = span > 1e-6 ? THREE.MathUtils.clamp((point.y - _trunkFrom.y) / span, 0, 1) : 0
+    _trunkCentre.set(
+      _trunkFrom.x + (_trunkTo.x - _trunkFrom.x) * along,
+      point.y,
+      _trunkFrom.z + (_trunkTo.z - _trunkFrom.z) * along,
+    )
+    const dx = point.x - _trunkCentre.x
+    const dz = point.z - _trunkCentre.z
+    const out = Math.hypot(dx, dz)
+    const height = profile.from + (profile.to - profile.from) * along
+    const index = THREE.MathUtils.clamp(
+      Math.round((height - profile.from) / profile.step), 0, profile.radii.length - 1,
+    )
+    const wide = profile.radii[index]
+    const deep = profile.depths[index] ?? wide
+    if (!(wide > 1e-6) && !(deep > 1e-6)) return 0
+    if (out < 1e-6) return Math.max(wide, deep)
+    // The ellipse's own reach along this point's line out from the axis: the
+    // half-way between the two reaches where the line is diagonal between them.
+    const unitX = dx / out
+    const unitZ = dz / out
+    const reach = (wide * deep)
+      / Math.max(1e-6, Math.hypot(deep * unitX, wide * unitZ))
+    return reach - out
+  }
+
+  // Moves a place off the trunk's own volume along the line the trunk's girth runs
+  // out to it, and by no other line: a hand the pose asked for *inside* the body is
+  // asked for something no arm can do, and the body's own side of it is where the
+  // hand comes out — the depth it was in by is what the caller reports as a miss.
+  // Nought where the place was already clear.
+  const pushOutOfTrunk = (point, clearance) => {
+    const depth = trunkDepth(point)
+    if (!(depth > clearance)) return 0
+    _ringEdge.set(point.x - _trunkCentre.x, 0, point.z - _trunkCentre.z)
+    if (_ringEdge.lengthSq() < 1e-10) _ringEdge.set(1, 0, 0)
+    _ringEdge.normalize()
+    point.addScaledVector(_ringEdge, depth - clearance)
+    return depth - clearance
+  }
+
+  // How deep in the trunk an arm is, with its elbow at ``elbow``: an arm is two
+  // bones, and what has to be clear of a body is the *bone* rather than one point
+  // of it — a middle joint held a hair off a chest leaves the forearm beside it
+  // through the jersey, which is what a tucked glove did on this model (measured,
+  // 6 cm of forearm inside it while the elbow read a millimetre clear). So the
+  // worst of the arm's own three reads is the arm's depth.
+  const armDepth = (elbow, shoulder, wrist) => Math.max(
+    trunkDepth(_armMid.copy(shoulder).add(elbow).multiplyScalar(0.5)),
+    trunkDepth(elbow),
+    trunkDepth(_armFore.copy(elbow).add(wrist).multiplyScalar(0.5)),
+  )
+
+  // Moves an elbow off the trunk's own volume, on the ring its two bones and the
+  // shoulder-to-hand line put it on — that circle is the whole of where a middle
+  // joint *can* be, so the point of it nearest the pose's own pole whose arm is
+  // clear of the body is where the elbow goes. Where the ring has no such point
+  // (an arm asked to cross a chest at full extension has almost no ring at all: the
+  // circle has shrunk onto the line) the elbow takes the point whose arm is *least*
+  // inside the body, and the fold the caller walks next is what has to give.
+  // Answers whether it moved it.
+  const holdArmClear = (elbow, shoulder, wrist, length1, length2) => {
+    if (armDepth(elbow, shoulder, wrist) <= ELBOW_CLEARANCE) return false
+    const circle = middleJointCircle(shoulder, wrist, length1, length2)
+    _ringU.copy(UP).cross(circle.axis)
+    if (_ringU.lengthSq() < 1e-8) _ringU.set(1, 0, 0)
+    _ringU.normalize()
+    _ringV.copy(circle.axis).cross(_ringU).normalize()
+    _ringEdge.copy(elbow).sub(circle.centre)
+    const asked = Math.atan2(_ringEdge.dot(_ringV), _ringEdge.dot(_ringU))
+    let best = null
+    let bestTurn = Infinity
+    let shallowest = Infinity
+    let leastInside = asked
+    for (let step = 0; step < ELBOW_CLEAR_STEPS; step += 1) {
+      const angle = (step / ELBOW_CLEAR_STEPS) * Math.PI * 2
+      _ringPoint.copy(circle.centre)
+        .addScaledVector(_ringU, Math.cos(angle) * circle.radius)
+        .addScaledVector(_ringV, Math.sin(angle) * circle.radius)
+      const depth = armDepth(_ringPoint, shoulder, wrist)
+      // How far round the ring this point is from the one the pole asked for.
+      const turn = Math.abs(halfTurn(angle - asked))
+      if (depth <= ELBOW_CLEARANCE && turn < bestTurn) {
+        bestTurn = turn
+        best = angle
+      }
+      if (depth < shallowest) {
+        shallowest = depth
+        leastInside = angle
+      }
+    }
+    const answer = best ?? leastInside
+    elbow.copy(circle.centre)
+      .addScaledVector(_ringU, Math.cos(answer) * circle.radius)
+      .addScaledVector(_ringV, Math.sin(answer) * circle.radius)
+    return true
+  }
+
+  const solveOpenArm = (arm, names, side) => {
+    const bone = bones[names.upperArm]
+    const chestTurn = parentDelta(bones[PLAYER_BONES.spine02], _q1)
+    const mix = arm.hand ? THREE.MathUtils.clamp(arm.mix ?? 1, 0, 1) : 0
+    // The two forms of an authored place or direction, each turned out of the
+    // frame it was written in and mixed in the model's own. A caller may give one
+    // form alone; what it gave is then the whole of the answer.
+    const resolved = (absolute, local, into) => {
+      if (!absolute && !local) return into.set(0, 0, 0)
+      // A caller that writes one form alone means all of it: there is nothing to
+      // blend with, and blending against a frame it did not write would put the
+      // hand a fraction of a reach away from where it asked.
+      if (!absolute) return into.copy(toModelVector(local)).applyQuaternion(chestTurn)
+      if (!local) return into.copy(toModelVector(absolute))
+      into.set(0, 0, 0)
+      into.addScaledVector(toModelVector(absolute), mix)
+      return into.addScaledVector(toModelVector(local).applyQuaternion(chestTurn), 1 - mix)
+    }
+    // The shoulder the offset is measured from, read before the clavicle swings:
+    // a pose that says "the hand a hand's length in front of the shoulder" means
+    // the shoulder the chest carries, not where the girdle then reaches to.
+    const shoulderAtRest = _openShoulder.copy(liveChain.of(bone).position)
+    // The place: an absolute one is already a place in the rig frame, and a local
+    // one is an offset *from the shoulder*, measured off the one the chest
+    // carries rather than the one the girdle then reaches to.
+    const localTarget = arm.local
+      ? _openLocal.copy(toModelVector(arm.local)).applyQuaternion(chestTurn).add(shoulderAtRest)
+      : null
+    if (!arm.hand) {
+      _openTarget.copy(localTarget ?? _openLocal.set(0, 0, 0))
+    } else if (!localTarget) {
+      _openTarget.copy(toModelVector(arm.hand))
+    } else {
+      _openTarget.copy(toModelVector(arm.hand)).multiplyScalar(mix).addScaledVector(localTarget, 1 - mix)
+    }
+    resolved(arm.aim, arm.aimLocal, _openAim).normalize()
+    // The elbow's own pole, as a place in the rig frame: a default of one rig
+    // unit straight down from the origin is a pole that hangs the elbow below the
+    // shoulder, which is where a bare arm's elbow falls when the pose has no
+    // opinion about it. A pole *inside* the body is a pole asking for an elbow
+    // there, so it comes out of it the same way a hand asked for inside it does.
+    _openElbow.copy(toModelVector(arm.elbow ?? [0, -1, 0]))
+    pushOutOfTrunk(_openElbow, ELBOW_CLEARANCE)
+    // ...and the hand may not be asked for inside the body either. What the pose
+    // wrote is kept in variable `_armAsked` (the *asked* place), so what the arm
+    // could not reach — the body's own width, or the fold below — is reported
+    // against the place the pose wrote rather than against the one the solve
+    // settled on.
+    _armAsked.copy(_openTarget)
+    pushOutOfTrunk(_openTarget, ELBOW_CLEARANCE)
+
+    const shoulderReach = reachWithShoulder(
+      names.shoulder, names.upperArm, _openTarget, armSpan * ARM_SHOULDER_BEND,
+    )
+    const shoulder = liveChain.of(bone).position
+    const stretch = THREE.MathUtils.clamp(shoulder.distanceTo(_openTarget) / armSpan, 1, ARM_STRETCH_MAX)
+    const upper = len(metrics.arm.upper) * stretch
+    const fore = len(metrics.arm.fore) * stretch
+    // The elbow may not straighten out: a chain that has reached its own span has
+    // no bend left in it, and a hand at the exact end of a straight arm is a
+    // hyper-extended limb however the bones were scaled to get there. Where the
+    // pose's target asks for that, the hand is brought back along the arm's own
+    // line to the longest reach that keeps ELBOW_BEND_MAX of bend — the *line* is
+    // the pose's, and the difference is the driver's to report (see `miss` below,
+    // which is exactly this distance).
+    const bendChord = Math.sqrt(
+      upper * upper + fore * fore - 2 * upper * fore * Math.cos(ELBOW_BEND_MAX),
+    )
+    // The arm may not fold *through* the body either: an arm bends *around* a
+    // trunk. Three rules answer for that, and they are walked in this order:
+    //
+    //   1. the reach is brought inside the longest one that keeps the elbow's own
+    //      bend (above), which is the arm's shape rather than the body's;
+    //   2. the elbow takes the point of its ring that leaves the whole arm
+    //      clearest of the body (holdArmClear) — where a pose's own pole would put
+    //      it inside the chest, the ring asks for the nearest point of itself that
+    //      is not;
+    //   3. where even that is not enough — an arm asked to cross a chest at nearly
+    //      full extension has no ring left to move on — the arm *folds*: the reach
+    //      is brought in along the pose's own line, in steps, until the whole arm
+    //      is outside the body. A real arm does the same thing (a follow-through
+    //      across the body comes down with the elbow bent, not locked), and what it
+    //      costs is the distance the wrist ends up short of the place the pose
+    //      asked for, reported below as `short`.
+    //
+    // All three are answered before anything is written, so what the joints below
+    // carry is one elbow and not a search.
+    const elbow = new THREE.Vector3()
+    let fold = 0
+    for (let step = 0; step <= ARM_FOLD_STEPS; step += 1) {
+      fold = step / ARM_FOLD_STEPS
+      _foldTarget.copy(_openTarget)
+      if (fold > 0) {
+        _foldTarget.sub(shoulder).multiplyScalar(1 - fold * ARM_FOLD_MAX).add(shoulder)
+      }
+      if (shoulder.distanceTo(_foldTarget) > bendChord) {
+        _foldTarget.sub(shoulder).setLength(bendChord).add(shoulder)
+      }
+      elbow.copy(twoBoneIK(shoulder, _foldTarget, upper, fore, _openElbow))
+      holdArmClear(elbow, shoulder, _foldTarget, upper, fore)
+      if (armDepth(elbow, shoulder, _foldTarget) <= ELBOW_CLEARANCE) break
+    }
+    _openTarget.copy(_foldTarget)
+    aim(names.upperArm, elbow)
+    // The stretch, exactly as the bat solve writes it: the upper arm carries the
+    // whole arm's, and the hand cancels it again so the glove keeps its size.
+    bone.scale.y = stretch
+    bones[names.hand].scale.y = 1 / stretch
+    liveChain.invalidate(bone)
+    aim(names.forearm, _openTarget)
+    // The hand's own line: its child joint (the fingers) is placed where the aim
+    // asks for it, which carries the model's own roll about the arm with it.
+    _openHand.copy(liveChain.of(bones[names.hand]).position)
+      .addScaledVector(_openAim, len(metrics.arm.hand))
+    aim(names.hand, _openHand)
+    // ...and the one turn the hand still has, where the pose asked for it: a hand's
+    // own line leaves the roll about it free, and that roll *is* the palm's channel
+    // (the glove a pitcher shows the plate, the grip turned so the batter reads it).
+    // The pose names the direction the palm is to face, in either of the two frames
+    // its aim may be written in, and the hand is rolled about its own line by the
+    // turn that lines the model's own palm up with it as far as a roll can go (see
+    // palmFacing and squareAngle) — so a pose asking for a facing no roll can reach
+    // spends its whole turn on it and keeps its elbow, reach and fold where they
+    // were, which is what makes the palm a joint target rather than another rule.
+    let palmRoll = 0
+    // How much of that turn the pose wants *taken*: a hand held inside another
+    // hand's own grip wants the whole of it (a bare hand's palm is on the far side
+    // of the ball from the mitt hand's own rest roll — 151° of turn, measured), and
+    // a grip that is opening wants less and less of it frame by frame. Nought is
+    // the roll the rig gave the chain, exactly as an arm that asked for none, so a
+    // share can be eased in and out of without a hand snapping round in the one
+    // frame the ask arrived or left (see ``palmMix`` in pitcherSequence.js).
+    const palmShare = THREE.MathUtils.clamp(arm.palmMix ?? 1, 0, 1)
+    if (palmFacing[side] && palmShare > 0 && (arm.palm || arm.palmLocal)) {
+      if (arm.palmLocal) {
+        toModelDirection(arm.palmLocal, _palmWant).applyQuaternion(chestTurn)
+      } else {
+        toModelDirection(arm.palm, _palmWant)
+      }
+      const hand = bones[names.hand]
+      const restOrientation = rest.get(names.hand).orientation
+      // Where the palm faces and which way the hand runs, as the aim has just left
+      // the two of them (the chain has been rebuilt around the aim already).
+      _qHandNow.copy(liveChain.of(hand).quaternion)
+      _palmNow.copy(palmFacing[side]).applyQuaternion(_qHandNow)
+      // The hand's own line — the one axis a roll has, and the one the aim has just
+      // put where the pose asked for it.
+      _palmAxis.copy(_openHand).sub(liveChain.of(hand).position).normalize()
+      palmRoll = squareAngle(_palmNow, _palmWant, _palmAxis) * palmShare
+      // ...and the turn is *written as the joint's own orientation*, because that is
+      // what a joint carries: the hand as it stands, rolled about its own line — and
+      // then reduced to the delta the chain wants, which is the orientation with the
+      // resting one and the parent's own turn taken back off it (see setRotation,
+      // whose arithmetic this is the inverse of).
+      _qHandWant.copy(_qHandNow).premultiply(_qPalmRoll.setFromAxisAngle(_palmAxis, palmRoll))
+      _qHandWant.multiply(_qHandRest.copy(restOrientation).invert())
+      _qHandWant.premultiply(parentDelta(hand, _q1).invert())
+      setRelative(names.hand, _qHandWant)
+    }
+    // ...and the fingers close on whatever the hand is holding, about the hand's
+    // own knuckle line (see ballCurlSign). The thumb follows a little of the way:
+    // it is the shorter, thicker digit and closes the other side of the ball.
+    if (arm.curl) {
+      _curlAxis.copy(KNUCKLE_AXIS).applyQuaternion(rest.get(names.hand).orientation)
+      setRelative(names.fingers, _qCurl.setFromAxisAngle(_curlAxis, ballCurlSign[side] * arm.curl))
+      setRelative(names.thumb, _qCurl.setFromAxisAngle(
+        _curlAxis, ballCurlSign[side] * arm.curl * THUMB_CURL / FINGER_CURL,
+      ))
+    }
+
+    // Where the arm ended up, and where the ball it is holding rides: the wrist,
+    // the hand's own line off it, and the model's own carry down that line. The
+    // release anchor is this number (see pitcherSequence.js), so it is reported
+    // rather than assumed — a solved wrist is the driver's to know.
+    const wrist = liveChain.of(bones[names.hand]).position
+    _handAim.copy(liveChain.of(bones[names.fingers]).position).sub(wrist).normalize()
+    debug.arms.push({
+      side,
+      open: true,
+      // The rig-frame target the solve aimed the wrist at, and the place the pose
+      // itself wrote, so the difference between the two — the body's own width, or
+      // the fold the arm took to stay out of it — is the driver's own and not the
+      // pose's, and so is the miss that is left over.
+      target: toRigVector(_openTarget).toArray(),
+      asked: toRigVector(_armAsked).toArray(),
+      fold,
+      // The socket the arm hangs from, as posed (the clavicle's own swing moves
+      // it), so a pole's own direction can be read the way the IK read it.
+      shoulder: toRigVector(shoulder).toArray(),
+      wrist: toRigVector(wrist).toArray(),
+      aim: toRigVector(_handAim).toArray(),
+      ball: toRigVector(_openBall.copy(wrist).addScaledVector(_handAim, ballCarry[side] ?? 0)).toArray(),
+      reach: armSpan / unitLength,
+      required: shoulder.distanceTo(_openTarget) / unitLength,
+      requiredAtRest: shoulderReach.atRest / unitLength,
+      shoulderTurn: shoulderReach.amount,
+      shoulderSwing: shoulderReach.swing,
+      stretch,
+      miss: wrist.distanceTo(_openTarget) / unitLength,
+      // Where the palm is turned, as the model's own marker reads it (see
+      // palmFacing): a direction in the rig frame, the direction the pose asked it
+      // to face (nought where it asked for none), and the roll it took to get there,
+      // in degrees — the one turn of the hand the place and the aim leave free.
+      palm: palmFacing[side]
+        ? toRigVector(
+          _palmNow.copy(palmFacing[side])
+            .applyQuaternion(liveChain.of(bones[names.hand]).quaternion),
+        ).toArray()
+        : null,
+      palmAsk: palmShare > 0 && (arm.palm || arm.palmLocal)
+        ? toRigVector(_palmWant).toArray()
+        : null,
+      palmRoll: palmRoll * 180 / Math.PI,
+      elbow: toRigVector(elbow).toArray(),
+      elbowMiss: liveChain.of(bones[names.forearm]).position.distanceTo(elbow) / unitLength,
+      // How far the solved elbow — and the middle of the forearm hanging off it —
+      // came out *inside* the trunk's own girth, in rig units: nought is clear of
+      // the body, and what the two rules above left over is here rather than
+      // assumed (see trunkDepth and ELBOW_CLEARANCE).
+      elbowDepth: trunkDepth(elbow) / unitLength,
+      upperDepth: trunkDepth(
+        _foreMid.copy(shoulder).add(elbow).multiplyScalar(0.5),
+      ) / unitLength,
+      forearmDepth: trunkDepth(
+        _foreMid.copy(liveChain.of(bones[names.forearm]).position)
+          .add(liveChain.of(bones[names.hand]).position)
+          .multiplyScalar(0.5),
+      ) / unitLength,
+      // ...and inside the widest sense of it: the worst of the arm's own three
+      // reads, which is the number the guard above holds to ELBOW_CLEARANCE.
+      armDepth: armDepth(
+        liveChain.of(bones[names.forearm]).position,
+        shoulder,
+        liveChain.of(bones[names.hand]).position,
+      ) / unitLength,
+      short: liveChain.of(bones[names.hand]).position.distanceTo(_armAsked) / unitLength,
+      // The elbow's own bend, in radians, read off the posed bones: nought is a
+      // straight arm and it can only go one way (a two-bone chain has no negative
+      // bend), which is the joint's own limit answered by the reach rules above
+      // rather than by a limit of its own (see ELBOW_BEND_MAX) — and reported, so
+      // that a delivery whose arm has straightened out is a number here.
+      bend: _armMid.copy(liveChain.of(bones[names.hand]).position)
+        .sub(liveChain.of(bones[names.forearm]).position)
+        .angleTo(
+          _armFore.copy(shoulder).sub(liveChain.of(bones[names.forearm]).position),
+        ),
+      curl: arm.curl ?? 0,
+      mix,
+    })
+  }
+
   const driver = {
     debug,
 
@@ -2061,13 +2917,20 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
      * Applies one frame of the batter animation.
      *
      * @param {object} pose every point in rig units, in the rig's frame
-     * @param {object} pose.hip { yaw, leanX, leanZ, offsetY, offsetZ } — the hips'
+     * @param {object} pose.hip { yaw, leanX, leanZ, offsetY, offsetZ, rock } — the hips'
      *   turn, the upper body's lean about the hip pivot, and the hips' own
      *   translation (the settle/drive)
      * @param {number} pose.torsoYawExtra shoulder turn beyond the hips
      * @param {number} pose.torsoOffsetZ the torso's own forward drive
      * @param {object} pose.head { yaw, pitch }
-     * @param {Array<{side:number,knee:Array,ankle:Array,footYaw:number}>} pose.legs
+     * @param {Array<{side:number,knee:Array,ankle:Array,footYaw:number,toeLift:number,
+     *   carry:number,planted:boolean,hang:number}>} pose.legs — ``planted`` asks the
+     *   ground's own rule for a foot that stands on it (see the leg solve: its shoe may
+     *   not sink into it), ``toeLift`` tips the foot up about its own ankle (radians,
+     *   which is the finish of a swing's lead foot: the toes up and the heel taking the
+     *   weight), and ``hang`` is the share of the leg that hangs off the knee the
+     *   pose asked for with its shin straight down, which is what a leg the
+     *   delivery is carrying — a kick — is shaped like (see the leg solve)
      * @param {Array<{side:number,elbow:Array,grip:Array}>} pose.arms
      */
     applyPose(pose) {
@@ -2114,11 +2977,22 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
       const spine = bones[PLAYER_BONES.spine]
       setRotation(PLAYER_BONES.spine, hipsRotation)
       const hipOffset = toModelVector([0, pose.hip.offsetY, pose.hip.offsetZ])
-      // The torso's own drive, split between the two blocks the belt sits
-      // between (see PELVIS_DRIVE_SHARE). Written on the spine (which is in the
-      // pelvis's frame) a share of it carries the whole lower body with the
-      // torso; written above the waistband the rest slides the torso over a
-      // pelvis that stays behind.
+      // The stance's weight shift: the pelvis travelling along the batter's own
+      // fore/aft line *over* planted feet, which is what a batter's rock from
+      // foot to foot is. It is added to the pelvis like the other offsets and to
+      // nothing else — unlike the drive it is never carried into the legs' own
+      // targets, because the feet are planted and this is the body moving across
+      // them. (Carrying it is what would slide the stepping foot out from under
+      // the batter, and what the tuning's ``leg.carry`` flag exists for.)
+      const rockOffset = toModelVector([0, 0, pose.hip.rock ?? 0])
+      // The torso's own drive, all of it on the pelvis (see PELVIS_DRIVE_SHARE).
+      // Written on the spine — which is in the pelvis's frame — it carries the
+      // whole lower body with the torso, so the two blocks the belt sits between
+      // keep their distance. Nothing above the waistband takes a share of it: the
+      // band between the two blocks is a *joint*, and a joint turns and does not
+      // slide. (A share written above the waistband slides the torso over a pelvis
+      // that stays behind, and a translation across the band is a stretch the band
+      // cannot make: it is 0.08 rig units wide and the drive is 0.33 at mid-swing.)
       //
       // The drive is a *forward* push — toward the pitcher — and it is written in
       // the rig's own frame rather than down the pelvis's own axis. Turning it by
@@ -2131,28 +3005,32 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
       // -Z is the direction the tuning, the contact geometry and the bat's own
       // frame all assume.
       //
-      // The share the *waist* takes is still turned into the pelvis's frame, so
-      // the chest ends up in exactly the same place for any share: this is a
-      // redistribution of one motion rather than a second one.
       const drive = toModelVector([0, 0, pose.torsoOffsetZ])
       const pelvisDrive = drive.clone().multiplyScalar(PELVIS_DRIVE_SHARE)
-      const torsoDrive = drive
-        .clone()
-        .multiplyScalar(1 - PELVIS_DRIVE_SHARE)
-        .applyQuaternion(_q1.copy(liveChain.of(spine).quaternion).invert())
       spine.position.copy(rest.get(PLAYER_BONES.spine).position)
         .add(hipOffset)
+        .add(rockOffset)
         .add(pelvisDrive)
       liveChain.invalidate(spine)
 
-      // The waist takes the twist the pelvis was rolled back by. With the share
-      // at 1 this leaves the waist and the ribcage at the same orientation —
-      // the rigid block the pelvis is hinged to — and the ribcage only picks up
-      // whatever a future share below 1 hands it.
+      // The waist takes the twist the pelvis was rolled back by, and *nothing
+      // else*: its own place is the rest chain's, so the two blocks the belt sits
+      // between differ by a rotation about the body's own up axis and by nothing
+      // at all. With the share at 1 that leaves the waist and the ribcage at the
+      // same orientation — the rigid block the pelvis is hinged to — and the
+      // ribcage only picks up whatever a future share below 1 hands it.
+      //
+      // The pelvis may *translate* as a whole (the pose's crouch, its rock and
+      // the drive above), and the whole torso travels with it, which is what a
+      // body hinging at its hips does. What the band may not take is a difference
+      // between the two: a pose that sinks the hips onto a lead leg (see
+      // Batter.jsx's REACH_SLACK) sinks the chest, the shoulders and the bat with
+      // them, and hands the swing geometry the frame it really has, rather than
+      // lifting the chest up out of the sink and stretching the band by it.
       const spine01 = bones[PLAYER_BONES.spine01]
       setRotation(PLAYER_BONES.spine01, _q1.copy(upperRotation)
         .multiply(_q2.setFromAxisAngle(UP, -pose.torsoYawExtra * (1 - WAIST_TWIST_SHARE))))
-      spine01.position.copy(rest.get(PLAYER_BONES.spine01).position).add(torsoDrive)
+      spine01.position.copy(rest.get(PLAYER_BONES.spine01).position)
       liveChain.invalidate(spine01)
       // The ribcage: the chest, and so the shoulders, the arm solves and the
       // head's reference, end up exactly where the tuning put the upper body.
@@ -2206,30 +3084,94 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
         const names = leg.side === 1 ? LEG_BONES.R : LEG_BONES.L
         const hip = liveChain.of(bones[names.hip]).position
         // The drive moves the whole body forward, and a foot may or may not be
-        // carried with it: the tuning marks each foot with how much of the ride
-        // it takes (``leg.carry``), because the two feet are not the same foot.
-        // The pelvis's own share of the drive carries both feet — it is the body
-        // moving over them, and a leg cannot be asked to span it. The hips' own
-        // drive (the lunge the back leg fires) is taken only by the foot that is
-        // stepping: the front foot rides it forward, while the back foot is the
-        // pivot the whole swing turns on and stays planted, with what the lunge
-        // asks for past the leg's length coming out of the shoe rolling on to its
-        // toe (below). Carrying *both* feet the whole way was what walked the
-        // batter across the plate: with the pelvis facing the plate at the set,
-        // the ride dragged the feet sideways into the strike zone. Horizontal
-        // only: a foot stays on the ground.
-        legCarry.copy(pelvisDrive)
-        if (leg.carry) legCarry.add(hipOffset)
+        // carried with it: ``leg.carry`` is the *share of the ride* this foot
+        // takes, because the two feet are not the same foot. A foot planted in
+        // the ground takes **none** of it — the batter's rear shoe is planted, so
+        // the body rides over the top of it and the leg has to span the travel
+        // (see the ride bound in Batter.jsx, and the roll below) — while the
+        // foot that is stepping rides the whole of it, which is what makes the
+        // stride a step rather than the foot being left behind. Carrying *both*
+        // feet the whole way was what walked the batter across the plate: with
+        // the pelvis facing the plate at the set, the ride dragged the feet
+        // sideways into the strike zone. Horizontal only: a foot stays on the
+        // ground.
+        const carryShare = leg.carry == null ? 1 : Math.min(1, Math.max(0, leg.carry))
+        legCarry.copy(pelvisDrive).add(hipOffset).multiplyScalar(carryShare)
         legCarry.y = 0
         const ankle = toModelPoint(leg.ankle).add(legCarry)
+        // The knee's own place, as the pose asks for it. A pole is read for the
+        // *side* of the hip-to-ankle line it is on and nothing else, so the place it
+        // names is really a direction from the socket: the place is put exactly a
+        // thigh away from the hip — where the solve would have put the knee anyway —
+        // which is what makes ``hang`` able to mean what it says.
+        const kneeHint = toModelPoint(leg.knee).add(legCarry)
+        // A leg the delivery is *carrying* — the kick — hangs off that knee, with
+        // its shin straight down: what a lifted leg's own shape is (a shin folded
+        // back over its own foot is the shape of a leg being pulled, not lifted).
+        // ``hang`` is the share of the leg that hangs, so the flight is authored as
+        // numbers like everything else and a kick can be handed to the ground and
+        // back without a seam. The pose's own ankle place is what a standing leg
+        // reads, and a hanging one replaces it: the foot goes where the shin's own
+        // end takes it.
+        const hang = Math.min(1, Math.max(0, leg.hang ?? 0))
+        if (hang > 0) {
+          hangKnee.copy(kneeHint).sub(hip)
+          if (hangKnee.lengthSq() > 1e-12) {
+            hangKnee.normalize()
+            // ...and where the pose named the plane itself (``kneeDir``), that is
+            // the direction — measured off the *socket*, which is the joint the
+            // direction is about. A pose that wrote the plane as a place instead has
+            // it read through the socket to that place, which is the same answer only
+            // if the pose's idea of where the socket is happens to be right (the
+            // pose is authored in the rig frame and the socket is the model's).
+            // Blended by the share the plane was handed over with, so a leg going
+            // back to the ground has no seam in it.
+            if (leg.kneeDir) {
+              // The pose authors in the rig frame and the solve runs in the model's,
+              // so the direction is carried over the same way every other authored
+              // vector is (a plain \`copy\` here pointed the knee the other way round
+              // the body).
+              //
+              // All three of the direction's own numbers are read when the pose names
+              // its height as well as its azimuth — the height is what the pose's
+              // ``lift`` is, so a turn that leaves it alone turns the leg about the
+              // vertical axis and nothing else (see the pose's ``kneeDir``). A pose
+              // that names the plane alone leaves the height to the knee it asked for.
+              const flatOnly = leg.kneeDir.length < 3
+              toModelDirection(flatOnly ? [leg.kneeDir[0], 0, leg.kneeDir[1]] : leg.kneeDir, hangDir)
+              hangKnee.x = hangKnee.x * (1 - hang) + hangDir.x * hang
+              hangKnee.z = hangKnee.z * (1 - hang) + hangDir.z * hang
+              if (!flatOnly) hangKnee.y = hangKnee.y * (1 - hang) + hangDir.y * hang
+              hangKnee.normalize()
+            }
+            hangKnee.multiplyScalar(len(metrics.leg.thigh)).add(hip)
+            hangAnkle.copy(hangKnee)
+            hangAnkle.y -= len(metrics.leg.shin)
+            ankle.lerp(hangAnkle, hang)
+            kneeHint.copy(hangKnee)
+          }
+        }
         // The foot's own toe — where the tuning puts the ball of the foot, on the
         // ground — is the point the shoe rolls over *and* the point the foot bone
         // is aimed at. Reading it off the target (rather than off wherever the
         // ankle ends up) is what keeps it planted: the ankle may move, the toe
         // does not.
-        const toe = footToe.copy(ankle).add(
-          _v2.copy(toeOffset).applyAxisAngle(UP, leg.footYaw),
-        )
+        //
+        // ``leg.toeLift`` tips the foot up about its own ankle before it is aimed:
+        // the toe target rises and the shoe points up out of the ground, leaving the
+        // heel as the end that stands on it. Nothing here holds the shoe *up* for
+        // it — that is what the pose asks ``planted`` for: the ground rule below puts
+        // the shoe's own lowest vertex (the heel, once the foot is tipped) on the
+        // dirt, so a tipped foot reads as a foot on its heel rather than as a shoe
+        // floating with its toe in the air.
+        const raked = _v2.copy(toeOffset).applyAxisAngle(UP, leg.footYaw)
+        if (leg.toeLift) {
+          // The hinge a foot tips about: horizontal and square to the line the foot
+          // points along, and the way round that raises the toe end.
+          footAxis.set(-raked.z, 0, raked.x).normalize()
+          if (footAxis.lengthSq() > 1e-8) raked.applyAxisAngle(footAxis, leg.toeLift)
+        }
+        const toe = footToe.copy(ankle).add(raked)
         // A rigid skeleton cannot stretch: when the hips are driven beyond the
         // leg's length the *shoe rolls onto its toe*. The ankle turns about the
         // toe, which lifts the heel and carries the ankle forward at the same
@@ -2239,20 +3181,195 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
         // through the swing, toe and all). Only what the foot's own geometry can
         // absorb comes out of the roll; past that the ankle lifts, so a leg the
         // hips have outrun still cannot stretch.
-        const reach = Math.hypot(hip.y - ankle.y, Math.hypot(hip.x - ankle.x, hip.z - ankle.z))
-        if (reach > legLength) rollFootOnToe(hip, ankle, toe, legLength)
-        const knee = twoBoneIK(
-          hip,
-          ankle,
-          len(metrics.leg.thigh),
-          len(metrics.leg.shin),
-          toModelPoint(leg.knee).add(legCarry),
-        )
-        aim(names.hip, knee)
-        aim(names.knee, ankle)
-        // The foot aims at the toe it is rolling over, so the roll's own rotation
-        // is carried by the shoe rather than the ball of the foot sliding.
-        aim(names.ankle, toe)
+        const authored = _v4.copy(ankle)
+        let rolled = false
+        let lifted = 0
+        // A foot the pose holds *flat* on the dirt — the batter's lead foot, all
+        // swing long — does not give the way a free one does. When the hips ride
+        // forward past what the leg can span, this foot skids back along the ground
+        // instead of pivoting onto its toe: the ankle target is slid back along the
+        // line the shoe stands on until the leg reaches it, at the height the pose
+        // asked for, so the
+        // shoe stays flat with its heel on the ground. It is the same motion seen
+        // from either end — the body moves forward over a foot that stood its
+        // ground, which is what *planted* means — and it is the lead foot's own
+        // version of what the roll below does for the pivot: something has to give
+        // when the drive asks for more leg than there is, and a heel that comes up
+        // off the ground is the one thing this foot may not give.
+        let slip = 0
+        if (leg.heelDown) {
+          const dy = hip.y - ankle.y
+          const span = Math.sqrt(Math.max(legLength * legLength - dy * dy, 0))
+          const dx = ankle.x - hip.x
+          // The socket's own line back (or ahead) of the foot: the skid is written
+          // against this, so it slides the ankle toward the socket and never away.
+          const back = hip.z - ankle.z
+          // The socket's own lateral offset is not something a slide along the foot's
+          // length can reach, so the room the leg has in z is what it has to work with.
+          const room = Math.sqrt(Math.max(span * span - dx * dx, 0))
+          const owed = Math.abs(back) - room
+          // ...and the skid is *eased* in over its own first SLIDE_EASE of travel rather
+          // than switched on. The shortfall arrives through a square root, so its rate
+          // steps from nothing to full in a frame or two, and the lead leg answers a
+          // corner like that with a corner of its own: measured on the hard version, the
+          // knee swung 22 degrees and back inside 5 ms (0.285s) and the hip 17 and back
+          // inside 50 (0.39-0.44s). Easing leaves at most SLIDE_EASE / 2 of the
+          // shortfall on the table, which the leg's own miss takes instead.
+          const pull = owed <= 0
+            ? 0
+            : owed >= SLIDE_EASE ? (owed - SLIDE_EASE / 2) / owed : owed / (2 * SLIDE_EASE)
+          // ...and the skid runs *along the line the shoe stands on* — the body's own
+          // forward — rather than along the line to the socket. A shoe's edge bites
+          // sideways, so what a foot can give is length: pulled straight at the socket,
+          // the ankle came *across the box* as the pelvis turned over it (measured at
+          // contact: 0.12 rig of the lead ankle's step sideways, which is the batter's
+          // foot walking in toward the plate). Sliding along the length leaves the ankle
+          // on its own step line, and the shoe pivots on it the way a planted one does.
+          // What is left over — the socket's own lateral offset, which no slide along
+          // the foot's length can reach — is the leg's own lean, which is the shape of a
+          // lead leg carrying a pelvis turned over it rather than out through the shoe.
+          if (pull > 0) {
+            slip = pull * Math.abs(back)
+            _slip.set(0, 0, Math.sign(back) * slip)
+            ankle.add(_slip)
+            // The toe it is aimed at rides the same slip, so the shoe keeps its
+            // own direction rather than swinging round on the ankle that moved.
+            toe.add(_slip)
+          }
+        }
+        // A foot the pose asks to stand *flat* gets the joint a planted shoe really
+        // has and an aim alone does not: the ankle's own roll about the line the
+        // foot is aimed along, which is what lays the sole on the ground rather
+        // than leaving it on whichever corner the shin's roll has turned lowest.
+        //
+        // What that corner costs is the leg's own span. The ground rule below
+        // stands the shoe *on* the dirt by lifting the ankle to it, so a shoe
+        // turned on its corner is a socket-to-foot line shorter by the lift —
+        // measured at the pitcher's finish, where the swing has carried the trail
+        // shoe most of the way round, 2.4 cm of it — and a leg with no slack to
+        // spare reads every one of those centimetres as knee: the same pose comes
+        // out 29 degrees bent with the corner and 12 with the roll.
+        //
+        // The read is the sole's own normal. The model stands on the ground in its
+        // rest pose, so at rest the world's up *is* the sole's normal (see
+        // measureSole, which reads the sole off the shoe's own geometry); the
+        // ankle carries it from there, and the roll that squares it up is the same
+        // reading the arm solve makes of a palm (see squareAngle). Rolling about
+        // the foot's own line is a real ankle's own motion — the subtalar joint is
+        // exactly that roll — so nothing here is a styling choice the pose would
+        // rather be authoring around.
+        const flatShare = THREE.MathUtils.clamp(leg.flat ?? 0, 0, 1)
+        const rollSoleFlat = () => {
+          _soleRest.copy(UP).applyQuaternion(
+            _qFootRest.copy(restChain.of(bones[names.ankle]).quaternion).invert(),
+          )
+          _soleNow.copy(_soleRest).applyQuaternion(liveChain.of(bones[names.ankle]).quaternion)
+          // The line the roll turns about is the one *the sole* runs along: the
+          // horizontal direction in the sole's own plane, which is what a subtalar roll
+          // levelling a shoe on the dirt actually turns about. It is *not* the bone's
+          // own line, and the difference is this model's own foot: the toe joint sits
+          // below and ahead of the ankle, so the bone's axis runs a third of the way
+          // *down* while the sole under it is level — a roll about that axis can only
+          // take the shoe's edge so far over, and the rest is the ground rule's to lift
+          // (measured at the finish: 4° of sole left over, which is 4 mm of ankle, which
+          // is 5° of knee on a leg with nothing left to spend). Read off the sole, the
+          // roll is exactly the turn that lays it flat, and what is left over is the
+          // shoe's own leather rather than its angle.
+          _footAxisModel.crossVectors(_soleNow, UP)
+          if (_footAxisModel.lengthSq() < 1e-9) return 0
+          _footAxisModel.normalize()
+          const roll = squareAngle(_soleNow, UP, _footAxisModel) * flatShare
+          _qFootNow.copy(liveChain.of(bones[names.ankle]).quaternion)
+          _qFootWant.copy(_qFootNow).premultiply(_qFootRoll.setFromAxisAngle(_footAxisModel, roll))
+          _qFootWant.multiply(_qFootRest.copy(rest.get(names.ankle).orientation).invert())
+          _qFootWant.premultiply(parentDelta(bones[names.ankle], _q1).invert())
+          setRelative(names.ankle, _qFootWant)
+          return roll
+        }
+        const solveLeg = () => {
+          const reach = Math.hypot(hip.y - ankle.y, Math.hypot(hip.x - ankle.x, hip.z - ankle.z))
+          if (reach > legLength && !leg.heelDown) {
+            rollFootOnToe(hip, ankle, toe, legLength)
+            rolled = true
+          }
+          const knee = twoBoneIK(
+            hip,
+            ankle,
+            len(metrics.leg.thigh),
+            len(metrics.leg.shin),
+            kneeHint,
+          )
+          aim(names.hip, knee)
+          aim(names.knee, ankle)
+          // The foot aims at the toe it is rolling over, so the roll's own rotation
+          // is carried by the shoe rather than the ball of the foot sliding.
+          aim(names.ankle, toe)
+          // ...and if the pose wants it flat, the ankle rolls the shoe level on the
+          // line it has just been aimed along. Done here rather than once after the
+          // solve, because the ground rule's passes re-aim the foot: a roll written
+          // outside this would be aimed away on the first pass that moved the ankle.
+          if (flatShare > 0) rollSoleFlat()
+        }
+        solveLeg()
+        // A foot the pose *plants* stands on the ground rather than in it, and what
+        // stands on the ground is the *shoe*: the read is the model's own geometry
+        // (`measureSole`), skinned by the bones this solve has just written, so it is
+        // the corner of the shoe that would dip under the surface that is lifted out
+        // of it rather than a bone that sits somewhere inside the leather. (Read off
+        // the bones instead, this model's shoes sat 1.2 to 2.5 cm under the dirt
+        // through the whole delivery: an ankle has no joint to roll on, so the shoe's
+        // own corner goes under whenever the leg turns it.) Where the sole is does
+        // not depend on how high the ankle is — both ends of the foot move together —
+        // so one lift lands it on the ground, and the second pass catches what the
+        // leg's own re-aim of the foot moves it by. (A foot the pose is *carrying* —
+        // the kick, the stride in the air, the trailing foot off the rubber — is left
+        // where the pose put it: only the foot standing on the ground has the
+        // ground's own answer.)
+        const standsOn = sole[leg.side === 1 ? 'R' : 'L']
+        const ground = standsOn?.height ?? null
+        let lowestSole = null
+        if (leg.planted && ground !== null) {
+          // A planted foot stands *on* the ground and not in it, and not a
+          // centimetre above it either: the rule answers a float as well as a sink,
+          // in either direction, on every pass. One lift is not enough to land it,
+          // because which way the shoe leans is not fixed while the ankle moves —
+          // the foot is aimed at the toe, so dropping the ankle turns the shoe about
+          // it and the leather's own lowest corner comes down by only a fraction of
+          // the ankle's travel (measured: two thirds of it). Left at one pass, that
+          // shortfall is the shoe floating 4.7 mm at the set and 5.6 mm through the
+          // kick, which is what a standing foot hovering over the dirt looks like —
+          // so the passes are made to *converge* on the ground instead, each taking
+          // what is left of the gap (damped, so a foot whose lean is near its own
+          // tipping point cannot step past the surface and ring around it) until the
+          // shoe is on it. A leg that truly cannot reach is left where the toe roll
+          // put it: the roll clamps to the same place whatever the ankle is asked
+          // for, so the passes repeat the same reading and the loop simply ends.
+          //
+          // The *budget* is what sets the residue, not the damping: the gap the last
+          // pass was handed comes back a third or so smaller (measured on the
+          // pitcher's finish, where the shoe stands most of the way round — the worst
+          // case this delivery has). Four passes are enough for a foot standing near
+          // square, where the gap is a millimetre or two to begin with, and not for
+          // one whose shoe has been turned most of the way round: the finish's own
+          // foot starts 0.05 off the dirt and four passes left it 0.8 mm *under* it.
+          // Six leave a tenth of a millimetre, which is what the rest of the delivery
+          // reads to. The passes are cheap — a foot that has converged exits on the
+          // first read inside 1e-5 — so the extra two only ever run on a foot that
+          // still needs them.
+          for (let pass = 0; pass < 6; pass += 1) {
+            lowestSole = soleLowest(leg.side === 1 ? 'R' : 'L')
+            if (lowestSole === null) break
+            const sinking = ground - lowestSole
+            if (!(Math.abs(sinking) > 1e-5)) break
+            const step = sinking * (pass === 0 ? 1 : 0.8)
+            ankle.y += step
+            toe.y += step
+            lifted += step
+            solveLeg()
+          }
+          lowestSole = soleLowest(leg.side === 1 ? 'R' : 'L') ?? lowestSole
+        }
+        const soleRoll = flatShare > 0 ? rollSoleFlat() : 0
 
         // What the hip crease has to absorb: how far the thigh's own turn has
         // come off the pelvis's, read back off the chain. The leg is *not* asked
@@ -2270,6 +3387,51 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
         const twist = Math.abs(2 * Math.atan2(dot3(_q4, _v1), _q4.w))
         debug.legs.push({
           side: leg.side,
+          planted: !!leg.planted,
+          // Where the pose put the foot... and where the *shoe* ended up if it was
+          // planted on the ground, in rig units, so a foot that is standing in the
+          // dirt rather than on it is a number here (see the ground rule above).
+          sole: lowestSole === null ? null : lowestSole / unitLength,
+          sink: ground === null || lowestSole === null ? null : (ground - lowestSole) / unitLength,
+          // The socket the leg hangs from, as posed, and where the foot was asked for
+          // and landed — the same promise the arms report: a foot is planted where
+          // the pose says it is unless the leg had to give (see rollFootOnToe), and a
+          // caller that cares — the pitcher's stride, say — can tell the difference.
+          hip: toRigVector(hip).toArray(),
+          // The share of the ride this foot carried (see above), so a caller can
+          // tell a foot that was left standing where it was planted from one that
+          // rode the body's own travel forward.
+          carry: carryShare,
+          target: toRigVector(ankle).toArray(),
+          // What the *pose* asked for, before the solve's own roll
+          // (``rolled``, the shoe tipping onto its toe because the leg ran out) and
+          // before the ground rule (``lifted``, the net height that rule added or
+          // took away to stand the shoe's own geometry on the dirt). A foot that is
+          // standing on its toe while the pose asked for a heel on the floor is a
+          // roll, and the numbers to tell which are these.
+          authored: toRigVector(authored).toArray(),
+          rolled,
+          // The share of the pose's own ``flat`` this foot was asked for, and the roll
+          // it bought: the ankle's turn about the line the sole runs along that lays
+          // the shoe on the dirt (see the leg solve). A foot the pose does not stand
+          // flat reads nought here, and the roll is the number that says whether a
+          // shoe the ground rule had to lift was up on its side or on its toe.
+          flat: flatShare,
+          roll: soleRoll,
+          slip: slip / unitLength,
+          lifted: lifted / unitLength,
+          reach: Math.hypot(hip.y - authored.y, Math.hypot(hip.x - authored.x, hip.z - authored.z)) / unitLength,
+          legLength: legLength / unitLength,
+          // The knee as the solve placed it, so the shin's own direction — the
+          // thing a kick's shape actually is — can be read rather than guessed at —
+          // and the pose's own hint, which is what the *plane* is read from: a knee
+          // a thigh away from its socket along the pose's own line, and the number
+          // to read when the question is whether the plane came out where it was
+          // written.
+          knee: toRigVector(liveChain.of(bones[names.knee]).position).toArray(),
+          hint: leg.knee.slice(),
+          ankle: toRigVector(liveChain.of(bones[names.ankle]).position).toArray(),
+          miss: liveChain.of(bones[names.ankle]).position.distanceTo(ankle) / unitLength,
           turn: 2 * Math.acos(Math.min(1, Math.abs(_q4.w))),
           twist: Math.min(twist, Math.PI),
         })
@@ -2316,6 +3478,13 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
       for (const arm of pose.arms) {
         const names = arm.side === 1 ? ARM_BONES.R : ARM_BONES.L
         const side = arm.side === 1 ? 'R' : 'L'
+        // A bare arm is not a grip at all: the pose puts its hand somewhere and
+        // says which way the hand's own line points, and there is no handle for
+        // the rest of the machinery below to be about (see `solveOpenArm`).
+        if (arm.hand || arm.local) {
+          solveOpenArm(arm, names, side)
+          continue
+        }
         const grip = toModelPoint(arm.grip)
         // The fist closes on the *palm*, not on the wrist. `palm_handle` is the
         // reference rig's own marker for the handle inside the palm (see
@@ -2471,10 +3640,29 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
           shoulder = liveChain.of(bones[names.upperArm]).position
           // What the grip asks of the arm, and so how far the arm's bones have to
           // stretch to hold it (never shorter than the model's own proportions).
-          stretch = THREE.MathUtils.clamp(shoulder.distanceTo(wrist) / span, 1, ARM_STRETCH_MAX)
+          const chord = shoulder.distanceTo(wrist)
+          stretch = THREE.MathUtils.clamp(chord / span, 1, ARM_STRETCH_MAX)
+          // The chord the bones are actually solved against, and the one they are
+          // then aimed at — the two must be the same chord, or the arm spends the
+          // swing a fraction of a millimetre off its own model where the angle at
+          // the elbow turns that fraction into degrees (see `ELBOW_FOLD_SLACK`,
+          // and the aim below). It is the wrist itself, except where the pose has
+          // put the wrist inside the arm's own span, where it is held out to the
+          // span so the elbow keeps the bow of a straight arm. That shortfall comes
+          // off in full beyond the slack (below it the arm is the pose's own to
+          // fold) and off in nothing at all at the span, with the curve between the
+          // two flat at both ends — so the elbow's angle is a plain function of the
+          // chord on either side of the crossing and neither side turns over where
+          // they meet.
+          _heldWrist.copy(wrist)
+          if (chord < span) {
+            const inside = (span - chord) / (span * ELBOW_FOLD_SLACK)
+            const kept = (span - chord) * (1 - (1 + inside) * Math.exp(-inside))
+            _heldWrist.sub(shoulder).setLength(span - kept).add(shoulder)
+          }
           circle = middleJointCircle(
             shoulder,
-            wrist,
+            _heldWrist,
             len(metrics.arm.upper) * stretch,
             len(metrics.arm.fore) * stretch,
           )
@@ -2484,7 +3672,7 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
           // out past the arm and bend the elbow the wrong way.
           const hinted = twoBoneIK(
             shoulder,
-            wrist,
+            _heldWrist,
             len(metrics.arm.upper) * stretch,
             len(metrics.arm.fore) * stretch,
             toModelPoint(arm.elbow).sub(_fistReach),
@@ -2501,7 +3689,14 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
           bones[names.upperArm].scale.y = stretch
           bones[names.hand].scale.y = 1 / stretch
           liveChain.invalidate(bones[names.upperArm])
-          aim(names.forearm, wrist)
+          // Aimed at the chord the circle was built on rather than at the raw
+          // wrist: that chord is already what the bones will take, so the arm lands
+          // on its own model and the hand keeps the last whisker of the reach it
+          // cannot have — a fraction of a millimetre, off a fist that is closed on
+          // a handle. Aiming at anything else left the elbow's angle drifting 0.7
+          // degrees as the pose came back off its stretch, which the suite reads
+          // as a turn the joint never made.
+          aim(names.forearm, _heldWrist)
           // The hand's own turn, written as the roll on screen before anything is
           // measured: every rule below reads the hand's own direction off the
           // chain, and a hand still carrying last pass's turn would have the rules

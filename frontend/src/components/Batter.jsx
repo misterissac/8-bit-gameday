@@ -12,9 +12,12 @@ import {
   resolveSwingPeak,
   calculateSwingGeometry,
   computeBatTiltAtProgress,
+  idleCrouch,
+  idleStance,
   HIP_Y,
 } from '../util/batterSwing'
 import { HIDDEN_MESHES, createPlayerRig, measurePlayerRig } from '../util/playerRig'
+import { applyBatterLook } from '../util/batterLook'
 import { useTuning } from '../constants/tuning'
 
 // The batter's body is the skinned player model from the solomon-gumball
@@ -54,10 +57,14 @@ useGLTF.preload(BAT_URL)
 // Swing timing: the bat starts settings.swingLead seconds before the ball crosses the
 // plate, reaches the contact angle exactly when the ball arrives, follows
 // through for settings.followThrough seconds after, then eases back to the loaded
-// stance over settings.recoveryTime while the batted ball is in flight. Before the
-// swing, the batter loads the weight onto the back leg over settings.loadTime seconds
-// (ending exactly where the swing begins), so the swing fires out of a loaded
-// crouch instead of from a static stance.
+// stance over settings.recoveryTime while the batted ball is in flight. The batter
+// sets himself before the swing fires — or before a pitch he takes, which sets him the
+// same way: he leans in over the pitcher's windup and then, from that leaned-in pose,
+// loads the weight onto the back leg over settings.loadTime seconds, finishing
+// settings.loadLead before the ball leaves the hand. So the swing fires out of a crouch
+// the batter was already coiled and waiting in, not one he is still sinking into as the
+// pitch comes to him, and a take holds that same coil while the ball comes and passes
+// instead of standing in the stance it never left (see the coil's own clock below).
 
 // Bat rotation (radians around the vertical axis). At 0 the barrel points at
 // the pitcher; at +/-PI it points back at the catcher. The handedness sign
@@ -98,12 +105,13 @@ useGLTF.preload(BAT_URL)
 // swing): the lower body's opening progress is phase-advanced by this factor,
 // so the legs start turning and the back leg starts driving while the upper
 // body is still barely moving — the hips are most of the way open before the
-// torso is halfway — reading unmistakably as the legs driving the swing. The
-// same factor phase-advances the follow-through: after contact the hips keep
-// rotating and finish their continued turn while the torso is still unwinding
-// into the fully-open pose, so the legs drive through contact too. The clamp
-// makes the hips reach their full (lesser) open angle early, hold it, and
-// settle back after the shoulders on recovery.
+// torso is halfway — reading unmistakably as the legs driving the swing. That
+// lead is carried as a *shape* that arrives on the ball rather than as a clamped
+// gain that arrives early and stops (see leadCurve), and the legs ride their own
+// clock into it as well (see HIPS_EASE): the pelvis keeps turning through the
+// contact frame and through the whole follow-through, onto its own chord of it,
+// so the legs drive through the ball instead of standing in the turn they took
+// before it.
 // The upper body's turn leads the hands/bat by this factor during the pre-
 // contact window, so the chest opens before the barrel arrives — part of the
 // same kinetic chain as settings.hipsLead (legs -> torso -> hands).
@@ -228,6 +236,53 @@ const BODY_FRONT_Z = -0.28
 // elbows spread apart along it.
 const FOREARM_LEN = 0.46
 const ELBOW_SPREAD = 0.1
+
+// How much leg the drive is required to leave over, in rig units (~2.5 cm at the
+// rendered scale), and how much of the pelvis's own sink the handover eases in.
+//
+// The drive carries the pelvis forward over the lead foot, and the lead foot is
+// planted: a socket that has outrun its footprint by more than the leg is long has
+// **no shape for the leg to take at all**, and the solver's answers to it are to
+// drag the shoe back along the ground or to stand the foot on its toe — which is
+// what used to happen, at 0.33 rig units of over-reach. Neither is the pose's
+// business to ask for. So the pelvis gives instead. It sinks until its own socket
+// sits within `REACH_SLACK` of the leg's full length of the foot it stands on, and
+// because that is a *geometry* rather than a number it holds on every frame of the
+// drive, at any drive distance, for either foot: the front leg takes the weight and
+// the body sinks onto it as it straightens, which is what a batter does with a
+// front foot he has already planted. The slack is what a *bent* leg buys: a leg
+// inside its own span has somewhere to put the socket's sweep across the box, where
+// one at its limit can only take it out of the shoe.
+//
+// Measured over the whole swing, the lead leg is left this much of its own span
+// over: 0.046 rig at the finish and 0.019 rig at its tightest (contact, 0.38 s).
+// The driver's own skid is **0** at every frame of it and no shoe rolls onto its
+// toe, where the drive used to out-reach the leg by 0.33 and the shoe answered for
+// all of it.
+//
+// The sink is the *pelvis's*, and the whole body rides it down: the hips drop
+// onto the lead leg and the chest, the shoulders, the arms, the head and the
+// frame the bat hangs in all go with them, because the joint between the two
+// blocks the belt sits between turns and does not slide (see the driver's
+// ``PELVIS_DRIVE_SHARE``). The rig's chest therefore ends up `legs.reachDrop`
+// lower than the tuning authored it, and the frame loop hands every consumer the
+// frame it really has: the bat hangs in the sunk frame and is raised inside it by
+// the same sink, so the bat itself is exactly where the contact geometry put it
+// and the pitch is met on the sweet spot (0.0151 m off the ball's centre); the arm
+// solve's own frame is given the same drop, so the shoulder its hints are read
+// from is the live one; and the legs are solved onto the same sunk hips, which is
+// the sink they asked for in the first place.
+//
+// Nothing about that is a compromise the ball has to pay for. What it *is* is a
+// lower body: the batter's hips go down onto a front foot he has already planted,
+// which is what a hitter's do, and the swing's reach into the bottom of the zone
+// comes with it — the shoulder is `legs.reachDrop` nearer a low pitch than it was,
+// which is exactly the reach a two-bone arm runs out of first.
+const REACH_SLACK = 0.04
+// The sink eases in over this much of its own demand, so the frame the pelvis
+// starts giving is not a corner in the body's height (see idleCrouch for the same
+// reason on the idle's flex).
+const REACH_EASE = 0.04
 
 // How far the elbows ride *in front of the chest* — toward the pitcher — in the
 // poses at either end of the swing: the loaded stance and the follow-through /
@@ -500,6 +555,52 @@ const TRAIL_REACH_CLEAR_DIR = [0.70, 0.55, -0.44]
 // 136 and 151 degrees with a 40-degree ribbon for the rest of the follow-through,
 // which the frame loop's own comment sets out.
 const TRAIL_REACH_MAX = 0.92
+// ...and the way home carries the bat *on* out in front of him before it is brought
+// back in — the swing's own momentum — so that the trailing arm is still nearly
+// straight while the bat comes round to point at the pitcher, and only *then* bends
+// inward into the set. Without it the retrace folds that arm on the way out (its chord
+// is 0.862 of the arm's own span by 1.07 s, a 119-degree elbow) and an elbow already
+// folded in against the ribs has to unwind through the whole midline to reach the set's
+// own flared fold: measured, that arm's upper bone turned **43 degrees in a single
+// 0.01 s frame** at 1.10 s, which is what the eye reads as an arm bending backwards
+// through more than 180 degrees. Straight when it points forward, the elbow has nought
+// to unwind — the fold after it is one way the whole way home.
+//
+// Taken along the trailing shoulder's own line to its grip (the same vector the reach
+// pull shortens — note that TRAIL_REACH_MAX is a chord in rig units, not a share of the
+// span: read as a share it is 0.92 of the rig's 0.74 of two arm bones, which is the
+// stretch the comment there is about). A chord of 0.74 rig is a 168-degree elbow, for
+// ``chord = 2 L sin(elbow / 2)`` on two bones of 0.3715, and the retrace carries it at
+// 0.676 rig by 1.05 s.
+const RECOVERY_CARRY = 0.15
+// ...and how far the carry is aimed across the batter's own line, as a share of its own
+// length, toward the *lead* side. The two arms share the one grip, and the trail shoulder
+// sits a shoulder's width behind the hands — so a push along the trail chord alone
+// lengthens the lead arm by 0.7 of what it lengthens the trail's, and the lead arm is the
+// one the way home has to *keep* bent (its span is held under 0.95 of its own reach, and
+// 0.95 of it is what a straight-forward carry costs it). Aimed across, the push carries
+// the grip toward the lead shoulder as much as it carries it away from the trail one: the
+// trailing chord lengthens and the leading one does not.
+const RECOVERY_CARRY_ACROSS = 0.75
+// ...and how much of the recovery that carry is held over, as shares of it: taken up
+// from CARRY_FROM, at full width from CARRY_FULL, held to CARRY_HOLD and given back by
+// CARRY_TO. On the shipped 0.55 s recovery that is 0.85 s to 0.99 s rising, at full
+// width to 1.13 s — where the retrace's own chord points most nearly at the pitcher,
+// 89 degrees off the front line of the box — and nought again by 1.33 s, so the fold
+// into the set is the last fifth of the way home, and all one way.
+const RECOVERY_CARRY_FROM = 0.06
+const RECOVERY_CARRY_FULL = 0.3
+const RECOVERY_CARRY_HOLD = 0.56
+const RECOVERY_CARRY_TO = 0.92
+// ...and the reach bound's own ceiling over that window, lifted from the reset's own
+// bound (TRAIL_REACH_MAX) to the arm's own length — nearly: the share of the rig's own
+// two arm bones the chord may be carried out to. It is a ceiling rather than a width,
+// because the carry presses the grip out and this is what the arm is allowed to hold, so
+// the straightness of that arm is held by the bound and not by the arithmetic of the
+// push. 0.996 of the span leaves the elbow 6 degrees off straight — enough of it left
+// for the hint to steer with — and stops the carry at a straight arm rather than past
+// it, where the solve would start stretching the bones.
+const TRAIL_REACH_STRAIGHT = 0.972
 // ...and the share of the recovery's own ease the carry round is given back over — the
 // same clock the hold's carried pose is handed back on (see RECOVERY_UNWIND_SHARE),
 // because the carry round is part of that pose.
@@ -757,6 +858,16 @@ const LOADED_HANDS_Z = -0.5
 // are these, turned by the stance's yaw — see poseLegs.
 const SET_ANKLE_Z = -0.05
 
+// How far the planted rear shoe may tip onto its ball before its own leather digs
+// into the dirt. The sole is one rigid last with no toes under the front of it to
+// bend, so a tip swings its toe box down through the surface: measured, 0.2 rad of
+// tip leaves the shoe 0.02 rig under it and 0.65 rad leaves it 0.135 under. The
+// driver answers anything under the surface by lifting the foot back onto it —
+// which is right, and which also takes the toe 0.126 rig up off the footprint it
+// was planted on — so the drive's own bound reads the shoe's give no further than
+// this, and past it the pelvis gives instead (see rearPlanted).
+const REAR_BALL_TIP = 0.2
+
 // How far forward the hands path bulges (toward the pitcher) as it arcs from
 // the loaded stance to the contact point, so the bat and arms clear the torso.
 
@@ -801,6 +912,20 @@ const HEAD_YAW_MAX = 0.8
 // tail) decelerates into contact. At 2.4 the swing's own peak *is* the contact
 // frame's, which is where a swing's speed is.
 const SWING_EASE = 2.4
+// The legs' own clock into the ball, and the one motion in the chain that does *not*
+// ride the barrel's ease. The chain fires from the ground up: the leg drive is the
+// first thing to move and the bat the last, and sharing the barrel's own curve left
+// the legs standing in the stance while the barrel gathered speed — measured, the
+// pelvis turned 25°/s and 106°/s on the swing's second and third frames (against the
+// 1530°/s it was doing four frames later, on the far side of the ball), so most of the
+// leg drive was spent in the last third of the window and the first tenth of a second
+// of the swing read as the batter waiting for something. A milder ease starts the lower
+// body out of the stance: this one is at 336°/s by the same third frame, four fifths of
+// a second of turn a second earlier, and it takes the strain at the very first frame
+// itself (at the barrel's own 2.4 the pelvis would be a quarter of the way open on the
+// frame the swing fires, which is the twitch the move is not). Neither end of the
+// motion moves: it is 0 on the swing's first frame and 1 on the ball, as before.
+const HIPS_EASE = 1.8
 // ...and the follow-through leaves on that speed and only ever slows: one Hermite from
 // (0, `followSlope`) to (1, FOLLOW_ARRIVAL), whose own slope is monotone decreasing
 // between them (see the frame loop's comment on the profile), so the bat's fastest
@@ -869,6 +994,26 @@ function swingProgress(x) {
   return c ** SWING_EASE
 }
 
+// One of the chain's own leads into the ball, as a *shape* rather than a gain.
+//
+// Each motion after the legs runs ahead of the barrel, drawn by its own lead. Written
+// as a gain and clamped (`e * lead`, clamped at 1) the motion arrives *early* and then
+// stops: the leg drive and the body's turn both sat out the last tenth of a second
+// before the ball with the bat still gathering speed, and each had to be started again
+// on the far side of it. Measured across the contact frame, the chest's own turn went
+// 707°/s, 0°/s, 531°/s and the pelvis' went 0°/s, 1552°/s — two stalls and a snap in
+// the two frames the ball is met in. This is a Hermite on the barrel's own progress
+// instead: it leaves the set with `lead` of the barrel's own slope (a phase lead, which
+// is the whole of what the kinetic chain is), holds that lead through the swing, and
+// arrives *on the ball* — 0 at the set, 1 at contact, never past either — with an end
+// slope of `arrival`. That slope is the speed the motion's own follow-through picks it
+// up at, so the two halves of the clock meet without a step in speed, and each motion's
+// fastest frame is the frame on the ball.
+function leadCurve(e, lead, arrival) {
+  const x = Math.max(0, Math.min(1, e))
+  return hermite(0, lead, 1, arrival, x)
+}
+
 // Wrap-aware angular lerp: takes the shortest rotation between two yaws, so a
 // blend never spins the head the long way around through +/-PI (which reads
 // as the head popping off its neck).
@@ -914,6 +1059,13 @@ const _pitcherTarget = new THREE.Vector3()
 const _worldDir = new THREE.Vector3()
 const _localDir = new THREE.Vector3()
 
+// Where the planted rear shoe's ankle stands about the ball, read for the drive's
+// own bound (see rearPlanted).
+const _rideLever = new THREE.Vector3()
+const _rideTip = new THREE.Vector3()
+const _rideAxis = new THREE.Vector3()
+const _rideQuat = new THREE.Quaternion()
+
 export const Batter = ({ pitchData, replayKey = 0 }) => {
   const settings = useTuning().batter
   const upperRef = useRef()
@@ -949,6 +1101,15 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       if (HIDDEN_MESHES.includes(child.name)) child.visible = false
     })
     const metrics = measurePlayerRig(model, { spriteNominalHeightM: SPRITE_NOMINAL_HEIGHT_M })
+    // The batter's own kit, read off the model and put right: the helmet's single
+    // ear flap, eyes that clear both the brim and the face, the jersey's opening
+    // and its buttons, and shoes that read as shoes above the socks (see
+    // applyBatterLook). Run *after* the rig has shaped the body, so it edits this
+    // instance's own geometry rather than the cached asset's, and keyed on the
+    // batter's own side, because which ear the flap belongs to follows from it.
+    const look = applyBatterLook(model, {
+      sign: (pitchData?.bat_side || 'R') === 'L' ? -1 : 1,
+    })
     // Snapshot the resting skeleton before the driver starts writing to it: the
     // animation is authored relative to the rest pose, and this is what it is
     // read from.
@@ -961,8 +1122,8 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
         })
       }
     })
-    return { model, metrics, restPose }
-  }, [glbPlayer])
+    return { model, metrics, restPose, look }
+  }, [glbPlayer, pitchData?.bat_side])
   const rig = body.metrics
   // How far apart the two fists grip the handle: the model's own spacing, one
   // number for the arms' targets, the bat's own hand markers and the JSX branch
@@ -1157,28 +1318,195 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
   // the swing it eases from this look to tracking the ball at contact.
   const headPitcherYaw = Math.atan2(batX, stanceZ - FIELD.DEFENSE.P.z) - setYaw
 
+  // How far the body opens by the end of the follow-through and how far the
+  // *pelvis* is given that turn (settings.followLowerOpenFactor), then the hold's
+  // last drift past it. Read here rather than inside the frame loop because the
+  // drive's own bound below needs the arc the lower body sweeps, not just its
+  // contact end: the rear foot's footprint is fixed, so what the rear leg has to
+  // span is the socket's whole path over the ground it is planted on.
+  const fullOpenAmount = typeof settings.fullOpenYaw === 'number' ? settings.fullOpenYaw : 0.95
+  const fullBodyYaw = -sign * fullOpenAmount
+  const peakBodyYaw = fullBodyYaw + sign * 0.08
+  const lowerFollowFactor = settings.followLowerOpenFactor > 0
+    ? settings.followLowerOpenFactor
+    : settings.lowerBodyOpenFactor
+  const hipFullOpenYaw = setYaw + (fullBodyYaw - setYaw) * lowerFollowFactor
+  const peakLowerYaw = hipFullOpenYaw + sign * 0.05
 
-  // All swing geometry derived from the trajectory: the contact point, the
-  // hands-at-contact position, the barrel's contact angle, and the bat length
-  // that puts the sweet spot on the ball.
-  const geom = useMemo(() => {
-    return calculateSwingGeometry({
-      pitchData,
-      batX,
-      stanceZ,
-      heightScale,
-      sign,
-      bodyOpen,
-      loadedHands,
-      settings,
-      catcherZ: FIELD.DEFENSE.C.z,
-      // The lean is posed about the plate-tuned stance, so the body tips over the
-      // plate exactly as far and in exactly the direction it was tuned to (see
-      // STANCE_SETBACK_M) — and the sweet spot lands on the ball either way,
-      // because the animation is posed with the same reference.
-      leanAt: { batX: refBatX, stanceZ: refStanceZ },
-    })
-  }, [pitchData, heightScale, batX, refBatX, refStanceZ, stanceZ, sign, loadedHands, bodyOpen, settings])
+  // The rear leg's own span, its footprint, and the shoe's own lever — the three
+  // numbers the drive's footing is built from (see the rear-foot block in
+  // poseLegs and the ride bound below).
+  const hipHalfWidth = rig.hip.halfWidth
+  const restAnkleY = rig.ankleY
+  const legSpan = rig.leg.thigh + rig.leg.shin
+  const toeOffset = rig.toeOffset
+  // The rear shoe's footprint, expressed in the ground's frame: the ball of the
+  // rear shoe where the stance plants it, as a place on the dirt. The set stance
+  // is squared — both feet on the batter's own centreline — so the ankle's own
+  // place is the tuning's ankle depth turned by the stance's yaw, and the ball is
+  // that place with the shoe's rest offset turned onto it. It is deliberately
+  // *not* a place in the batter's turning frame: a footprint does not swing with
+  // the hips, and a stance spot expressed in a frame that turns most of the way
+  // round the swing walks — it walked the rear shoe 0.26 rig across the dirt as
+  // the drive carried the batter forward, which is what dragged the foot the
+  // whole swing was supposed to be pivoting on.
+  const rearFootprint = (() => {
+    const sinS = Math.sin(setYaw)
+    const cosS = Math.cos(setYaw)
+    const ankleZ = -sign * hipHalfWidth * sinS + SET_ANKLE_Z * cosS
+    return {
+      x: cosS * toeOffset.x + sinS * toeOffset.z,
+      y: restAnkleY + toeOffset.y,
+      z: ankleZ - sinS * toeOffset.x + cosS * toeOffset.z,
+    }
+  })()
+  // The planted rear leg's own budget for the pelvis — how far it may ride
+  // forward and how far it may turn, read together, because the two are one ask.
+  // The drive carries the whole body toward the pitcher and the swing turns it,
+  // and both carry the rear socket away from a footprint that does not move (see
+  // rearFootprint): the leg has one span to cover the ride *and* the turn with,
+  // so what it can span is the purse the pelvis spends. That is the whole of the
+  // bound — the foot is planted, so the body has to fit over it rather than the
+  // foot being dragged along underneath, which is what used to happen, and what
+  // had the rear shoe sliding 0.26 rig across the dirt.
+  //
+  // The shoe's own give is deliberately *not* in the budget. A shoe that tips
+  // onto its ball swings its toe box down through the dirt — measured at the
+  // finish, a 0.65 rad tip buried the shoe 0.135 rig, and the driver's ground
+  // rule answered it by lifting the whole foot back onto the surface, which took
+  // the toe 0.126 rig up off the footprint it was planted on and stood the rear
+  // ankle 0.21 rig above its own stance. A toe that leaves its footprint is the
+  // one thing the drive's footing may not do, and a shoe that tips onto its ball
+  // *without* leaving the ground is not a shape this model's leather can make:
+  // the sole is one rigid last, with no toes under the front of it to bend. So
+  // the budget is the leg's span with the shoe standing on its sole — the shoe
+  // still pivots on its ball wherever the leg would otherwise be stretched past
+  // its own length (the driver's own roll, see rollFootOnToe), and the bound
+  // below is set so that it never has to.
+  //
+  // The tuning's own push forward is deliberately not in here either: it walks
+  // the *ball* forward along the ground, which is the shoe giving along the line
+  // it is planted on, and it can only ever shorten the leg.
+  //
+  // The socket's height is the height the *leg* is standing at on that frame —
+  // the rest socket less the pose's own crouch and less the sink the lead leg has
+  // bought (see the frame loop, which bounds the live pose with the same
+  // expression). A pose that has already sunk onto the lead leg has that much
+  // more room, and taking it is right: it is the rear leg's own footing that is
+  // being asked, and it sank with the rest of the body.
+  // The rear socket's own height over a pose: the rest socket, what the pose's
+  // crouch and the lead leg's sink take off it, and the lean's own share of it.
+  // The pelvis tips over the plate as the pitch comes and holds a stronger lean
+  // through the swing, and the socket the rear leg hangs from is on the *low*
+  // side of that tip, so it stands below the pelvis's own centre — measured at the
+  // contact, 0.06 rig below it for a lean of 0.23 rad, which is 0.15 of ride the
+  // leg would otherwise be credited with and does not have. Both callers below
+  // read their socket through this, so the bound and the pose cannot disagree
+  // about the leg they are bounding.
+  const rearSocketY = (legs, drive, load, leanZ) => rig.hip.y
+    - legs.drop - legs.reachDrop
+    - settings.hipSettle * load * (1 - drive)
+    + sign * hipHalfWidth * Math.sin(leanZ)
+
+  const rearPlanted = (socketY, requestYaw, requestRide) => {
+    const spanSq = legSpan * legSpan
+    // How finely the sweep out from the set stance is walked, and the shoe's own
+    // tip on top of it.
+    const ARC = 64
+    const ROLL = 6
+    const sweep = peakLowerYaw - setYaw
+    // Where the shoe's ankle stands about the ball at this yaw: the shoe's own
+    // rest offset turned by the turn the pose gives it (see poseLegs), flat on
+    // the dirt.
+    const ankleAt = (yaw) => {
+      const shoeYaw = -(1 - settings.backFootPivot) * (yaw - setYaw)
+      const footYaw = yaw + shoeYaw
+      const cosF = Math.cos(footYaw)
+      const sinF = Math.sin(footYaw)
+      return _rideLever.set(
+        -(cosF * toeOffset.x + sinF * toeOffset.z),
+        -toeOffset.y,
+        -(-sinF * toeOffset.x + cosF * toeOffset.z),
+      )
+    }
+    // The most the pelvis may ride at this yaw and still be spanned: the socket
+    // this yaw hangs, one ride forward of the pose's own place, against the ankle
+    // the shoe stands on there. Negative when the yaw alone is already past the
+    // leg's span — a turn the leg cannot hold at *any* ride.
+    const capAt = (yaw) => {
+      const ankle = ankleAt(yaw)
+      const socketX = sign * hipHalfWidth * Math.cos(yaw)
+      const socketZ = -sign * hipHalfWidth * Math.sin(yaw)
+      const rideFor = (at) => {
+        const dx = socketX - (rearFootprint.x + at.x)
+        const dy = socketY - (rearFootprint.y + at.y)
+        const dz = socketZ - (rearFootprint.z + at.z)
+        const room = spanSq - dx * dx - dy * dy
+        return room <= 0 ? -Infinity : dz + Math.sqrt(room)
+      }
+      let cap = rideFor(ankle)
+      // ...and the shoe's own give on top of it: the ankle rides the arc about the
+      // ball as the shoe tips onto it (see REAR_BALL_TIP, and rollFootOnToe in the
+      // driver, whose own roll this is bounded to keep clear of). The hinge is
+      // horizontal and square to the shoe's own line, so the ankle climbs in the
+      // shoe's own plane — where the shoe points decides how much of its lever the
+      // leg is handed, and at the finish the pelvis has opened across it.
+      _rideAxis.set(ankle.z, 0, -ankle.x)
+      const lever = ankle.length()
+      if (_rideAxis.lengthSq() > 1e-12 && lever > 1e-6) {
+        _rideAxis.normalize()
+        const tip = Math.min(
+          REAR_BALL_TIP,
+          Math.acos(Math.min(1, Math.max(-1, ankle.y / lever))),
+        )
+        // Which way round the hinge lifts the heel — picked by the height, as the
+        // driver's own roll picks it, so the shoe's yaw cannot turn the give into
+        // the ground.
+        _rideTip.copy(ankle).applyQuaternion(_rideQuat.setFromAxisAngle(_rideAxis, tip))
+        if (_rideTip.y < ankle.y) _rideAxis.negate()
+        for (let j = 1; j <= ROLL; j += 1) {
+          const angle = (tip * j) / ROLL
+          _rideTip.copy(ankle).applyQuaternion(_rideQuat.setFromAxisAngle(_rideAxis, angle))
+          const reach = rideFor(_rideTip)
+          if (reach > cap) cap = reach
+        }
+      }
+      return cap
+    }
+    // The turn this much ride leaves: walked from the stance outward — never past
+    // what the pose itself asked for, because this bound may hold the pelvis back
+    // and may not carry it further round — and stopped at the last yaw that still
+    // spans, because the set stance is where the batter is standing and the swing
+    // only ever opens out of it.
+    const share = sweep === 0 ? 0 : Math.min(1, Math.max(0, (requestYaw - setYaw) / sweep))
+    const yawFor = (ride) => {
+      let held = setYaw
+      const limit = Math.round(ARC * share)
+      for (let i = 1; i <= limit; i += 1) {
+        const trial = setYaw + (sweep * i) / ARC
+        if (capAt(trial) < ride) break
+        held = trial
+      }
+      // ...and the pose's own yaw last of all, so a bound landing between two
+      // samples is not read as a whole step short of itself.
+      if (Math.abs(requestYaw - setYaw) > Math.abs(held - setYaw) && capAt(requestYaw) >= ride) {
+        held = requestYaw
+      }
+      return held
+    }
+    // The pair closest to what the pose asked for that the leg can hold: the ride
+    // the pose's own push envelope wants at the yaw it asked for, then the turn
+    // that ride leaves, then the ride that turn leaves — so the two are read
+    // against each other twice rather than one of them being spent first.
+    const clamped = (value) => (Number.isFinite(value) ? Math.max(0, value) : 0)
+    let yaw = requestYaw
+    let ride = Math.min(requestRide, clamped(capAt(yaw)))
+    for (let pass = 0; pass < 2; pass += 1) {
+      yaw = yawFor(ride)
+      ride = Math.min(requestRide, clamped(capAt(yaw)))
+    }
+    return { yaw, ride }
+  }
 
   // Solve the arms: upper arm shoulder->elbow, forearm elbow->hands. ``bend``
   // goes 1 (loaded, elbows out) to 0 (contact, arms straight). During the
@@ -1197,6 +1525,7 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     followProgress = 0,
     isRecovering = false,
     palmUp = 0,
+    frameOffset = null,
   ) => {
     // The direction the pitch comes from, expressed in the upper body's own
     // (turned) frame — the frame the elbow hints below are authored in. "In
@@ -1221,8 +1550,24 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     const perp = [-barrel.z, 0, barrel.x]
     const targets = []
     for (const side of [-1, 1]) {
-      // The shoulder ball the arm hangs off, in the tuning's body frame.
-      const shoulder = [side * rig.shoulder.halfWidth, rig.shoulder.y, rig.shoulder.z]
+      // The shoulder ball the arm hangs off, in the tuning's body frame — carried
+      // by the frame's own offset when there is one. The hints below are authored
+      // in the pose's frame, and the solver reads them against the *live* shoulder
+      // (see twoBoneIK: the hint is used as a direction from the socket), so a
+      // frame that has translated without the hint leaves the arm bending toward a
+      // place its author never meant. It is the drive's sink that makes this
+      // matter: the pose's hips are `legs.reachDrop` lower than the tuning
+      // authored them (see REACH_SLACK, and up to 0.077 rig at the contact), and
+      // the frame offset the frame loop passes carries exactly that drop, so the
+      // socket the hint is read from is the live one. A frame held at the authored
+      // height instead reads the pole 10 degrees off — enough, at the extension
+      // the contact asks for, to flip the elbow's own side twice inside 55 ms
+      // (measured at 0.405 s and 0.460 s, both elbows).
+      const shoulder = [
+        side * rig.shoulder.halfWidth + (frameOffset?.[0] ?? 0),
+        rig.shoulder.y + (frameOffset?.[1] ?? 0),
+        rig.shoulder.z + (frameOffset?.[2] ?? 0),
+      ]
       // In standard baseball mechanics:
       // The back arm (side === sign: right arm for righty, left arm for lefty)
       // grips higher up the handle toward the barrel (+gripSplit along barrel).
@@ -1644,13 +1989,26 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
   // the entire swing, while the front leg stays bent to brace the rotation.
   // The back leg eases back to the crouch later than the front leg (driveBack
   // lags through the recovery).
-  const poseLegs = (drive, driveBack, load, stride, strideLift, lowerYaw) => {
+  // ``idleFlex`` is the set stance's own knee flex (radians, 0 at the stance), and
+  // it is *the* input the idle's height comes from: how deep the crouch is on this
+  // frame is not authored anywhere, it is what that flex costs the legs, computed
+  // at the bottom of this function off the very sockets and footprints the targets
+  // below are built from. Flexing can only ever ask a leg for *less* length than
+  // the stance's own pose, which is what keeps both shoes on the ground through the
+  // whole wave — the driver rolls a foot onto its toe the moment a hip outruns its
+  // leg (see rollFootOnToe), and a wave that rises above the stance is exactly a
+  // request to outrun it.
+  // ``idleRock`` is the stance's weight shift, in the tuning frame's own fore/aft
+  // axis — the line the two footprints are staggered along, which is the line a
+  // batter rocks along when he moves his weight from his back foot to his front.
+  // ``arrival`` (0..1) is how far the swing has come home — nothing before contact,
+  // easing through the follow-through, held, then unwinding with the recovery — and it
+  // is what the lead foot's own toe lift rides (see legFrontToeLift).
+  const poseLegs = (drive, driveBack, load, stride, strideLift, lowerYaw, idleFlex = 0, idleRock = 0, arrival = 0) => {
     // Where the measured skeleton's joints sit at rest, in the tuning's frame:
     // the knee and ankle targets are authored as heights, so they are hung off
     // the rig's own hip and ankle instead of the procedural rig's constants.
-    const hipHalfWidth = rig.hip.halfWidth
     const restKneeY = rig.hip.y - rig.leg.thigh
-    const restAnkleY = rig.ankleY
     // The feet are authored in the batter's own frame — the one the plate and
     // the box are drawn in — and not in the lower body's turning one. A footprint
     // does not swing round with the hips: the batter steps at the front line,
@@ -1684,6 +2042,12 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     const landZ = frontStance.z - settings.legFrontStride
     const cosL = Math.cos(lowerYaw)
     const sinL = Math.sin(lowerYaw)
+    // The idle's own depth as a share of its full flex, which is what the knees'
+    // forward travel is authored against (the height is the flex's business, the
+    // travel is the shape's).
+    const idleCrouchFraction = settings.swayKneeFlex > 0
+      ? clamp(idleFlex / settings.swayKneeFlex, 0, 1)
+      : 0
     // The body's own forward direction, in the batter's frame: the direction the
     // legs bend in, at the yaw the hips have turned to.
     const forwardX = -sinL
@@ -1705,12 +2069,55 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       // The front foot lifts clearly while striding (windup), then plants as
       // the stride completes; it unplants again briefly as the swing fires.
       let ankleLift = isBack ? 0 : settings.legFrontStrideLift * strideLift
+      // How far the lead foot's toes lift out of the ground (radians, see
+      // legFrontToeLift): the swing's own arrival, and nothing on the back foot.
+      let toeLift = 0
+      // ...and whether this foot is to be *stood* on: the driver puts a planted shoe's
+      // own lowest vertex on the dirt rather than trusting the authored height (see the
+      // leg solve). It is what keeps a lead foot's heel down as the foot tips onto it —
+      // and it is asked for only while the swing is firing, because the two things the
+      // foot does *leave* the ground for are the step in (the stride lift) and nothing
+      // else.
+      let planted = false
+      // ...and whether this foot is to be held *flat* against the dirt: the lead
+      // foot is, all swing long — its heel is the end that stands on the ground
+      // while the toe is the one that comes up, so a leg the drive has outrun may
+      // not take its shortfall out of the shoe by pivoting it onto its toe (see the
+      // driver's ``heelDown``).
+      let heelDown = false
+      // The shoe's own angle: the hips' yaw, less whatever share of the body's turn
+      // this foot refuses (see frontFootPivot / backFootPivot).
       let shoeYaw
       if (isBack) {
-        // Back foot: the planted pivot. Only the tuning's own push moves it, and
-        // that is the leg extending, forward along the line it is planted on.
-        footZ -= settings.legBackPushForward * d
+        // The rear foot is the pivot the whole swing turns on, and it is authored
+        // as it stands: a *footprint* on the ground and a shoe turning about it.
+        // The footprint is the ball of the shoe, fixed where the stance planted
+        // it (see rearFootprint) — a place on the dirt, not a place in the
+        // batter's own frame — so the drive that carries the body forward rides
+        // *over* it instead of dragging it along (which is what a target authored
+        // in the batter's frame does: it slid 0.26 rig across the dirt through the
+        // swing). The tuning's own push forward is the one thing that moves it,
+        // and that is the leg *extending* — the shoe's own give, along the line it
+        // is planted on.
+        //
+        // The ankle is then wherever the shoe's own turn puts it about that
+        // footprint: the shoe pivots on its ball as the hips open, so the ball
+        // stays on the dirt and the ankle swings round it rather than the other
+        // way about. That is also what keeps the footprint a footprint: the ankle
+        // may travel, the ball may not.
         shoeYaw = -(1 - settings.backFootPivot) * openAngle
+        const yaw = lowerYaw + shoeYaw
+        const cosYaw = Math.cos(yaw)
+        const sinYaw = Math.sin(yaw)
+        const ballX = rearFootprint.x
+        const ballZ = rearFootprint.z - settings.legBackPushForward * d
+        footX = ballX - (cosYaw * toeOffset.x + sinYaw * toeOffset.z)
+        footZ = ballZ - (-sinYaw * toeOffset.x + cosYaw * toeOffset.z)
+        // ...and the drive stands on it: the shoe's own lowest corner is put on
+        // the dirt every frame, exactly as the lead foot's is (see the driver's
+        // ground rule). Left unplanted the rear shoe sat 0.034 rig *in* the dirt
+        // for the whole swing, which is not a foot standing on the ground.
+        planted = true
       } else {
         footX = THREE.MathUtils.lerp(frontStance.x, landX, stride)
         footZ = THREE.MathUtils.lerp(frontStance.z, landZ, stride)
@@ -1718,6 +2125,9 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
         carry = 1
         shoeYaw = -(1 - settings.frontFootPivot) * openAngle
         ankleLift += settings.legFrontUnplantLift * drive
+        toeLift = settings.legFrontToeLift * arrival
+        planted = drive > 0
+        heelDown = drive > 0
       }
       // The hips settle lower during the load, rising back as the drive
       // engages — carried by the torso group's height offset in the frame loop,
@@ -1732,7 +2142,13 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       // foot it is planted on instead of with the pelvis above it.
       const hipX = side * hipHalfWidth * cosL
       const hipZ = -side * hipHalfWidth * sinL
-      const bend = 0.08 + (isBack ? settings.legBackKneeForward : settings.legFrontKneeForward) * d
+      // The knee travels forward as it flexes (the idle's own crouch), on top of
+      // whatever the swing has already asked of it: a knee that folds while
+      // staying under the hip reads as a squat, and one that rides forward over the
+      // foot reads as a batter rocking into his stance.
+      const bend = 0.08
+        + (isBack ? settings.legBackKneeForward : settings.legFrontKneeForward) * d
+        + settings.swayKneeTravel * idleCrouchFraction
       targets.push({
         side,
         knee: [
@@ -1742,11 +2158,150 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
         ],
         ankle: [footX, restAnkleY + ankleLift, footZ],
         footYaw: lowerYaw + shoeYaw,
+        toeLift,
+        planted,
+        heelDown,
         carry,
+        // ...and the shoe stands *level* on the dirt: the drive's own footing is
+        // the ball of the rear shoe, and a sole left to bank with whatever the
+        // leg's own turn does to it stands on a corner instead — measured, a
+        // corner of the leather 0.03 rig below the ball, which the ground rule
+        // answered by lifting the whole foot, and with it the toe off the very
+        // footprint the shoe is planted on. The rear foot is the batter's pivot
+        // and its shoe lies flat on the ground from the set to the recovery (see
+        // the flat share in the driver's leg solve); what gives when the leg runs
+        // out is the roll onto its ball (see rearPlanted), and the sole's own
+        // line stays level under that too.
+        flat: isBack ? 1 : 0,
       })
     }
-    return targets
+    // How far the hips drop for that flex, at the geometry the targets just came
+    // from: each leg gets the drop its own flex buys, and the hips take the
+    // *deepest* one, because the legs share one pelvis and the leg with the most
+    // to reach is the one the crouch has to satisfy. A leg the crouch leaves
+    // shorter than its own flex simply bends a little more — it cannot bend less,
+    // which is the whole point: taking the shallower leg's drop instead leaves the
+    // other leg asking for more length than it has, and the driver answers that by
+    // rolling that foot onto its toe.
+    // The hip socket rides the weight shift, so each leg is measured against the
+    // socket it actually has: swaying over the lead foot takes length *off* that
+    // leg and adds it to the other one, and the other one is the leg that would
+    // otherwise come off the ground.
+    // ...and how far the *drive* asks the pelvis to sink, from those same sockets and
+    // footprints. A foot the swing is *standing* on may not be asked for more than its
+    // leg can span: this is the lead foot's own reach read back as a height, and it is
+    // the pose's answer to the drive rather than the solver's answer to the pose (see
+    // REACH_SLACK). Only a planted foot is asked about, so the set stance — which the
+    // idle's own flex owns — and the take, which plants nothing, are left exactly as
+    // they were.
+    const legLength = rig.leg.thigh + rig.leg.shin
+    let owedDrop = 0
+    for (const target of targets) {
+      if (!target.planted) continue
+      const hipX = target.side * hipHalfWidth * cosL
+      const hipZ = -target.side * hipHalfWidth * sinL
+      const horizontal = Math.hypot(hipX - target.ankle[0], hipZ - target.ankle[2])
+      const allowed = Math.sqrt(Math.max((legLength - REACH_SLACK) ** 2 - horizontal ** 2, 0))
+      // The rise is read from the dirt and not from the target's own height: a
+      // planted foot is *landed* on it by the driver's ground rule whatever lift the
+      // step is carrying on that frame, so the lift is not height this leg has. Read
+      // off the target's own ``ankle`` instead, the recovery's step-lift let the
+      // pelvis back up and the ankle came out 0.035 rig below what the leg could
+      // reach.
+      owedDrop = Math.max(owedDrop, rig.hip.y - restAnkleY - allowed)
+    }
+    const reachDrop = owedDrop <= 0
+      ? 0
+      : owedDrop >= REACH_EASE
+        ? owedDrop - REACH_EASE / 2
+        : (owedDrop * owedDrop) / (2 * REACH_EASE)
+
+    let drop = 0
+    if (idleFlex > 0) {
+      const rise = rig.hip.y - rig.ankleY
+      for (const target of targets) {
+        const hipX = target.side * hipHalfWidth * cosL
+        const hipZ = -target.side * hipHalfWidth * sinL + idleRock
+        const horizontal = Math.hypot(hipX - target.ankle[0], hipZ - target.ankle[2])
+        const legDrop = idleCrouch({
+          flex: idleFlex,
+          thigh: rig.leg.thigh,
+          shin: rig.leg.shin,
+          rise,
+          horizontal,
+        })
+        drop = Math.max(drop, legDrop)
+      }
+    }
+    return { targets, drop, reachDrop }
   }
+
+  // The idle's own terms, off the wave and whatever share of it is still showing
+  // (the swing fades the idle out as it takes over): the knees' flex, the rock
+  // that comes with it — over the *lead* foot, which is the one the batter's
+  // weight lands on as his knees give, and which the reference clip's own rock
+  // does 70% of its crouch's distance across — the torso's lean over that same
+  // foot, and the bat's waggle (left raw: its yaw and its roll are scaled by
+  // different tuning).
+  const idleTerms = (wave, fade = 1) => ({
+    flex: settings.swayKneeFlex * wave.crouch * fade,
+    rock: -settings.swaySwayAmount * wave.crouch * fade,
+    lean: sign * settings.swayLeanAmount * wave.crouch * fade,
+    waggle: wave.waggle * fade,
+  })
+
+  // All swing geometry derived from the trajectory: the contact point, the
+  // hands-at-contact position, the barrel's contact angle, and the bat length
+  // that puts the sweet spot on the ball. Solved here, below poseLegs, because
+  // the drive's own ride bound is read off that pose: the geometry has to be
+  // handed the travel the body *actually* makes, and the rear leg's span is what
+  // decides it (see rearRideCap).
+  const geom = useMemo(() => {
+    // The pose the bat is met in, for the bound alone: the swing's own contact
+    // frame (fully open, the stride planted, the load spent). The socket it hangs
+    // the rear leg from sits the rest socket less whatever the pose's own crouch
+    // and the lead leg's sink have taken off it — the same expression the frame
+    // loop bounds the live ride with, so the geometry and the pose agree on the
+    // frame that matters.
+    const contactLowerYaw = setYaw + (bodyOpen - setYaw) * settings.lowerBodyOpenFactor
+    const contactLegs = poseLegs(1, 1, 0, 1, 0, contactLowerYaw, 0, 0, 0)
+    // The lean the contact frame itself carries: the drive's own share of it, with
+    // the load spent and the idle faded out (see the frame loop, whose socket this
+    // has to match for the geometry and the pose to ride the same distance).
+    const contactLeanZ = batterLean(
+      refBatX, refStanceZ, FIELD.DEFENSE.C.z, bodyOpen, settings.legLean - DRIVE_LEAN,
+    ).rotationZ + settings.swingBackTilt * Math.sin(bodyOpen)
+    const contactSocketY = rearSocketY(contactLegs, 1, 0, contactLeanZ)
+    const contactPlanted = rearPlanted(
+      contactSocketY,
+      contactLowerYaw,
+      (settings.hipDriveForward + settings.upperDriveForward)
+        * settings.pushSettleLevel / heightScale,
+    )
+    const driveRide = contactPlanted.ride
+    return calculateSwingGeometry({
+      pitchData,
+      batX,
+      stanceZ,
+      heightScale,
+      sign,
+      bodyOpen,
+      loadedHands,
+      settings,
+      catcherZ: FIELD.DEFENSE.C.z,
+      // The lean is posed about the plate-tuned stance, so the body tips over the
+      // plate exactly as far and in exactly the direction it was tuned to (see
+      // STANCE_SETBACK_M) — and the sweet spot lands on the ball either way,
+      // because the animation is posed with the same reference.
+      leanAt: { batX: refBatX, stanceZ: refStanceZ },
+      // ...and the travel the body actually makes by the contact, which is the
+      // tuning's own drive clamped to what the planted rear leg can span. The
+      // stats-driven half of the geometry — the plate crossing, the attack angle,
+      // the swing-plane tilt — is untouched by it; the ball is simply measured
+      // from where the body really is when the bat gets there.
+      driveRide,
+    })
+  }, [pitchData, heightScale, batX, refBatX, refStanceZ, stanceZ, sign, loadedHands, bodyOpen, settings])
 
   // Restart the playback clock whenever a new pitch arrives, keeping the swing
   // Reset tracking and look state whenever a new pitch arrives or replay fires.
@@ -1761,20 +2316,25 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     const simDuration = traj?.[traj.length - 1]?.t
 
     if (!(simDuration > 0) || !batGroupRef.current) {
-      // No usable trajectory: hold the set stance with the idle bob.
-      const swayPhase = state.clock.elapsedTime * settings.swaySpeed
-      const bob = Math.sin(swayPhase) * settings.swayBobAmount
+      // No usable trajectory: hold the set stance, alive with the idle (nothing
+      // is fading it out here — there is no swing to make room for).
+      const wave = idleStance(state.clock.elapsedTime * settings.swaySpeed)
+      const idle = idleTerms(wave)
+      const stanceLegs = poseLegs(0, 0, 0, 0, 0, setYaw, idle.flex, idle.rock)
       if (upperRef.current) {
         // YXZ order: yaw first, then the lean's forward/sideways tilts, so the
         // lean direction (rotation.x/z) stays in the body's own frame.
         upperRef.current.rotation.order = BATTER_LEAN_ORDER
         upperRef.current.rotation.y = setYaw
-        // Straight in the set stance: the forward lean only comes in as the
-        // pitch is thrown.
-        upperRef.current.rotation.z = 0
+        // The torso rides the rock: the chest tips over the foot the weight has
+        // landed on, which is the lead one as the knees give (see idleTerms).
+        upperRef.current.rotation.z = idle.lean
+        // Straight otherwise: the forward lean only comes in as the pitch is thrown.
         upperRef.current.rotation.x = 0
-        upperRef.current.position.z = 0
-        upperRef.current.position.y = HIP_Y + bob
+        upperRef.current.position.x = 0
+        upperRef.current.position.z = idle.rock
+        // The crouch *lowers* the hips by what the flex costs (see poseLegs).
+        upperRef.current.position.y = HIP_Y - stanceLegs.drop
       }
       if (headRef.current) {
         headRef.current.rotation.x = 0
@@ -1782,14 +2342,18 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       }
       trackRef.current = 0
       lastBallLook.current = null
-      const stanceLegs = poseLegs(0, 0, 0, 0, 0, setYaw)
+      // The bat waggles in the hands: the same turn goes into the grip the arms
+      // are solved onto, so the hands ride it instead of the bat turning inside
+      // fists that stayed put.
+      const idleBatAngle = sign * settings.loadedBaseAngle + sign * settings.swayBatWiggle * idle.waggle
+      const idleCockAngle = settings.cockAngle + settings.swayBatRoll * idle.waggle
       if (batGroupRef.current) {
         batGroupRef.current.position.set(...loadedHands)
-        batGroupRef.current.rotation.y = sign * settings.loadedBaseAngle
+        batGroupRef.current.rotation.y = idleBatAngle
       }
-      if (cockRef.current) cockRef.current.rotation.x = settings.cockAngle
+      if (cockRef.current) cockRef.current.rotation.x = idleCockAngle
       if (tiltRef.current) tiltRef.current.rotation.x = 0
-      const stanceArms = updateArms(loadedHands, 1)
+      const stanceArms = updateArms(loadedHands, 1, 0, idleBatAngle, idleCockAngle, 0)
       if (handLRef.current && handRRef.current) {
         if (sign === 1) {
           handLRef.current.position.set(-0.01, 0, 0)
@@ -1803,11 +2367,18 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       // direction, bobbing, with the bat-hand grip the arms were solved onto.
       if (rigDriverRef.current) {
         rigDriverRef.current.applyPose({
-          hip: { yaw: setYaw, leanX: 0, leanZ: 0, offsetY: bob, offsetZ: 0 },
+          hip: {
+            yaw: setYaw,
+            leanX: 0,
+            leanZ: idle.lean,
+            rock: idle.rock,
+            offsetY: -stanceLegs.drop,
+            offsetZ: 0,
+          },
           torsoYawExtra: 0,
           torsoOffsetZ: 0,
           head: { yaw: headPitcherYaw, pitch: 0 },
-          legs: stanceLegs,
+          legs: stanceLegs.targets,
           arms: stanceArms,
         })
       }
@@ -1815,19 +2386,24 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     }
 
     // Swing phases driven by the real-time clock, each eased with smoothstep:
-    //   l: load, shifting the weight onto the back leg for settings.loadTime s before
-    //      the swing (holds through contact, eases back with the recovery)
+    //   l: load, shifting the weight onto the back leg over settings.loadTime s — the
+    //      run-up to the *release*, not to the swing (see the coil's own clock below)
     //   e: swing, from settings.swingLead s before contact up to contact
     //   f: follow-through, settings.followThrough s after contact
     //   hold: holds the finish pose at the swing plane for settings.followHold s
     //   r: recovery, easing back to the loaded stance over settings.recoveryTime while
     //      the batted ball is in flight (ready for the next pitch of the cycle)
     const swingStart = geom.contactTime - settings.swingLead
-    const loadStart = swingStart - settings.loadTime
     const followEnd = geom.contactTime + settings.followThrough
     const holdDuration = settings.followHold ?? 0.28
     const holdEnd = followEnd + holdDuration
     const recoverEnd = holdEnd + settings.recoveryTime
+    // A take has no swing, so it has none of the swing's clock either: its own clock
+    // starts where the ball crosses the plate and runs settings.leanOutTime. Three
+    // things come back to the set on it — the front foot's edge (the push below), the
+    // foot itself, and the coil (the load, further down) — so the body, the weight and
+    // the foot all return as one movement rather than three.
+    const takeSettleEnd = geom.contactTime + settings.leanOutTime
     // The pitcher's windup — mapped onto the post-contact window of the
     // shared cycle so the release lands exactly on the wrap (the same timing
     // the Pitcher component uses) — is when the batter starts his stride and
@@ -1850,15 +2426,80 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     // swing's fastest frame used to be.
     const followEase = (y) => hermite(0, followSlope, 1, FOLLOW_ARRIVAL, y)
 
+    // What the chain's leads hand over to at the ball: the barrel's own end slope, as a
+    // rate per second, and the follow-through's own start. The body's turn and the
+    // pelvis' each keep turning onto a chord of their own after contact, so the slope
+    // that leaves the ball at the same speed the other side arrives at is that chord's
+    // speed over this one's (see leadCurve).
+    const preRate = SWING_EASE / settings.swingLead
+    const postRate = followSlope / settings.followThrough
+    // A motion whose own chord is nothing has no speed to match — the debug drawer's
+    // `lowerBodyOpenFactor` at 0 leaves the pelvis on the set turn all swing — so the
+    // lead's own slope is kept rather than dividing by nought, which would hand the
+    // Hermite an infinite end slope and blow the pose up on the frame before the ball.
+    const arrivalSlope = (chord, followChord) => (
+      chord > 1e-6 ? (followChord * postRate) / (chord * preRate) : 1
+    )
+    const bodyTurnArrival = arrivalSlope(Math.abs(bodyOpen - setYaw), Math.abs(fullBodyYaw - bodyOpen))
+
+    // The set's own clock, at the end of the windup — the two beats a batter's set has.
+    //
+    // One: the forward lean starts on the exact frame the pitcher starts his windup and
+    // ramps across the windup window, but it is *done* settings.leanLead before the ball
+    // leaves the pitcher's hand, so the batter is already fully leaned in and holding it
+    // while the pitch is still in the hand, instead of arriving on the frame the arm
+    // comes through. The lead comes off the end of the ramp, never off its start — the
+    // lean still begins with the windup's first frame, which is the cue the batter is
+    // reading — and taking it off the end is the same thing as speeding the whole lean
+    // up, by windupDur / (windupDur - leanLead) of its own rate (half again as fast at
+    // the shipped 1.32 s windup and 0.45 s of set), and the ramp is itself front-loaded
+    // so the batter takes the lean in the first part of his window and holds it.
+    //
+    // Two: the weight shift onto the back leg opens *from* that leaned-in pose — on the
+    // frame the lean lands — and runs its own settings.loadTime, so it is complete
+    // settings.loadLead before the release and the batter is coiled and waiting as the
+    // arm comes through. Since the coil opens where the lean lands, the lean has to be
+    // in by loadTime + loadLead before the release: both authored leads are therefore
+    // floors, and the ramp is aimed at the tighter of them, so the coil can never start
+    // before the batter had leaned in — which is the "leaning and loading on the same
+    // frame" this replaced.
+    const loadLead = Math.min(Math.max(settings.loadLead ?? 0, 0), windupDur * 0.25)
+    const leanLead = Math.min(
+      Math.max(settings.leanLead ?? 0, settings.loadTime + loadLead),
+      windupDur * 0.5,
+    )
+    const leanRampDur = Math.max(1e-3, windupDur - leanLead)
+    // ...and the ramp is front-loaded rather than even: the batter takes the lean in the
+    // first part of his window and holds the rest of it, which is what "set" means — an
+    // even ramp is still putting a third of the travel into the last third of the
+    // window, so the batter is settling into his lean at the moment the arm comes
+    // through. The arrival is soft (the slope goes to nothing at the ramp's own end),
+    // so it still arrives by leaning rather than by stopping.
+    const leanRamp = currentSimTime >= windupStart
+      ? 1 - (1 - clamp((currentSimTime - windupStart) / leanRampDur, 0, 1)) ** 2
+      : 0
+    // The coil's own window, in the cycle's wrapped time: it opens where the lean's
+    // ramp ends and closes settings.loadLead before the release (loadTime long by
+    // construction above). Both are read off the release, so the set runs on the same
+    // clock as the pitcher's hand rather than on the swing's.
+    const coilOpen = ((windupStart + leanRampDur) % loopDuration + loopDuration) % loopDuration
+    // Never past the release itself: a coil that outran the ball would never read as
+    // finished, and the load would never reach the crouch the swing fires out of.
+    const coilEnd = Math.min(coilOpen + settings.loadTime, loopDuration)
+
     let load = 0
     let e = 0
+    // The lower body's own progress through the same window, on its own clock: the
+    // legs fire first and out of the stance rather than out of the barrel's own crawl
+    // (see HIPS_EASE), which is where the kinetic chain starts.
+    let lowerE = 0
     let f = 0
     let r = 0
     if (swing) {
-      if (currentSimTime >= loadStart && currentSimTime < swingStart) {
-        load = easeSwing((currentSimTime - loadStart) / settings.loadTime)
-      } else if (currentSimTime >= swingStart && currentSimTime < geom.contactTime) {
-        e = swingProgress((currentSimTime - swingStart) / settings.swingLead)
+      if (currentSimTime >= swingStart && currentSimTime < geom.contactTime) {
+        const sx = THREE.MathUtils.clamp((currentSimTime - swingStart) / settings.swingLead, 0, 1)
+        e = swingProgress(sx)
+        lowerE = sx ** HIPS_EASE
       } else if (currentSimTime >= geom.contactTime && currentSimTime < followEnd) {
         f = followEase((currentSimTime - geom.contactTime) / settings.followThrough)
       } else if (currentSimTime >= followEnd && currentSimTime < holdEnd) {
@@ -1867,20 +2508,33 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
         r = easeSwing((currentSimTime - holdEnd) / settings.recoveryTime)
       }
     }
-    // The load's weight shift (back-leg crouch, hip settle, settled lean)
-    // holds through the swing and eases back out as the legs recover. The
-    // front stride is driven separately by the pitcher's windup below.
-    if (swing && currentSimTime >= swingStart && currentSimTime < holdEnd) load = 1
-    if (swing && currentSimTime >= holdEnd && currentSimTime < recoverEnd) load = 1 - r
-
-    // The forward lean starts on the exact frame the pitcher starts his
-    // windup and ramps linearly across the windup window, reaching full just
-    // as the ball leaves the pitcher's hand at the wrap — the lean-in leads
-    // the front stride, which is timed separately below so it plants into
-    // the swing.
-    const leanRamp = currentSimTime >= windupStart
-      ? clamp((currentSimTime - windupStart) / windupDur, 0, 1)
-      : 0
+    // The load's weight shift — the back-leg crouch, the hips settling over it and the
+    // trunk settling back onto it — then holds: through the release, the ball's flight,
+    // the swing and the hold, easing back out with the legs. It used to open on
+    // the release frame itself and run into the flight, which read as a batter still
+    // leaning and loading as the pitch came to him; the set's own clock above is what
+    // makes it start *from* the leaned-in pose and be finished before the arm is
+    // through. Read off the cycle's wrap, so the coil crosses the boundary as one run.
+    //
+    // The coil belongs to the *set*, not to the swing: a batter taking a pitch sets
+    // himself the same way, and a take with no coil in it is a batter who never shifted
+    // his weight at all — he leans in, the ball goes by, nothing about him changes. So
+    // the one window runs either way, and only the way *out* of the hold differs: a
+    // swing unwinds it over its own recovery, and a take holds it while the ball comes
+    // and is still holding as it passes (the bottom of the coil is the pose the pitch
+    // crosses to), then eases back to the stance on the same window its stride does.
+    const coilHoldEnd = swing ? holdEnd : takeSettleEnd
+    const coilOutEnd = swing ? recoverEnd : takeSettleEnd + settings.leanOutTime
+    const sinceRelease = ((currentSimTime - loopDuration) % loopDuration + loopDuration) % loopDuration
+    if (sinceRelease >= coilOpen && sinceRelease < coilEnd) {
+      load = easeSwing((sinceRelease - coilOpen) / settings.loadTime)
+    } else if (sinceRelease >= coilEnd || sinceRelease < coilHoldEnd) {
+      load = 1
+    } else if (sinceRelease < coilOutEnd) {
+      load = swing
+        ? 1 - r
+        : 1 - easeSwing((sinceRelease - takeSettleEnd) / settings.leanOutTime)
+    }
 
     // Front-foot stride — delayed so it flows into the swing. The body lean
     // starts the moment the windup starts (above), but the step itself waits
@@ -1903,11 +2557,8 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       if (currentSimTime >= holdEnd) {
         stride = currentSimTime < recoverEnd ? 1 - r : 0
       }
-    } else {
-      const takeSettleEnd = geom.contactTime + settings.leanOutTime
-      if (currentSimTime >= takeSettleEnd) {
-        stride = Math.max(0, 1 - easeSwing((currentSimTime - takeSettleEnd) / settings.leanOutTime))
-      }
+    } else if (currentSimTime >= takeSettleEnd) {
+      stride = Math.max(0, 1 - easeSwing((currentSimTime - takeSettleEnd) / settings.leanOutTime))
     }
     // The delayed step itself: from late in the windup to just before the
     // swing fires (swingStart of the next cycle, past the wrap).
@@ -1924,14 +2575,14 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
 
     // Forward lean-in, driven by the windup progress above: the batter
     // stands straight while waiting, leans forward as the pitcher winds up
-    // (leading the delayed front step), holds it through the flight and
-    // swing, and eases back to straight after the recovery. Independent of
-    // the swing flag, so it also applies to takes.
+    // (leading the delayed front step), is already at full lean most of half a
+    // second before the release — with the coil that opens from it done a quarter
+    // of a second before the ball is thrown — and holds it through the flight and
+    // swing, then eases back to straight after the recovery. Independent of the
+    // swing flag, so it also applies to takes.
     let leanIn
     if (currentSimTime >= windupStart) {
       leanIn = leanRamp
-    } else if (currentSimTime < loadStart) {
-      leanIn = 1
     } else if (currentSimTime >= recoverEnd) {
       const sinceRecover = currentSimTime - recoverEnd
       leanIn = 1 - easeSwing(sinceRecover / settings.leanOutTime)
@@ -1976,7 +2627,7 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     // the hands.
     let bodyTurn = 0
     if (swing) {
-      if (currentSimTime < geom.contactTime) bodyTurn = THREE.MathUtils.clamp(e * settings.bodyTurnLead, 0, 1)
+      if (currentSimTime < geom.contactTime) bodyTurn = leadCurve(e, settings.bodyTurnLead, bodyTurnArrival)
       else if (currentSimTime < holdEnd) bodyTurn = 1
       else if (currentSimTime < recoverEnd) bodyTurn = 1 - torsoEase
     }
@@ -1990,17 +2641,35 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       else if (currentSimTime < followEnd) align = 1 - f
     }
 
-    // The upper body opens toward the pitcher as the swing progresses, while a
-    // slow idle bob raises and lowers the loaded stance (fading out while the
-    // swing is active so the two don't fight).
-    const swayPhase = state.clock.elapsedTime * settings.swaySpeed
-    const bob = Math.sin(swayPhase) * settings.swayBobAmount * (1 - open)
+    // The upper body opens toward the pitcher as the swing progresses, while the
+    // set stance's idle keeps the batter alive underneath it — the knees give and
+    // take, the weight rocks from foot to foot, the bat waggles — fading out as
+    // the swing takes over so the two don't fight. What the idle asks of the
+    // *legs* is a flex, and the hips' own drop is what that flex costs (computed
+    // in poseLegs off the same sockets and footprints the leg targets are built
+    // from); nothing here can raise the batter above his stance, which is where
+    // the old bob pulled the shoes off the ground.
+    const idleWave = idleStance(state.clock.elapsedTime * settings.swaySpeed)
+    const idle = idleTerms(idleWave, 1 - open)
     // Hips lead the shoulders: the lower body's opening progress is
     // phase-advanced (settings.hipsLead) so the legs start turning before the upper
     // body — the kinetic chain of a real swing, with the hips firing first
-    // and the torso catching up by contact.
+    // and the torso catching up by contact. Both halves of that lead are shapes
+    // rather than gains: the legs' own clock into the ball (HIPS_EASE) and a lead
+    // that arrives *on* the ball rather than a tenth of a second short of it (see
+    // leadCurve), with the slope its own follow-through picks it up at.
     const lowerOpenYaw = setYaw + (bodyOpen - setYaw) * settings.lowerBodyOpenFactor
-    const lowerOpen = THREE.MathUtils.clamp(open * settings.hipsLead, 0, 1)
+    // ...in the legs' own units: their clock is the barrel's own ease with HIPS_EASE in
+    // its exponent, which is that much more of the chord per unit of the barrel's own.
+    const hipArrival = arrivalSlope(
+      Math.abs(lowerOpenYaw - setYaw) * HIPS_EASE / SWING_EASE,
+      Math.abs(hipFullOpenYaw - lowerOpenYaw),
+    )
+    // Past the ball the legs ride the body's own opening, which is already 1 through
+    // the hold and unwinds with the recovery, so nothing about the way home moves.
+    const lowerOpen = swing && currentSimTime < geom.contactTime
+      ? leadCurve(lowerE, settings.hipsLead, hipArrival)
+      : THREE.MathUtils.clamp(open * settings.hipsLead, 0, 1)
     // The legs drive with the same phase-advanced progress: the knees
     // straighten from the bent crouch and the feet push toward the plate as
     // the swing fires, with a forward lean selling the weight transfer.
@@ -2030,20 +2699,9 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     // measured, the chest went back from 21 into the pitcher at contact to 37
     // at the finish, so the swing stalled and then closed up at exactly the
     // moment a real batter's body is still opening.
-    const fullOpenAmount = typeof settings.fullOpenYaw === 'number' ? settings.fullOpenYaw : 0.95
-    const fullBodyYaw = -sign * fullOpenAmount
-    // The hold drifts a little further open — the deceleration of a real swing,
-    // which keeps turning for a beat after the contact speed has gone.
-    const peakBodyYaw = fullBodyYaw + sign * 0.08
-    // The pelvis's own finish: the same turn the chest takes, times how much of
-    // it the hips are given at the follow-through (settings.followLowerOpenFactor)
-    // — not the fraction that leads the shoulders into contact, which is a
-    // different number about a different part of the swing.
-    const lowerFollowFactor = settings.followLowerOpenFactor > 0
-      ? settings.followLowerOpenFactor
-      : settings.lowerBodyOpenFactor
-    const hipFullOpenYaw = setYaw + (fullBodyYaw - setYaw) * lowerFollowFactor
-    const peakLowerYaw = hipFullOpenYaw + sign * 0.05
+    // fullBodyYaw / peakBodyYaw / hipFullOpenYaw / peakLowerYaw are read off the
+    // tuning once, above the contact geometry, because the drive's ride bound
+    // needs the arc the lower body sweeps rather than only its contact end.
     let bodyYaw = setYaw
     let lowerYaw = setYaw
     if (swing) {
@@ -2052,11 +2710,12 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
         lowerYaw = THREE.MathUtils.lerp(setYaw, lowerOpenYaw, lowerOpen)
       } else if (currentSimTime < followEnd) {
         bodyYaw = THREE.MathUtils.lerp(bodyOpen, fullBodyYaw, f)
-        lowerYaw = THREE.MathUtils.lerp(
-          lowerOpenYaw,
-          hipFullOpenYaw,
-          THREE.MathUtils.clamp(f * settings.hipsLead, 0, 1),
-        )
+        // ...and the pelvis keeps turning onto its own chord *through* the
+        // follow-through rather than being rushed onto it in the first four frames:
+        // the same clock the chest rides, so the two finish their turn together and
+        // the 55° between the contact and the finish is carried over the whole window
+        // instead of being taken at 1550°/s in the 40 ms after the ball.
+        lowerYaw = THREE.MathUtils.lerp(lowerOpenYaw, hipFullOpenYaw, f)
       } else if (currentSimTime < holdEnd) {
         const holdFrac = Math.min(1, Math.max(0, (currentSimTime - followEnd) / holdDuration))
         const extendFrac = Math.min(1, holdFrac / 0.65)
@@ -2190,16 +2849,14 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       // body returns first while the foot holds its plant, then the foot
       // steps back). No bat meets the ball, so this is independent of the
       // swing's contact compensation.
-      const takeEdgeEnd = geom.contactTime + settings.leanOutTime
       if (sinceStride <= strideDur) {
         push = settings.strideEdgeFrac * ramp
       } else if (currentSimTime < geom.contactTime) {
         push = settings.strideEdgeFrac
-      } else if (currentSimTime < takeEdgeEnd) {
+      } else if (currentSimTime < takeSettleEnd) {
         push = settings.strideEdgeFrac * (1 - easeSwing((currentSimTime - geom.contactTime) / settings.leanOutTime))
       }
     }
-    const hipDrive = (settings.hipDriveForward * push) / heightScale
     // The same numbers the groups below carry, collected for the measured
     // skeleton (which the groups do not move): the hips' turn and drive, the
     // torso's extra turn and its own drive, and the head's look.
@@ -2208,6 +2865,62 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     let upperOffsetZ = 0
     let headYaw = 0
     let headPitch = 0
+    // The legs' own targets, and the hips' drop for the idle's flex with them (see
+    // poseLegs): solved here rather than after the torso because the upper body's
+    // own height is read off that drop.
+    // How far the swing has come home, for the lead foot's own finish (see poseLegs):
+    // nothing at all before the ball is met, the follow-through's own ramp after it,
+    // the hold held, and the recovery unwinding it — one clock, so the toe does not
+    // snap back up at the end of a swing that is over.
+    let arrival = 0
+    if (swing && currentSimTime >= geom.contactTime && currentSimTime < recoverEnd) {
+      arrival = currentSimTime < holdEnd ? f : 1 - r
+    }
+    // The pelvis' own lean, read here rather than with the groups below because
+    // the planted leg's budget needs it: the lean tips the pelvis over the plate,
+    // and the rear socket is on the low side of that tip, so it stands *below* the
+    // centre the drive's own sink is written for (measured at the contact: 0.06
+    // rig of it, from a lean of 0.23 rad) and the rear leg has that much more room
+    // than the centre's height alone says.
+    const leanMag = THREE.MathUtils.lerp(settings.setLean * leanIn, settings.legLean, drive) - DRIVE_LEAN * drive
+    const lean = batterLean(refBatX, refStanceZ, FIELD.DEFENSE.C.z, bodyYaw, leanMag)
+    leanX = lean.rotationX + settings.loadLeanBack * load * (1 - drive)
+    leanZ = lean.rotationZ
+    // ...and the idle's own weight shift tips the chest over the foot it has
+    // landed on (see the stance's idle): it rides the same fade the rest of the
+    // idle does, so the swing's own lean takes the torso over from it.
+    leanZ += idle.lean
+    // As the back leg unbuckles, the body also tilts back toward the
+    // catcher (world +Z) while the hips drive forward — expressed in the
+    // live frame so the tilt always points at the catcher, and held through
+    // the follow-through as the back leg stays driven.
+    const backTilt = settings.swingBackTilt * drive
+    leanX += backTilt * Math.cos(bodyYaw)
+    leanZ += backTilt * Math.sin(bodyYaw)
+    let legs = poseLegs(drive, driveBack, load, stride, strideLift, lowerYaw, idle.flex, idle.rock, arrival)
+    // The pelvis' own budget, read off the planted rear leg (see rearPlanted): how
+    // far it may ride forward and how far it may turn, together. The push envelope
+    // is the *shape* of the drive, and the ride is what it asks of a body that has
+    // the ground to stand on: past the rear leg's own span the pelvis simply
+    // cannot go, and a turn it cannot hold it does not take — the sockets, the
+    // shoe's own angle and the knee hints all ride the pelvis, so the legs are
+    // posed again on the turn that survives. Both halves of the drive — the hips'
+    // lunge and the torso's push — are scaled by the same share of the ride, so
+    // the body still rides as one piece and the belt's own separation is
+    // untouched; taking the clamp off *one* of them would shear the two blocks the
+    // belt sits between instead. The socket the budget is read from is the live
+    // one, this pose's own: it is the crouch and the lead leg's sink the budget is
+    // measured through, and they move with the swing.
+    const socketY = rearSocketY(legs, drive, load, leanZ)
+    const requestedRide = ((settings.hipDriveForward + settings.upperDriveForward) * push) / heightScale
+    const planted = rearPlanted(socketY, lowerYaw, requestedRide)
+    if (planted.yaw !== lowerYaw) {
+      lowerYaw = planted.yaw
+      legs = poseLegs(drive, driveBack, load, stride, strideLift, lowerYaw, idle.flex, idle.rock, arrival)
+    }
+    const ride = planted.ride
+    const rideScale = requestedRide > 1e-9 ? ride / requestedRide : 1
+    const hipDrive = (settings.hipDriveForward * push * rideScale) / heightScale
     if (upperRef.current) {
       // YXZ order: yaw first, then the lean's forward/sideways tilts, so the
       // lean direction (rotation.x/z) stays in the body's own frame.
@@ -2222,20 +2935,6 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       // leg during the load, and holding a stronger lean (settings.legLean) through
       // the swing as the back leg drives the rotation — pitched further forward
       // still by the drive's own share (see DRIVE_LEAN).
-      const leanMag = THREE.MathUtils.lerp(settings.setLean * leanIn, settings.legLean, drive) - DRIVE_LEAN * drive
-      // Posed about the plate-tuned stance, not where the body stands: the two
-      // must be the same point the contact geometry leans the sweet spot over
-      // (see STANCE_SETBACK_M), or the bat and the body would disagree.
-      const lean = batterLean(refBatX, refStanceZ, FIELD.DEFENSE.C.z, bodyYaw, leanMag)
-      leanX = lean.rotationX + settings.loadLeanBack * load * (1 - drive)
-      leanZ = lean.rotationZ
-      // As the back leg unbuckles, the body also tilts back toward the
-      // catcher (world +Z) while the hips drive forward — expressed in the
-      // live frame so the tilt always points at the catcher, and held through
-      // the follow-through as the back leg stays driven.
-      const backTilt = settings.swingBackTilt * drive
-      leanX += backTilt * Math.cos(bodyYaw)
-      leanZ += backTilt * Math.sin(bodyYaw)
       upperRef.current.rotation.x = leanX
       upperRef.current.rotation.z = leanZ
       // The back leg firing pushes the whole body forward toward the pitcher
@@ -2248,13 +2947,20 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       // Carrying only the torso's share put the bat 0.28 m behind the body the
       // geometry had placed it on — the hands ended up inside the hips at the
       // finish — and left the arms stretching 1.25x to span the gap.
-      upperOffsetZ = (-settings.upperDriveForward * push) / heightScale
-      upperRef.current.position.z = upperOffsetZ - hipDrive
+      upperOffsetZ = (-settings.upperDriveForward * push * rideScale) / heightScale
+      upperRef.current.position.z = upperOffsetZ - hipDrive + idle.rock
       // The hips settle lower during the load (the whole upper body drops with
-      // them), rising back as the drive engages.
-      upperRef.current.position.y = HIP_Y + bob - settings.hipSettle * load * (1 - drive)
+      // them), rising back as the drive engages — and the drive's *own* sink is
+      // here too: the pelvis gives its height up onto the lead leg (see
+      // REACH_SLACK), and the chest, the shoulders, the head and the frame the bat
+      // hangs in all ride down with it, because the joint between the two blocks
+      // the belt sits between turns and does not slide (see the driver's drive).
+      // The bat is raised inside this same frame by the same sink (see batGroupRef
+      // below), which leaves the bat itself exactly where the contact geometry
+      // authored it while the body around it is lower.
+      upperRef.current.position.y =
+        HIP_Y - legs.drop - settings.hipSettle * load * (1 - drive) - legs.reachDrop
     }
-    const legs = poseLegs(drive, driveBack, load, stride, strideLift, lowerYaw)
 
     // Head: faces the pitcher during the set, eases to track the ball through
     // the swing (tilting forward toward the plate and swiveling to the contact
@@ -2891,21 +3597,88 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
             (currentSimTime - holdEnd) / (settings.recoveryTime * TRAIL_REACH_UNWIND), 0, 1,
           ))
       const chord = Math.hypot(across, above, front)
-      const excess = chord - TRAIL_REACH_MAX
-      if (excess > 0) {
-        const back = (excess / chord) * reachIn
+      const dir = chord > 1e-6 ? [across / chord, above / chord, front / chord] : [0, 0, 0]
+      // The way home's own carry: the bat is carried on out in front before it is
+      // brought back in, so the trailing arm is straight while it points at the
+      // pitcher and its fold into the set is all one way (see RECOVERY_CARRY). It is
+      // taken along the chord's own line, which is what the reach pull below shortens,
+      // so the two are the same lever: one carries the grip out, the other brings it
+      // back to what the arm can hold.
+      const sinceHoldEnd = currentSimTime - holdEnd
+      const carried = sinceHoldEnd / settings.recoveryTime
+      const shaped = (from, to) => easeSwing(THREE.MathUtils.clamp((carried - from) / (to - from), 0, 1))
+      const carryShare = sinceHoldEnd <= 0
+        ? 0
+        : shaped(RECOVERY_CARRY_FROM, RECOVERY_CARRY_FULL)
+          * (1 - shaped(RECOVERY_CARRY_HOLD, RECOVERY_CARRY_TO))
+      const carry = RECOVERY_CARRY * carryShare
+      // ...aimed along the trailing chord, tilted toward the batter's own lead side (see
+      // RECOVERY_CARRY_ACROSS): that is what makes it the trailing arm's own length that
+      // it buys, rather than both arms'. The chord frame is already mirrored (`across`
+      // is measured off the trailing shoulder, see above), so the lead side is simply
+      // the negative of it, whatever the batter bats.
+      const carryAim = (() => {
+        const v = [dir[0] - RECOVERY_CARRY_ACROSS, dir[1], dir[2]]
+        const length = Math.hypot(v[0], v[1], v[2]) || 1
+        return [v[0] / length, v[1] / length, v[2] / length]
+      })()
+      // ...and the reach bound is the reset's own, lifted over the carry to the arm's
+      // own length (see TRAIL_REACH_STRAIGHT): the chord may be *carried* out to where
+      // the elbow has nought left to bend, and no further. The arm's own length is read
+      // off the rig the solve is built from, so the bound and the arm cannot drift apart.
+      const straight = TRAIL_REACH_STRAIGHT
+      const reachMax = TRAIL_REACH_MAX + (straight - TRAIL_REACH_MAX) * carryShare
+      const outTo = Math.hypot(
+        across + carry * carryAim[0],
+        above + carry * carryAim[1],
+        front + carry * carryAim[2],
+      )
+      const excess = outTo - reachMax
+      const back = excess > 0 ? (excess / outTo) * reachIn : 0
+      const along = outTo > 1e-6 ? outTo : 1
+      const outDir = [
+        (across + carry * carryAim[0]) / along,
+        (above + carry * carryAim[1]) / along,
+        (front + carry * carryAim[2]) / along,
+      ]
+      const move = carry - back * outTo
+      if (Math.abs(move) > 1e-9) {
         hands = [
-          hands[0] - back * across,
-          hands[1] - back * above,
-          hands[2] - back * front,
+          hands[0] + carry * carryAim[0] - back * outTo * outDir[0],
+          hands[1] + carry * carryAim[1] - back * outTo * outDir[1],
+          hands[2] + carry * carryAim[2] - back * outTo * outDir[2],
         ]
       }
     }
 
-    batGroupRef.current.position.set(hands[0], hands[1], hands[2])
-    batGroupRef.current.rotation.y = angle
+    // The bat's waggle: the same turn the idle asked of the hands is added to the
+    // bat's own angle (and its roll), so the grip the arms are solved onto below
+    // is the waggled one. It is nought once the swing has the bat (the idle fades
+    // out as the swing takes over), so the swing's own path is untouched.
+    const idleBatAngle = angle + sign * settings.swayBatWiggle * idle.waggle
+    const idleCockAngle = cockAngle + settings.swayBatRoll * idle.waggle
 
-    if (cockRef.current) cockRef.current.rotation.x = cockAngle
+    // ...and the bat is placed exactly where the contact geometry authored it — in a
+    // group that has *sunk* with the body. The frame is `legs.reachDrop` lower than
+    // the geometry's own (see upperRef above), so the bat is raised inside it by the
+    // same amount: the sweet spot's place in the world is the authored one, and the
+    // pose's own sink is a lower body rather than a lower bat. The arm solve is
+    // handed the same drop through its frame offset, so the shoulder its hints are
+    // read from is the live one, and the grip the arms close on is the handle the
+    // bat actually has. That is what keeps all three of the pose's owners happy at
+    // once — the hips inside the lead leg's span (see REACH_SLACK), the bat on the
+    // ball, and the arms on the pose the tuning authored them against. Leaving the
+    // bat in the sunk frame instead carries it down with the body and misses the
+    // pitch by the sink (0.047 m at the contact, a sweet spot 0.0377 m off the
+    // ball's centre where this reads 0.0151); lifting it out of a sunk frame whose
+    // chest has not sunk with it is the same distance the other way, and the elbows
+    // answer that chord by folding 27 degrees in 50 ms — the swing's lead wrist
+    // turning over a fifth of a second early (the suite's own flick check reads the
+    // pair at 0.405 s and 0.460 s, 14 and 27 degrees of excursion).
+    batGroupRef.current.position.set(hands[0], hands[1] + legs.reachDrop, hands[2])
+    batGroupRef.current.rotation.y = idleBatAngle
+
+    if (cockRef.current) cockRef.current.rotation.x = idleCockAngle
     if (tiltRef.current) tiltRef.current.rotation.x = tiltAngle
 
     const isRecovering = swing && currentSimTime >= holdEnd && currentSimTime < recoverEnd
@@ -2963,7 +3736,12 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       ? PALM_HELD_BACK * THREE.MathUtils.clamp((1 - r) / 0.2, 0, 1)
       : THREE.MathUtils.clamp((followProgress - 0.9) / 0.1, 0, 1)
     const arms = updateArms(
-      hands, bend, align, angle, cockAngle, tiltAngle, followProgress, isRecovering, palmUp,
+      hands, bend, align, idleBatAngle, idleCockAngle, tiltAngle, followProgress, isRecovering, palmUp,
+      [
+        0,
+        -legs.drop - settings.hipSettle * load * (1 - drive) - legs.reachDrop,
+        upperOffsetZ - hipDrive + idle.rock,
+      ],
     )
 
     if (handLRef.current && handRRef.current) {
@@ -2991,13 +3769,19 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
           yaw: lowerYaw,
           leanX,
           leanZ,
-          offsetY: bob - settings.hipSettle * load * (1 - drive),
+          rock: idle.rock,
+          offsetY: -legs.drop - settings.hipSettle * load * (1 - drive) - legs.reachDrop,
           offsetZ: -hipDrive,
         },
         torsoYawExtra: bodyYaw - lowerYaw,
         torsoOffsetZ: upperOffsetZ,
+        // ...and nothing between the two blocks the belt sits between: the joint
+        // between them turns and does not slide, so the chest, the shoulders, the
+        // head and the bat all ride the pelvis' own sink (see upperRef above, which
+        // is lowered with it, the bat placed back into that frame, and the arm
+        // solve's frame offset, which is given the same drop).
         head: { yaw: headYaw, pitch: headPitch },
-        legs,
+        legs: legs.targets,
         arms,
       })
     }

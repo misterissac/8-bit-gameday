@@ -8,7 +8,9 @@ export const TUNING_STORAGE_KEY = 'playbyplay-debug-tuning-v12';
 export const DEFAULT_TUNING = {
   playback: {
     timeScale: 0.61,
-    cyclePause: 0.6,
+    // ...and the pause is what the pitcher's hold is for: a beat between pitches long
+    // enough for him to stand in his follow-through (see pitcher.clipDuration).
+    cyclePause: 1.8,
     ballReleaseTime: 1.32,
     // Beat the overlaid pitches hold in their finished pose (ball at the
     // catcher / batted ball landed) before the comparison cycle wraps and
@@ -26,7 +28,11 @@ export const DEFAULT_TUNING = {
     fielderLabelHeight: 2.8,
   },
   pitcher: {
-    clipDuration: 2.08,
+    // The delivery is longer than the throw: the finish is held for a second before
+    // the pitcher walks back into his set (see the hold in pitcherSequence), so the
+    // clip is the throw plus the hold, and the cycle's own pause below is the same
+    // second — the loop only gives the hold the room it asks for.
+    clipDuration: 3.32,
     neutralClipDuration: 0.83,
     crossfadeTime: 0.2,
     overlayOpacity: 0.55,
@@ -211,8 +217,35 @@ export const DEFAULT_TUNING = {
   batter: {
     fadeStartDistance: 3,
     fadeEndDistance: 11,
-    swaySpeed: 1.4,
-    swayBobAmount: 0.04,
+    // The set stance's idle: how fast its clock runs, and what the wave does at
+    // its deepest point. ``swayKneeFlex`` is the amount that matters — the knees
+    // give by this much and the hips drop by whatever the leg geometry says that
+    // flex costs (see idleCrouch), so the body can never rise above the stance
+    // and lift a shoe off the ground. The rest ride the same clock: the weight
+    // shift that lands on a foot as its knee gives, the knees' own travel forward
+    // as they flex, the torso's lean with the weight, and the bat's waggle in the
+    // hands (a yaw and a roll, at twice the tempo, so it reads as loose rather
+    // than metronomic).
+    //
+    // Read off the reference idle clip (solomon-gumball's BattingIdle: two
+    // identical cycles in 2.46 s, so 1.23 s a bounce): the pelvis travelling
+    // 4.37 cm down and 3.05 cm across in one motion, the torso tipping 1.8
+    // degrees, and a bat that turns 8.2 degrees in the hands. The wave is
+    // one-sided, so each amount below is the whole of its own excursion: the
+    // tip, the drop and the waggle all happen between the stance and the
+    // deepest frame, never above the stance. Flexing to 0.4 rad
+    // here drops the hips 4.1 cm, which is that distance at this stance's own
+    // geometry — and it costs 24 degrees of knee where the reference's own 12
+    // would move this batter barely 1.6 cm, because the rig's legs stand within
+    // 5 mm of their own span at the set and the first degrees of flex are where
+    // all the drop is.
+    swaySpeed: 5.1,
+    swayKneeFlex: 0.4,
+    swaySwayAmount: 0.03,
+    swayKneeTravel: 0.05,
+    swayLeanAmount: 0.031,
+    swayBatWiggle: 0.055,
+    swayBatRoll: 0.03,
     fadeMinOpacity: 0.2,
     swingLead: 0.22,
     followThrough: 0.14,
@@ -295,9 +328,28 @@ export const DEFAULT_TUNING = {
     strideDelayFrac: 0.72,
     legFrontStrideLift: 0.07,
     legFrontKneeLift: 0.08,
-    legFrontUnplantLift: 0.08,
+    // How far the *lead* foot comes off the ground once the swing fires. It is 0, and
+    // the rule behind the number is the one a batter's lead foot follows: the heel is
+    // on the floor from the plant through the follow-through, and what the foot does
+    // is *pivot* on it, opening with the body. The lift used to be 0.08 — the whole
+    // shoe off the ground for the length of the drive, heel first — which read as a
+    // batter stepping out of his own swing rather than turning on a planted foot.
+    // What is left of it is the *step* (legFrontStrideLift above), which is a lift
+    // into the plant, and the toe lift below, which is a lift with the heel down.
+    legFrontUnplantLift: 0.03,
     backFootPivot: 0.75,
-    frontFootPivot: 0.2,
+    // How much of the body's own turn the lead foot takes. At 1 the shoe's yaw is the
+    // hips' own, so the foot pivots open with the body it is standing under rather
+    // than holding its set angle while the batter turns over it (0.2, which left the
+    // shoe pointing 80% of the way to the set all swing long).
+    frontFootPivot: 1,
+    // ...and how far the lead foot's toes lift as the swing arrives: the foot tips up
+    // about its own ankle through the follow-through, so the toe end points up out of
+    // the ground while the heel — the end that is left standing on it — takes the
+    // weight. Radians, and "slightly" is the point: this is the finish of a swing, not
+    // a kick. Measured at 0.18 rad, the shoe's toe comes up about 1.5 cm off the dirt
+    // with the heel still on it.
+    legFrontToeLift: 0.18,
     hipDriveForward: 0.442, // 15% below the last pass (0.52)
     swingBackTilt: 0.08,
     upperDriveForward: 0.32,
@@ -326,6 +378,33 @@ export const DEFAULT_TUNING = {
     legLean: 0.3,
     setLean: 0.3,
     leanOutTime: 0.3,
+    // The set, in the two beats a batter's own set has: he leans in, and *from that
+    // leaned-in pose* shifts his weight onto the back leg. Both leads are "at least
+    // this early" and both come off the end of the windup (see Batter.jsx):
+    //
+    //   leanLead: how long before the pitcher's release the forward lean-in is already
+    //   complete — the split second of the batter standing leaned in while the ball is
+    //   still in the pitcher's hand. At 0 the lean arrives on the very frame the ball
+    //   leaves the hand, with no hold at all.
+    //
+    //   loadLead: how long before that release the weight shift onto the back leg is
+    //   complete — the batter coiled and *waiting* as the arm comes through. The coil
+    //   opens on the frame the lean lands, so it is the one the lean's own ramp is
+    //   aimed at: the lean can never be complete later than loadTime + loadLead before
+    //   the release, or the coil would have to start before the batter had leaned in.
+    //
+    // At 0 for anyone, the set arrives on the release frame itself.
+    //
+    // 0.45 rather than 0.12: the whole set — the lean in *and* the weight shift that
+    // opens from it — is finished a quarter of a second before the ball leaves the
+    // pitcher's hand, so the batter is standing in his coil and waiting on the pitch
+    // rather than arriving at it as the arm comes through. The ramp is front-loaded
+    // too (see the lean's own clock in Batter.jsx), so the lean is taken in the first
+    // part of the windup and held, and the coil then opens with a beat of its own
+    // before the release. It is the same clock the pitcher's hand runs on, read off
+    // the end of the windup, so this is the whole of the "already set" promise.
+    leanLead: 0.45,
+    loadLead: 0.08,
     loadLeanBack: 0.08,
     backRecoverLag: 0.35,
     // How late the torso may start its turn back to the set stance, as a
@@ -344,7 +423,15 @@ export const DEFAULT_TUNING = {
     // 2.6 mm off the handle against a 1 mm bound. At 0.274 the hands sit the same
     // 0.355 rig in front of the torso at contact as they always did, and the bat
     // takes the 0.13 rig of extra distance instead (0.967 -> 1.103 rig).
-    handExtension: 0.274,
+    //
+    // It is also the whole of the *arm*'s share of a drive the rear leg cannot
+    // span: the drive is bounded by the planted rear foot's footprint (see the
+    // rear-foot block in Batter.jsx), which shortens the ride, which moves the
+    // ball the same distance further from the hands. That distance is split here
+    // — the share the hands take on top of their set reach, and the rest the bat
+    // takes — so the arms stay inside their own span (ARM_STRETCH_MAX) and the
+    // bat is left to cover the rest.
+    handExtension: 0.05,
     handsPathBulge: 0.3,
     contactTiltMaxDeg: 20,
     planeTiltMaxDeg: 50,
@@ -366,7 +453,7 @@ const clampTuningValue = (group, key, value) => {
   if (group === 'pitch' && ['smokeRedWindowTop', 'smokeGreyBlackPower', 'smokeToneBoostMax', 'smokeWhiteBoost'].includes(key)) return Math.max(0, value);
   if (group === 'battedBall' && ['throwSpeedMph', 'maxRunSpeedMph', 'trailFadeTime', 'traceFadeTime'].includes(key)) return Math.max(0.001, value);
   if (group === 'battedBall' && key === 'groundRollSpeedMph') return Math.max(0, value);
-  if (group === 'batter' && ['fadeEndDistance', 'swingLead', 'followThrough', 'followHold', 'recoveryTime', 'loadTime', 'pushSettleTime', 'leanOutTime'].includes(key)) return Math.max(0, value);
+  if (group === 'batter' && ['fadeEndDistance', 'swingLead', 'followThrough', 'followHold', 'recoveryTime', 'loadTime', 'pushSettleTime', 'leanOutTime', 'leanLead', 'loadLead'].includes(key)) return Math.max(0, value);
   if (group === 'batter' && key === 'swingPeakFrac') return value <= 0 ? 0 : Math.min(0.95, Math.max(0.05, value));
   if (group === 'batter' && key === 'returnPeakFrac') return Math.min(0.85, Math.max(0.15, value));
   return value;
