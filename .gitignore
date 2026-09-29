@@ -30,6 +30,8 @@ frontend/.playwright/
 scratch/
 .freebuff/
 models/backups/
+tmp-*/
+tmp-*
 
 # Blender autosave/backup files
 *.blend1

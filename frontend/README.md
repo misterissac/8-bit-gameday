@@ -1119,16 +1119,26 @@ and its fastest frame is the ball's — the pelvis reads **102, 267, 293, 355 �
 and 267°/s**. Every motion's fastest frame is the frame on the ball, and everything
 after it is the body running down.
 
-The pelvis' *forward* ride is not on either clock and still peaks a fifth of a second
-before the ball, because it is the footing rather than the push: the ride is the budget
-the planted rear leg can span at the yaw the pelvis has reached (see the rear-foot
-bound above), so its shape is the cap's own excursion across the turn. That excursion
-is smoothed by the retiming rather than re-timed — the reverse reads −0.5, −1.0, −0.9,
-−0.7, −0.5 rig/s against the old −1.5, −2.1, −2.7, −1.1 and a re-acceleration — and
-the rear leg is asked for *less* than before: the socket's worst reach over the leg's
-span falls from 1.0885 to 1.0824 against the 1.0576 limb, with the ground rule moving
-the shoe 0.11 rig where it moved 0.13, and the shoe's own roll onto its ball ends at
-0.40 s rather than 0.48.
+The pelvis' *forward* ride is on that clock too: it is the push envelope's own share of
+the budget the planted rear leg leaves at the contact frame — the very number the
+contact geometry draws the ball against (see the rear-foot block above) — so it leaves
+the set with no speed, climbs without a backward frame, and turns over on the ball. It
+is not bounded on the way in. The budget is read at the *contact's* own yaw, and the cap
+falls as the pelvis turns (0.550 rig of it at 0.18 s, 0.418 at 0.36), so at every
+earlier yaw the cap stands above the ask and the ride is exactly the ask: a bound, not a
+shape. Swept at 0.01 s the ride reads 0.118 rig at 0.20 s climbing to **0.3647 on the
+ball**, its fastest frame the ball's own at **1.92 rig/s** (0.45, 0.50, 0.56, 0.64 …
+1.87, 1.90, 1.92), and only past it does the footing take the ride back — −1.22, −1.17,
+−1.11 … — one decaying run with no re-acceleration anywhere on the far side. The build
+this replaces had the ride peaking **0.5013 rig a fifth of a second before the ball**
+and already reversing on the frame the bat arrived on.
+
+The ground pays no more for it either. The rear socket's worst reach over its own span
+across the whole cycle is now **1.002, and on the contact frame** — 1.059 rig against
+the 1.058 limb, the leg straight, which is the pose a drive arriving is — where the
+build this replaces peaked at 1.0824 a frame *before* the ball, and the one before that
+at 1.0885. Nothing is clamped on the way in, and the ride's own ceiling for the whole
+swing is the frame the bat meets it.
 
 Front-loading the *bat's* rotation this way was built, measured and dropped (see the
 section above) — the trail hand is on the handle and a bat turning faster early folds

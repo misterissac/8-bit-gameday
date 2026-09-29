@@ -5,7 +5,6 @@ import {
   computeBatTiltAtProgress,
   forwardKinematicsSweetSpotAtContact,
   resolvePitchSpeedMph,
-  resolveSwingPeak,
   BAT_LENGTH_MIN,
   BAT_LENGTH_MAX,
 } from '../src/util/batterSwing.js'
@@ -147,8 +146,6 @@ test('Sweet spot lands on the ball with sub-millimeter accuracy regardless of an
       settings: {
         ...DEFAULT_TUNING.batter,
         upperDriveForward: 0.65,
-        pushSettleLevel: 0.80,
-        pushSettleTime: 0.02,
         swingBackTilt: 0.15,
         legLean: 0.45,
       },
@@ -158,8 +155,6 @@ test('Sweet spot lands on the ball with sub-millimeter accuracy regardless of an
       settings: {
         ...DEFAULT_TUNING.batter,
         upperDriveForward: 0.0,
-        pushSettleLevel: 0.50,
-        pushSettleTime: 0.08,
         swingBackTilt: 0.0,
         legLean: 0.20,
       },
@@ -171,7 +166,6 @@ test('Sweet spot lands on the ball with sub-millimeter accuracy regardless of an
         swingBackTilt: 0.35,
         legLean: 0.50,
         upperDriveForward: 0.45,
-        pushSettleLevel: 0.60,
       },
     },
     {
@@ -299,18 +293,13 @@ test('Automatic swing speed peak timing does not alter contact point or attack a
       swing_path_tilt: 36.0,
     }
 
-    const peakFrac = resolveSwingPeak(0, resolvePitchSpeedMph(pitchData))
-
-    // Changing peak timing shifts acceleration before settleStart,
-    // leaving the contact geometry identical
+    // The pitch's own speed is resolved for every frame of the swing, and none of
+    // it touches the contact geometry
     const geom = calculateSwingGeometry({
       pitchData,
       batX: -0.55,
       stanceZ: -PLATE_FRONT_Y + 0.25,
-      settings: {
-        ...DEFAULT_TUNING.batter,
-        swingPeakFrac: peakFrac,
-      },
+      settings: DEFAULT_TUNING.batter,
     })
 
     assert.ok(Math.abs(geom.tilt - degToRad(14.0)) < 1e-9)

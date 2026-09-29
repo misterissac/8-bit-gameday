@@ -2,21 +2,11 @@ import { PLATE_FRONT_Y, clamp, degToRad, plateCrossing } from './MathUtil.js'
 import { batterLean } from './batterLean.js'
 import { FIELD } from '../constants/field.js'
 
-// Baseline anchor: a standard 90 mph pitch peaks at 0.75 through the swing phase.
+// Baseline anchor: the speed a pitch is assumed to be when nothing says otherwise.
+// It is the sweep's own fallback rather than a timing: where the body's forward
+// drive peaks is not a pitch-speed question any more (see the drive in Batter.jsx,
+// whose fastest frame is the contact frame whatever the pitch does).
 export const SWING_PEAK_BASELINE_MPH = 90
-export const SWING_PEAK_BASELINE_FRAC = 0.75
-
-// Rate of shift: +0.0075 per mph (+0.075 per 10 mph).
-// A 70 mph curveball shifts earlier (~0.60), letting the batter stay back and
-// coast into contact. A 104 mph heater shifts later (~0.855), keeping the
-// forward drive accelerating almost all the way to contact for an explosive
-// late burst.
-export const SWING_PEAK_PER_MPH = 0.0075
-
-// Clamp bounds for automatic swing peak timing to keep the acceleration and
-// deceleration segments well-formed and visually natural.
-export const SWING_PEAK_AUTO_MIN = 0.55
-export const SWING_PEAK_AUTO_MAX = 0.88
 
 // Swing geometry and contact constants
 export const SWEET_SPOT_FRACTION = 0.78
@@ -65,36 +55,6 @@ export function resolvePitchSpeedMph(pitchData) {
     }
   }
   return SWING_PEAK_BASELINE_MPH
-}
-
-/**
- * Resolves where in the swing phase (plant -> settle start) the body's forward
- * speed peaks.
- *
- * When manual (swingPeakSetting > 0), uses the explicit setting clamped to [0.05, 0.95].
- * When automatic (swingPeakSetting <= 0 or omitted), faster pitches shift the peak later
- * so the batter's maximal surge syncs closer to contact:
- *   - Slower pitches (e.g. 70 mph) peak earlier (~0.60) so the batter stays back and rides through.
- *   - Standard pitches (90 mph) peak at 0.75.
- *   - Fast pitches (100+ mph) shift the peak late (~0.83–0.88) so the maximal surge explodes right into the ball.
- *
- * @param {number|null|undefined} swingPeakSetting - Tuned value (0 or null = auto)
- * @param {number|null|undefined} pitchSpeedMph - Pitch speed in mph
- * @returns {number} Fraction of swing phase (0.05 to 0.95)
- */
-export function resolveSwingPeak(swingPeakSetting, pitchSpeedMph) {
-  const manual = Number(swingPeakSetting)
-  if (Number.isFinite(manual) && manual > 0) {
-    return clamp(manual, 0.05, 0.95)
-  }
-
-  const speed = Number.isFinite(Number(pitchSpeedMph))
-    ? Number(pitchSpeedMph)
-    : SWING_PEAK_BASELINE_MPH
-
-  const clampedSpeed = clamp(speed, 60, 110)
-  const autoPeak = SWING_PEAK_BASELINE_FRAC + (clampedSpeed - SWING_PEAK_BASELINE_MPH) * SWING_PEAK_PER_MPH
-  return clamp(autoPeak, SWING_PEAK_AUTO_MIN, SWING_PEAK_AUTO_MAX)
 }
 
 /**
@@ -152,12 +112,14 @@ export function calculateSwingGeometry({
 
   // How far the body has ridden forward toward the pitcher by the contact, in
   // the height-scaled frame: the hips' own lunge (settings.hipDriveForward) and
-  // the torso's push on top of it (settings.upperDriveForward), both eased back
-  // to settings.pushSettleLevel at contact — unless the animation bounded the
-  // ride by the planted rear leg's span, in which case that bounded travel is
-  // what the pose makes and what the ball has to be measured against.
+  // the torso's push on top of it (settings.upperDriveForward) — unless the
+  // animation bounded the ride by the planted rear leg's span, in which case that
+  // bounded travel is what the pose makes and what the ball has to be measured
+  // against. The shipped swing always bounds it: the drive's own scale *is* that
+  // leg's budget (see the frame loop in Batter.jsx), so what is left here is the
+  // drive's full ask, for a caller that stands the body somewhere else.
   const rideAtContact = driveRide == null
-    ? (settings.hipDriveForward + settings.upperDriveForward) * settings.pushSettleLevel / heightScale
+    ? (settings.hipDriveForward + settings.upperDriveForward) / heightScale
     : driveRide
 
   // Contact point in the height-scaled frame. The batter group sits at
@@ -168,8 +130,7 @@ export function calculateSwingGeometry({
     y: crossing.height / heightScale,
     // The whole body pushes forward by the time the swing reaches contact — the
     // hips' own lunge (settings.hipDriveForward) and the torso's push on top of
-    // it (settings.upperDriveForward), both eased back to
-    // settings.pushSettleLevel at contact — so the ball sits that much closer to
+    // it (settings.upperDriveForward) — so the ball sits that much closer to
     // the body. The bat hangs in the body's own frame (upperRef, which carries
     // exactly this travel), so both halves of the drive move the ball closer in
     // that frame, not one of them.
@@ -328,7 +289,7 @@ export function computeBatTiltAtProgress(e, tilt, planeTilt) {
  * Evaluates the full transformation hierarchy of the 3D batter rig at contact:
  * 1. Batter base position: [batX, 0, stanceZ]
  * 2. Uniform height scale: heightScale
- * 3. Upper body translation: [0, HIP_Y, -upperDriveForward * pushSettleLevel]
+ * 3. Upper body translation: [0, HIP_Y, -driveRide] (the drive's own travel)
  * 4. Upper body rotation around [0, HIP_Y, 0]: Order 'YXZ' with
  *    rotation.y = bodyOpen, rotation.x = leanXc, rotation.z = leanZc
  * 5. Bat group at hands position: contactHands
@@ -384,8 +345,7 @@ export function forwardKinematicsSweetSpotAtContact(geom, settings, batterParams
   // where the bat is. That travel is the geometry's own ``driveRide``, so a swing
   // whose ride the animation has bounded reads back on the ball too:
   const upperPosZ = -(driveRide ??
-    (settings.hipDriveForward + settings.upperDriveForward)
-      * settings.pushSettleLevel / heightScale)
+    (settings.hipDriveForward + settings.upperDriveForward) / heightScale)
   const pUpperWorld = {
     x: v3X,
     y: v3Y + HIP_Y,

@@ -228,14 +228,13 @@ const CONTROL_META = {
     backFootPivot: ['Back foot pivot', 0, 1, 0.01, '×'],
     frontFootPivot: ['Front foot pivot', 0, 1, 0.01, '×'],
     legFrontToeLift: ['Front toe lift (follow-through)', 0, 0.5, 0.01, 'rad'],
-    hipDriveForward: ['Hip drive forward', 0, 1, 0.01, 'm'],
+    // The drive's own split, read against each other: how far the body travels is
+    // the planted rear leg's budget and not a distance this drawer can set.
+    hipDriveForward: ['Hip drive share', 0, 1, 0.01, '×'],
     swingBackTilt: ['Swing back tilt', 0, 0.6, 0.01, 'rad'],
-    upperDriveForward: ['Upper drive forward', 0, 0.8, 0.01, 'm'],
+    upperDriveForward: ['Upper drive share', 0, 0.8, 0.01, '×'],
     strideEdgeFrac: ['Stride edge forward', 0, 0.5, 0.01, '×'],
-    swingPeakFrac: ['Swing speed peak timing (0=auto)', 0, 0.95, 0.01, '×'],
     returnPeakFrac: ['Return speed peak timing', 0.15, 0.85, 0.01, '×'],
-    pushSettleTime: ['Push settle time', 0, 0.5, 0.01, 's'],
-    pushSettleLevel: ['Push settle level', 0, 1, 0.01, '×'],
     legLean: ['Swing lean', 0, 1, 0.01, 'rad'],
     setLean: ['Set lean', 0, 1, 0.01, 'rad'],
     leanOutTime: ['Lean out time', 0.01, 2, 0.01, 's'],

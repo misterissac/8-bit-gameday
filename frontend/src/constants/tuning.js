@@ -350,31 +350,29 @@ export const DEFAULT_TUNING = {
     // a kick. Measured at 0.18 rad, the shoe's toe comes up about 1.5 cm off the dirt
     // with the heel still on it.
     legFrontToeLift: 0.18,
-    hipDriveForward: 0.442, // 15% below the last pass (0.52)
+    // The drive's own split, and only its split: the hips take this share of the
+    // body's forward travel and the torso, head, arms and bat ride the whole of it
+    // (see the drive in Batter.jsx). How far that travel *is* is not a metres
+    // figure any more — it is the planted rear leg's own budget, the span it
+    // leaves at the contact frame's turn, which is the number the contact geometry
+    // places the ball against. So these two are read as a ratio (58 : 42), and
+    // their sum is only read by a caller that does not bound the ride at all.
+    hipDriveForward: 0.442,
     swingBackTilt: 0.08,
     upperDriveForward: 0.32,
-    // Fraction of the full drive the hips and upper body edge forward as the
-    // delayed front step begins (30%: a clear forward ride with the foot),
-    // blending into the swing's own gradual ride-up so the lunge launches
-    // from an already-moving body instead of a choppy speed jump.
+    // Fraction of that budget the body has spent by the moment the front foot
+    // plants (30%: a clear forward ride with the foot), handing off at that same
+    // speed into the swing's own acceleration so the surge launches from an
+    // already-moving body instead of a choppy speed jump. It is the one number
+    // that shares the drive between the stride and the swing: raised, more of the
+    // body's travel happens with the step and less of it fires into the ball.
     strideEdgeFrac: 0.3,
-    // Where in the swing phase (plant -> settle start) the body's forward
-    // speed peaks (0 = auto: scales with pitch speed so faster pitches peak
-    // later closer to contact, e.g. ~0.60 on 70 mph up to ~0.855 on 104 mph).
-    // Manual values > 0 override the auto behavior. 0.5 = mid-swing; higher
-    // pushes the peak later, so the maximal surge lands closer to contact.
-    swingPeakFrac: 0,
     // Where, through the post-contact return arc (contact -> stance), the
     // body's backward speed peaks. Higher pushes the peak of the return
     // motion closer to the end of recovery, so the body holds its extended
     // posture longer before flowing back; the whole arc is one continuous
     // motion either way — no hold, no separate ease-out stage.
     returnPeakFrac: 0.6,
-    // How long the last pre-contact push takes to snap from full drive down
-    // to the settle level (1 -> pushSettleLevel, landing exactly at contact).
-    // Short: a decisive "snap into the ball" arrival; long: a gradual ease.
-    pushSettleTime: 0.035,
-    pushSettleLevel: 0.65,
     legLean: 0.3,
     setLean: 0.3,
     leanOutTime: 0.3,
@@ -453,8 +451,7 @@ const clampTuningValue = (group, key, value) => {
   if (group === 'pitch' && ['smokeRedWindowTop', 'smokeGreyBlackPower', 'smokeToneBoostMax', 'smokeWhiteBoost'].includes(key)) return Math.max(0, value);
   if (group === 'battedBall' && ['throwSpeedMph', 'maxRunSpeedMph', 'trailFadeTime', 'traceFadeTime'].includes(key)) return Math.max(0.001, value);
   if (group === 'battedBall' && key === 'groundRollSpeedMph') return Math.max(0, value);
-  if (group === 'batter' && ['fadeEndDistance', 'swingLead', 'followThrough', 'followHold', 'recoveryTime', 'loadTime', 'pushSettleTime', 'leanOutTime', 'leanLead', 'loadLead'].includes(key)) return Math.max(0, value);
-  if (group === 'batter' && key === 'swingPeakFrac') return value <= 0 ? 0 : Math.min(0.95, Math.max(0.05, value));
+  if (group === 'batter' && ['fadeEndDistance', 'swingLead', 'followThrough', 'followHold', 'recoveryTime', 'loadTime', 'leanOutTime', 'leanLead', 'loadLead'].includes(key)) return Math.max(0, value);
   if (group === 'batter' && key === 'returnPeakFrac') return Math.min(0.85, Math.max(0.15, value));
   return value;
 };
