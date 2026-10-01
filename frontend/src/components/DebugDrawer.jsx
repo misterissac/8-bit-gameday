@@ -222,6 +222,7 @@ const CONTROL_META = {
     legBackPushForward: ['Back push forward', 0, 0.3, 0.01, 'm'],
     legFrontPushForward: ['Front push forward', 0, 0.3, 0.01, 'm'],
     legFrontStride: ['Front stride', 0, 0.8, 0.01, 'm'],
+    legBackStance: ['Back stance depth', 0, 0.6, 0.01, 'm'],
     legFrontStrideLift: ['Stride lift', 0, 0.4, 0.01, 'm'],
     legFrontKneeLift: ['Knee lift', 0, 0.4, 0.01, 'm'],
     legFrontUnplantLift: ['Unplant lift', 0, 0.4, 0.01, 'm'],

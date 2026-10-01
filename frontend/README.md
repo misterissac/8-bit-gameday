@@ -474,7 +474,10 @@ each part, the bands' heights and widths, and where the twist reads (the band's
 
 The drive carries the whole one-piece body forward — hips, pelvis and torso
 together, which is the previous section's result and not negotiable — so by
-contact the batter has travelled **0.50 m** toward the pitcher. Two things had to
+contact the batter has travelled **0.34 m** toward the pitcher (the pelvis' own
+place on the dirt, taken off the posed skeleton from the set stance to the ball;
+it was 0.198 m before the drive was re-authored — see *The drive's forward travel
+is the rear stance's own pocket* below). Two things had to
 follow from that.
 
 **The stride.** The set stance is *squared*: both feet on the batter's own
@@ -1126,16 +1129,19 @@ the set with no speed, climbs without a backward frame, and turns over on the ba
 is not bounded on the way in. The budget is read at the *contact's* own yaw, and the cap
 falls as the pelvis turns (0.550 rig of it at 0.18 s, 0.418 at 0.36), so at every
 earlier yaw the cap stands above the ask and the ride is exactly the ask: a bound, not a
-shape. Swept at 0.01 s the ride reads 0.118 rig at 0.20 s climbing to **0.3647 on the
-ball**, its fastest frame the ball's own at **1.92 rig/s** (0.45, 0.50, 0.56, 0.64 …
-1.87, 1.90, 1.92), and only past it does the footing take the ride back — −1.22, −1.17,
-−1.11 … — one decaying run with no re-acceleration anywhere on the far side. The build
-this replaces had the ride peaking **0.5013 rig a fifth of a second before the ball**
-and already reversing on the frame the bat arrived on.
+shape. Swept at 0.005 s the ride reads 0.118 rig at 0.20 s climbing to **0.5984 on the
+ball** — the budget the rear stance's own depth was re-authored to leave it, see the
+next section — its fastest frame the ball's own at **3.91 rig/s** (0.62, 0.90, 1.27,
+1.72, 2.17, 2.65, 3.08, 3.45, 3.74, 3.89, 3.91 as the last tenth of a second runs in),
+and only past it does the footing take the ride back — **−1.05 rig/s on the first frame
+after the ball**, then −1.04, −1.01, −0.99, −0.96 … — one decaying run with no
+re-acceleration anywhere on the far side. The build this replaces had the ride peaking
+**0.5013 rig a fifth of a second before the ball** and already reversing on the frame
+the bat arrived on.
 
 The ground pays no more for it either. The rear socket's worst reach over its own span
-across the whole cycle is now **1.002, and on the contact frame** — 1.059 rig against
-the 1.058 limb, the leg straight, which is the pose a drive arriving is — where the
+across the whole cycle is now **0.997, and on the contact frame** — 1.0547 rig against
+the 1.0576 limb, the leg straight, which is the pose a drive arriving is — where the
 build this replaces peaked at 1.0824 a frame *before* the ball, and the one before that
 at 1.0885. Nothing is clamped on the way in, and the ride's own ceiling for the whole
 swing is the frame the bat meets it.
@@ -1144,6 +1150,80 @@ Front-loading the *bat's* rotation this way was built, measured and dropped (see
 section above) — the trail hand is on the handle and a bat turning faster early folds
 that elbow. Nothing here touches the bat's own path: the barrel's rotation is the same
 curve it was, and what moved is the body the hands and the grip ride.
+
+### The drive's forward travel is the rear stance's own pocket
+
+How far the batter travels into the ball is not a distance any key sets. It is the
+*budget the planted rear leg leaves the pelvis*: the socket rides forward and the swing
+turns it, and both carry it away from a footprint that does not move, so what the leg
+can still span over that footprint is the purse the pelvis spends (see `rearPlanted`,
+and the rear-foot block in `poseLegs`). A bigger ride therefore needs the rear foot
+standing further back, or a longer lead step to plant against — and both were bought:
+
+| | before | after |
+| --- | --- | --- |
+| the rear stance's own depth (`legBackStance`, new) | 0 | **0.14** rig |
+| the lead foot's stride (`legFrontStride`) | 0.24 | **0.38** rig |
+| the plant's own place in the stride phase (`strideEdgeFrac`) | 0.30 | **0.20** |
+| the ride on the ball | 0.3647 rig | **0.5984 rig** |
+| the pelvis' own place on the dirt, set stance to contact | 0.198 m | **0.341 m** |
+| the ride's own rate on the ball | 1.92 rig/s | **3.91 rig/s** |
+| the rear leg's own reach on the ball | 1.002 of its span | 0.997 |
+| the bat's rendered length on the ball | 1.190 m | 1.031 m |
+| the sweet spot's miss on the ball | 0.015 m | 0.017-0.021 m |
+
+**The stance's own depth is the new lever, and it is the cheap one.** It moves the rear
+shoe's ball back along the ground the batter is already standing on — `legBackStance` in
+`rearFootprint`, and the same number again in `poseLegs`'s stance so the shoe stands
+where its footprint says it does — without moving the body's own upper geometry at all.
+The pelvis then has that much more of its own footprint to ride over. It is also the
+lever with a hard ceiling, because the rear ankle is what walks: standing on its own
+footprint it comes to world x −0.446 at the contact with the depth at 0.14, −0.433 at
+0.18 and **−0.354 at 0.22 — past the box's inner line at −0.368, i.e. −0.014 m of
+clearance** where the shipped depth keeps **0.051 m** (0.079 m at the stance). 0.14 is
+where the line still stands clear with the foot at its own footprint.
+
+**The stride's own ceiling is the lead shoe.** The step is lengthened with the stance
+so the lead leg has something to stand on where the ride now arrives, and the price is
+how far the planted lead shoe is dragged round by the hips: read against the hips' own
+line it drifts 9.7 degrees at 0.36, **10.35 at 0.38**, 11.1 at 0.40 and 12.31 at 0.44
+— the suite's bound is 12, so 0.38 is the last step that clears it with the drift the
+walk itself already reads (5.7 through the follow-through, −2.9 through the recovery).
+
+**`strideEdgeFrac` is what makes the acceleration *visible*.** The ride's own envelope
+turns over on the ball either way (that is the section above), but where the stride's
+plant lands decides how much of the budget is spent before the swing even starts. At
+0.30 the body has already 0.44 m/s on it at 0.20 s and arrives with **1.98 m/s** — the
+speed curve flattens as it comes in (1.27, 1.48, 1.67, 1.82, 1.93, 1.98). At 0.20 the
+plant lands a fifth of the way into the stride phase instead, so the body is further
+back when the swing fires (z 0.7085 against 0.6683 at 0.20 s) and travels *further* in
+the same time, gaining speed at every frame the whole way in — **0.31, 0.44, 0.64,
+0.89, 1.18, 1.48, 1.76, 2.03, 2.24, 2.39, 2.45 m/s**, its fastest frame the ball's
+own. The two read the same pose at contact (0.4142 m) and the same pose all the way
+through the follow-through; only the pace on the way there moves.
+
+The cost of all of it is paid by the carry, and it is a pose the suite reads. The
+longer stride sinks the pelvis — **0.951 rig at 0.40 s against 1.011** (the spine
+bone's own height) — and the ball's place in a frame that has ridden past it draws the
+frame's own contact grip **0.08 rig higher** (the authored grip's own height there:
+0.911 rig to 0.990), while the trail shoulder rides 0.05 lower with the sink. The carry's chord lost its vertical component to that (0.041 rig
+at 0.44 s against 0.165) and the trail elbow folded to 148-156 degrees through 0.42-0.47 s
+— so the carry's own control was re-authored with the drive, 0.12 rig further forward
+(see the carry's section below).
+
+Everything else the suite reads is unchanged or better. The feet stay on the ground at
+every phase, the step lands straight at the front line (0.000 rig across the box, 0.998
+forward) with the rear toe 0.021 across, and the rear ankle keeps its 0.051 m of
+clearance to the inner line at the contact — the walk 0.22 pays for, above. The swing
+plane's own poses read as they did, the bat comes *further* off the body over the carry
+(the suite's own nearest-skin reading 0.351 rig at 0.44 s against its 0.25 bound, where
+the section below records 0.266 for the pose before this drive), the palms stay closed on the handle
+(0.0004-0.0024 rig off the axis, 0.999+ along it), and the flick guard reads better for
+the straighter arm: the lead elbow's own turns through the swing drop from **10 of its 9
+allowed to 4**. The one number that pays is the bat: the body arrives nearer the ball,
+so the pose braces against **1.031 m of bat where it braced against 1.190** — still well
+inside the suite's own floor on it, and the sweet spot still lands on the ball (0.017 to
+0.021 m off it, against 0.015 before).
 
 ### A limb that cannot hold a direction fails the suite
 
@@ -2562,6 +2642,108 @@ and the retrace is walking the swing's own poses, so the set stance, the load an
 out are the poses they were — the one baseline this work moves is the follow-through's own
 (`batter-follow-through.png`, where the bat now sits 0.09 rig further out and the knob has
 crossed the lead shoulder's plane).
+
+### The carry's own path is bulged, and the trail elbow stops folding
+
+The two sections above are levers applied *to* the pose: the reach bound pulls the
+grip back along its own chord and the carry round pushes it out again. The curve the
+hands are carried *along* between the contact and the finish is a third one, and it is
+the pose's own shape — a cubic through `geom.contactHands`, one control
+(`followHandsControl`) and `peakHands` — and its middle ran closer to the trailing
+shoulder than either end of it. Read off the posed skeleton at 0.01 s steps, the chord
+from that shoulder to the trail grip bottoms at **0.716-0.724 rig** across 0.43-0.47 s,
+**0.965-0.987 of that arm's own span**, against **0.810 on the ball** and **0.858 at the
+finish**: the grip comes 0.10 rig closer to its own shoulder in the middle of the carry
+than it is at either end of it, and an arm whose own chord shortens under it has one way
+to follow.
+
+The elbow is what pays, and the suite samples the frame the bill lands on:
+
+| | the ball (0.40 s) | 0.42 s | 0.43 s | 0.44 s | 0.45 s | 0.46 s | 0.47 s | the finish (0.54 s) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| the trail chord, shipped → bulged | 0.810 → 0.810 | 0.742 → **0.763** | 0.733 → **0.765** | 0.724 → **0.760** | 0.717 → **0.750** | 0.717 → **0.740** | 0.716 → **0.748** | 0.858 → 0.858 |
+| that arm's own span | 1.091 → 1.091 | 0.999 → **1.028** | 0.987 → **1.030** | 0.975 → **1.023** | 0.966 → **1.010** | 0.965 → **0.997** | 0.965 → **1.007** | 1.156 → 1.156 |
+| the trail elbow | 178.5 → 178.5 | 178.4 → 178.4 | **165.0 → 178.4** | **155.2 → 178.4** | **150.4 → 178.4** | **149.9 → 176.9** | **149.6 → 178.4** | 178.6 → 178.6 |
+| the elbow's drop below its shoulder | −0.69 → −0.69 | −0.43 → −0.43 | −0.15 → **−0.27** | −0.01 → **−0.21** | **+0.09 → −0.14** | **+0.18 → −0.07** | **+0.22 → 0.00** | +0.30 → +0.30 |
+
+The last row is a fraction of the upper arm's own length: the folded arm's elbow
+*rises* through the carry — level at 0.44 s and 0.22 of the bone above its own shoulder
+by 0.47 s — where the straight one comes down and back the whole way (−0.43, −0.27,
+−0.21, −0.14, −0.07, level at 0.47 s).
+
+The lever is two numbers on that control — 0.05 rig lower, 0.06 further in front of the
+batter — and nothing else: the reach bounds, the carry round and every authored constant
+of the pose are as they were. What it buys is read by the suite's own test:
+`the trail arm comes round the chest` asks for an elbow over 165 degrees at 0.44 s and
+read **155.2** on the path as shipped —
+
+    the carry: the trail arm reaches 97% of its span, elbow 155deg, upper arm 2/233
+    inside the trunk (worst -0.005)
+
+— and reads **102% of its span with a 178-degree elbow** on the bulged one, its finish
+and hold samples unchanged (116% / 179 degrees and 112% / 179) and nought of the trail
+upper arm's skin inside the trunk at any of the three (0 of 239, 0 of 244, 0 of 244).
+Those are the numbers the test's own comment measures there (104% / 175 degrees); the
+bulge is inside two points of them.
+
+The hands pay nothing for it. Both palms stay on the handle across the whole window
+(radial 0.0001-0.0017 against the 0.01 the suite holds them to, the handle running
+through the palm at 0.999+ of it) and the fists' grip reads 0.2528-0.2543 apart against
+the rig's own 0.253 — and the trail bicep comes out *better* for the move, not worse:
+nought of its 239 vertices inside the trunk from 0.43 s on, against 1-2 at −0.001 to
+−0.005 on the shipped path. The lead arm's own stretch through the carry (1.031-1.159 of
+its span) sits inside what the tree read there before the grip moved onto the handle
+(1.092-1.185), and its own test reads its bound on the way home, which this does not
+touch.
+
+**Nor can it reach the suite's own poses.** A cubic *is* its endpoint at v = 1 whatever
+its control, so the path's end — the follow-through the suite renders — is untouched by
+construction, and a sweep at 0.01 s shows the same thing sample by sample: the change is
+13 frames, 0.41 s to 0.53 s, with the contact frame (0.40 s), the follow-through (0.54 s)
+and the whole hold (0.55-0.72 s) reading identically to the last three decimals. Every
+pose the suite samples or screenshots lies outside those 13 frames, which is why no
+baseline moves.
+
+**What put the fold in the path is the grip coming onto the handle, and this pays that
+price back.** On the tree before the last one the same sweep reads the carry as the
+test's own comment describes it — the chord never under **0.746 rig (1.004 of the
+span)**, the elbow **178.4-178.6 degrees at every frame** of the window, its drop −0.73
+on the ball coming to −0.30 by 0.44 s — but the palms there sit **0.076-0.122 rig off the
+handle's axis**, which is the error the last commit put right (the bound is 0.01).
+Closing the fists *on* the handle moved the grip, and with it the chord: 0.746 → 0.716 at
+the window's deepest, 1.004 → 0.965 of the span, and the elbow 178.4 → 155.2 on the
+suite's own sample. The bulge puts the chord back where the straight arm had it —
+0.997-1.030 of the span, at or inside that tree's own 1.004-1.071 — *with* the palms
+closed on the handle, so the two readings are held at once rather than traded. It moves
+nothing outside 0.41-0.53 s either way; the readings the suite still reddens on are the
+reset's and the stance's own, and they are what the sections above document.
+
+**The drive moved it again, and the same lever was re-set.** The drive's own
+re-authoring (see *The drive's forward travel is the rear stance's own pocket*) rides
+**0.234 rig further into the ball** and sinks the pelvis 0.06 rig with the longer
+stride, so the trail shoulder comes down 0.05 rig while the frame's own contact grip
+rises 0.08 — and the chord this section's bulge was measured against came back that much
+shorter: read on the control the bulge shipped with, the trail chord ran
+**0.716-0.725 rig (0.964-0.976 of the arm's own span)** across 0.42-0.47 s with the
+elbow **148.3-155.9 degrees** and its direction *up* (+0.169 of the upper arm's own
+length at 0.44 s, where the bulge's own reading was level). The fix is the same lever
+with a bigger number — **0.12 rig further forward, to −0.54** — and the reason it is the
+forward one is read one lever at a time at the 0.44 s sample: 0.08 rig down buys 2.2
+degrees of elbow, 0.08 up costs 1.1, 0.06 round the batter's own side costs 1.1 and the
+same back across him 3.5, while **0.06 forward buys 22 and 0.12 buys 27.3**. The chord
+is almost all of it along the line the swing is already travelling, so depth is the only
+direction that lengthens the arm without moving it off the bat's own plane.
+
+At −0.54 the finished readings are the shape the table above is about: the trail chord
+**1.02-1.04 of the span across 0.43-0.47 s**, the elbow **178.4-178.5 degrees** and its
+direction level-to-down (−0.03 of the bone), the *lead* arm straightening with it
+(152.1 at 0.42 s to 178.4 by 0.425 s, where the shipping control left it 147.6-174.1 and
+turning twice), the palms on the handle (radial 0.0004-0.0024 rig, 0.999+ along it), and
+the trail upper arm no deeper in the trunk than before (0-8 of its 230 vertices). The
+suite's own sample reads **103% of that arm's span with a 178-degree elbow** and its own
+nearest-skin reading over the carry is **0.351 rig** at 0.44 s — better than the 0.266
+recorded above, against the same 0.25 bound — and the carry's own crossing of the lead
+shoulder's plane moves a thousandth (0.517 against 0.512, its bound 0.2).
 
 ### The kit the model ships with, put right
 

@@ -321,7 +321,19 @@ export const DEFAULT_TUNING = {
     legFrontKneeForward: 0.01,
     legBackPushForward: 0.05,
     legFrontPushForward: 0.02,
-    legFrontStride: 0.24,
+    legFrontStride: 0.38,
+    // How far *deeper* than the hips' own width the set stance plants the rear
+    // foot. The two feet stand under their own sockets, one behind the other, so
+    // the stance's own spread is the pelvis's width — the rear foot 0.28 rig
+    // behind the body's centre and the lead one 0.28 in front of it — and the
+    // rear foot is the one the drive rides over: its footprint is pinned where
+    // the stance planted it, so the span it leaves the pelvis is the purse the
+    // body's whole forward travel is spent from (see the rear-foot block in
+    // Batter.jsx). Every unit here is a unit of ride the drive can spend, and
+    // the lead foot's step is lengthened with it (legFrontStride above) so the
+    // two ends of the batter stand the same distance apart as he arrives as
+    // they did at the set. Read the design log for the numbers.
+    legBackStance: 0.14,
     // Fraction of the pitcher's windup that plays before the batter's front
     // leg starts its step (0 = step the moment the windup starts, 1 = step
     // only at release). The delayed step plants into the swing.
@@ -361,12 +373,16 @@ export const DEFAULT_TUNING = {
     swingBackTilt: 0.08,
     upperDriveForward: 0.32,
     // Fraction of that budget the body has spent by the moment the front foot
-    // plants (30%: a clear forward ride with the foot), handing off at that same
-    // speed into the swing's own acceleration so the surge launches from an
-    // already-moving body instead of a choppy speed jump. It is the one number
-    // that shares the drive between the stride and the swing: raised, more of the
-    // body's travel happens with the step and less of it fires into the ball.
-    strideEdgeFrac: 0.3,
+    // plants (20%: a clear forward ride with the foot, and no more), handing off
+    // at that same speed into the swing's own acceleration so the surge launches
+    // from an already-moving body instead of a choppy speed jump. It is the one
+    // number that shares the drive between the stride and the swing: raised, more
+    // of the body's travel happens with the step and less of it fires into the
+    // ball; lowered, the step becomes a plant and the whole of the body's travel
+    // is spent between the plant and the ball. At 0.20 the swing phase carries
+    // four fifths of it and the pelvis's fastest frame reads nearly twice what
+    // it did at 0.30, which is the acceleration the request is for.
+    strideEdgeFrac: 0.2,
     // Where, through the post-contact return arc (contact -> stance), the
     // body's backward speed peaks. Higher pushes the peak of the return
     // motion closer to the end of recovery, so the body holds its extended

@@ -1355,7 +1355,7 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
   const rearFootprint = (() => {
     const sinS = Math.sin(setYaw)
     const cosS = Math.cos(setYaw)
-    const ankleZ = -sign * hipHalfWidth * sinS + SET_ANKLE_Z * cosS
+    const ankleZ = -sign * hipHalfWidth * sinS + SET_ANKLE_Z * cosS - settings.legBackStance
     return {
       x: cosS * toeOffset.x + sinS * toeOffset.z,
       y: restAnkleY + toeOffset.y,
@@ -2033,7 +2033,11 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     // before the step and after it.
     const stanceFoot = (side) => {
       const x = side * hipHalfWidth
-      return { x: 0, z: -x * sinS + SET_ANKLE_Z * Math.cos(setYaw) }
+      // The rear foot stands the stance's own extra depth further back (see
+      // settings.legBackStance): it is the foot the drive rides over, so its
+      // place on the dirt is the purse the body's forward travel is spent from.
+      const deeper = side === sign ? settings.legBackStance : 0
+      return { x: 0, z: -x * sinS + SET_ANKLE_Z * Math.cos(setYaw) - deeper }
     }
     const backStance = stanceFoot(sign)
     const frontStance = stanceFoot(-sign)
@@ -3169,10 +3173,53 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       // arm (see TRAIL_REACH_CLEAR) and held inside its reach (see TRAIL_REACH_MAX).
       -FINISH_DEPTH,
     ]
+    // The carry's own bulge, and it is the *trail* arm's: straight off the ball
+    // the grip passes closer to the trail shoulder than at either end of the
+    // path — the drive's forward ride is still arriving there and the bat is
+    // coming round across the chest — so the trail chord bottoms out in the
+    // window between the contact and the finish and the arm can only follow it
+    // by folding. How far it bottoms out is the *drive's* number, and the new one
+    // is the deeper: riding 0.234 rig further into the ball (0.34 m of travel
+    // where the drive this pose was authored on travelled 0.20 — see the
+    // rear-foot budget in poseLegs) the frame's own contact grip sits 0.08 rig
+    // higher — the geometry has to reach a ball the travelled body is further
+    // past — while the
+    // trail shoulder rides 0.05 rig lower on the sink the longer stride buys, so
+    // the chord loses its *vertical* component (0.041 rig of it at 0.44 s,
+    // against 0.165 before the drive) though its own forward reach is unchanged.
+    // Measured on the control this pose was authored with, the trail chord reads
+    // 0.716-0.725 rig (0.964-0.976 of the arm's own span) at 0.42-0.47 s — 0.96
+    // of it on the ball and 1.16 at the finish — with the elbow 148.3-155.9
+    // degrees and its direction *up* (+0.17 of the upper arm's own length at
+    // 0.44 s), which is the stretch the suite's own reading fails (`the trail arm
+    // comes round the chest`, whose 0.44 s sample asks for a >165 degree elbow: it
+    // reads 151.1 there).
+    //
+    // Depth is the direction that puts the chord back, because the chord is
+    // almost all of it *along the way the swing is travelling* — and of the four
+    // ways the control can move, it is the only one that does (measured one lever
+    // at a time at the 0.44 s sample, on a 0.06-0.08 rig move each: 0.08 down
+    // buys 2.2 degrees and 0.08 up costs 1.1; 0.06 round the batter's own side
+    // costs 1.1 and the same back across him 3.5; 0.06 *forward* buys 22 and 0.12
+    // buys 27.3). Pushed 0.12 forward the same path bulges further out in front of
+    // the batter through that window: the trail chord reads 1.02-1.04 rig
+    // (1.02-1.04 of the span) across 0.43-0.47 s with the elbow 178.4-178.5
+    // degrees and its direction level-to-down (-0.03), and the *lead* arm — whose
+    // chord the same push lengthens — straightens with it (152.1 at 0.42 s,
+    // 178.4 by 0.425 where the old control left it 147.6-174.1 and turning
+    // twice). The palms stay on the handle for the whole of it (radial
+    // 0.0004-0.0024 rig, along it 0.999+), the trail upper arm reads no more of
+    // itself inside the trunk than before (0-8 of its 230 vertices), and the
+    // carry's own crossing of the lead shoulder's plane moves a thousandth (0.512
+    // to 0.517 at 0.44 s, against the 0.2 the suite holds it above). The finish
+    // and the hold are untouched: a Bezier is its endpoint at v = 1 whatever the
+    // control, so 0.54 s and 0.68 s measure identically, and the carry sits
+    // between two of the suite's own screenshot phases (0.40 s and 0.54 s) rather
+    // than on either.
     const followHandsControl = [
       -sign * 0.26,
-      geom.contactHands[1] + 0.04,
-      -0.36,
+      geom.contactHands[1] - 0.01,
+      -0.54,
     ]
     // The hold is the finish *carried on*, not a pose of its own: the bat's own
     // path walks the hands a little further round to the batter's own side and a
