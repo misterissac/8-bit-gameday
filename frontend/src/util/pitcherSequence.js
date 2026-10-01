@@ -641,7 +641,7 @@ const KEYS = [
     // fallen" looks like from the outside.
     t: 0.92,
     clasp: true,
-    hipYaw: -2.060, chestYaw: -2.140, lean: 0.06, leanSide: 0.050, hipY: -0.045, drive: -0.020,
+    hipYaw: -2.060, chestYaw: -2.140, lean: 0.06, leanSide: 0.050, hipY: -0.045, drive: -0.040,
     headPitch: 0.035, curl: 1.45,
     pivot: { x: 0.113, lift: 0, z: 0.198, yaw: -1.525, bend: 0.25, hang: 0 },
     front: { x: -0.169, lift: 1.14, z: 0.008, yaw: -0.10, bend: 0.42, hang: 1, cock: -0.30 },
@@ -705,17 +705,17 @@ const KEYS = [
     // the browser suite's reading of the lean's *speed*, which is the fastest of the
     // delivery on the release frame).
     t: 1.00,
-    hipYaw: -1.450, chestYaw: -1.600, lean: 0.10, leanSide: 0.02, hipY: -0.09, drive: 0.17,
+    hipYaw: -1.530, chestYaw: -1.720, lean: 0.10, leanSide: 0.02, hipY: -0.09, drive: 0.10,
     headPitch: 0.04,
-    pivot: { x: 0.118, lift: 0, z: 0.200, yaw: -0.750, bend: 0.26, hang: 0 },
+    pivot: { x: 0.118, lift: 0, z: 0.200, yaw: -0.850, bend: 0.26, hang: 0 },
     // The lift is the *knee's* own height while the leg is carried (see the pose
     // assembly's ``hang``): a carried foot hangs its shin plumb from the knee, so the
     // height a kick's foot rides at is set by how high the knee goes, and the knee
     // has to go higher as the hips drop under it — a leg left at the kick's own
     // number would hang its foot into the dirt by the reach.
     front: { x: -0.166, lift: 0.60, z: -0.180, yaw: 0.0, bend: 0.16, hang: 1, cock: 0.10 },
-    ball: [0.30, 0.94, 0.12], aim: [0.30, -0.80, 0.52], curl: 1.4,
-    elbow: [0.34, 1.20, 0.06],
+    ball: [0.28, 0.96, 0.15], aim: [0.30, -0.80, 0.52], curl: 1.4,
+    elbow: [0.34, 1.20, 0.08],
     glove: [0.130, -0.110, -0.400], gloveAim: [0.0, -0.70, -0.71], gloveCurl: 0.8,
     gloveElbow: [-0.26, 0.16, -0.18],
     glovePalm: [0.06, -0.14, -0.99],
@@ -739,12 +739,12 @@ const KEYS = [
     // by — because what the reach is is the body's turn and its travel (see the
     // break's own note above, and the finish below for the other end of it).
     t: 1.12,
-    hipYaw: -0.500, chestYaw: -0.960, lean: 0.16, leanSide: 0.0, hipY: -0.20, drive: 0.40,
+    hipYaw: -0.490, chestYaw: -0.980, lean: 0.16, leanSide: 0.0, hipY: -0.20, drive: 0.405,
     headPitch: 0.05,
     pivot: { x: 0.130, lift: 0, z: 0.215, yaw: 0.010, bend: 0.34, hang: 0 },
-    front: { x: 0.174, lift: 0.72, z: -0.553, yaw: 0.500, bend: 0.30, hang: 1, cock: 0.25 },
-    ball: [0.34, 1.13, 0.02], aim: [0.24, 0.30, 0.92], curl: 1.3,
-    elbow: [0.40, 1.27, -0.04],
+    front: { x: 0.174, lift: 0.72, z: -0.610, yaw: 0.500, bend: 0.30, hang: 1, cock: 0.25 },
+    ball: [0.32, 1.15, 0.06], aim: [0.24, 0.30, 0.92], curl: 1.3,
+    elbow: [0.38, 1.25, 0.00],
     glove: [0.010, -0.170, -0.495], gloveAim: [-0.20, -0.88, -0.43], gloveCurl: 0.3,
     gloveElbow: [-0.30, -0.05, -0.30],
     glovePalm: [0.10, -0.16, -0.98],
@@ -762,7 +762,7 @@ const KEYS = [
     // off is still standing tall with the shoulders over the plate.
     t: 1.24,
     release: true, slot: 1,
-    hipYaw: 0.12, chestYaw: -0.18, lean: 0.30, leanSide: 0.0, hipY: -0.26, drive: 0.74,
+    hipYaw: 0.16, chestYaw: -0.22, lean: 0.30, leanSide: 0.0, hipY: -0.26, drive: 0.725,
     headPitch: 0.06,
     pivot: { x: 0.150, lift: 0.05, z: 0.050, yaw: 0.050, bend: 0.28, hang: 0 },
     // The foot has reached the place it will land on and is on its way down: the
@@ -771,8 +771,8 @@ const KEYS = [
     // The cock's own ball is *above and behind the shoulder*, which is what a
     // cocked arm holds: written off the release, that is well below it and well
     // back along it, not a hand's width higher than the release itself.
-    ball: [-0.03, -0.14, 0.60], aim: [0.10, 0.62, 0.78], curl: 1.0,
-    elbow: [0.44, 0.24, 0.58],
+    ball: [-0.02, -0.12, 0.76], aim: [0.10, 0.58, 0.81], curl: 1.0,
+    elbow: [0.44, 0.20, 0.68],
     glove: [-0.190, -0.260, -0.420], gloveAim: [-0.40, -0.85, -0.34], gloveCurl: 0.3,
     gloveElbow: [-0.32, -0.08, -0.24],
     glovePalm: [0.14, -0.20, -0.97],
@@ -782,12 +782,12 @@ const KEYS = [
     // is nearly on the ball's own line.
     t: 1.30,
     release: true, slot: 1,
-    hipYaw: 0.46, chestYaw: 0.27, lean: 0.44, leanSide: 0.0, hipY: -0.17, drive: 0.93,
+    hipYaw: 0.48, chestYaw: 0.26, lean: 0.44, leanSide: 0.0, hipY: -0.17, drive: 0.925,
     headPitch: 0.08,
     pivot: { x: 0.175, lift: 0.06, z: -0.280, yaw: 0.060, bend: 0.24, hang: 0 },
     front: { x: 0.000, lift: 0.17, z: -0.940, yaw: -0.460, bend: 0.30, hang: 0, cock: 0 },
-    ball: [0.03, 0.06, 0.22], aim: [0.02, 0.02, -0.99], curl: 0.9,
-    elbow: [0.34, 0.0, 0.40],
+    ball: [0.02, 0.04, 0.24], aim: [0.02, 0.02, -0.99], curl: 0.9,
+    elbow: [0.34, -0.02, 0.42],
     glove: [-0.250, -0.280, -0.400], gloveAim: [-0.30, -0.87, -0.39], gloveCurl: 0.3,
     gloveElbow: [-0.34, -0.10, -0.20],
     glovePalm: [0.15, -0.25, -0.96],
@@ -797,7 +797,7 @@ const KEYS = [
     // fingers are opening off it.
     t: AUTHORED_RELEASE_TIME,
     release: true, slot: 1,
-    hipYaw: 0.60, chestYaw: 0.46, lean: AUTHORED_RELEASE_LEAN, leanSide: 0.0, hipY: -0.14, drive: 1.00,
+    hipYaw: 0.62, chestYaw: 0.48, lean: AUTHORED_RELEASE_LEAN, leanSide: 0.0, hipY: -0.14, drive: 1.00,
     headPitch: 0.10,
     pivot: { x: 0.200, lift: 0.07, z: -0.360, yaw: 0.090, bend: 0.20, hang: 0 },
     front: { x: 0.000, lift: 0.155, z: -0.940, yaw: -0.600, bend: 0.28, hang: 0, cock: 0 },
@@ -855,7 +855,7 @@ const KEYS = [
     // falling over, which is a follow-through's own shape.
     t: 1.42,
     release: true, slot: 1,
-    hipYaw: 0.86, chestYaw: 1.10, lean: 0.44, leanSide: 0.0, hipY: -0.15, drive: 1.16,
+    hipYaw: 0.86, chestYaw: 1.10, lean: 0.44, leanSide: 0.0, hipY: -0.15, drive: 1.17,
     headPitch: 0.16,
     // The drive leg is *thrown* out from under the body rather than left behind: the
     // shoe is off the plate's own line and a good hand's width up, and the leg has
@@ -891,7 +891,7 @@ const KEYS = [
     // throwing side of the line a little longer than a step through would.
     t: 1.48,
     release: true, slot: 1,
-    hipYaw: 0.95, chestYaw: 1.350, lean: 0.37, leanSide: 0.0,    hipY: -0.13, drive: 1.22,
+    hipYaw: 0.95, chestYaw: 1.350, lean: 0.37, leanSide: 0.0,    hipY: -0.13, drive: 1.24,
     headPitch: 0.15,
     // The swing's own widest frame: the foot is as far out to the throwing side of the
     // body as it ever gets — 0.73 of a rig unit out from the hip socket it hangs from,
@@ -942,7 +942,7 @@ const KEYS = [
     // to landing.
     t: 1.54,
     slot: 1,
-    hipYaw: 1.01, chestYaw: 1.550, lean: 0.32, leanSide: 0.0,    hipY: -0.13, drive: 1.30,
+    hipYaw: 1.01, chestYaw: 1.550, lean: 0.32, leanSide: 0.0,    hipY: -0.13, drive: 1.32,
     headPitch: 0.14,
     // ...and the arc keeps coming: the leg is up and coming round the body's own line,
     // out on the circle its own length draws and still a hand's width up, with the
