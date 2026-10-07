@@ -321,7 +321,7 @@ export const DEFAULT_TUNING = {
     legFrontKneeForward: 0.01,
     legBackPushForward: 0.05,
     legFrontPushForward: 0.02,
-    legFrontStride: 0.38,
+    legFrontStride: 0.50,
     // How far *deeper* than the hips' own width the set stance plants the rear
     // foot. The two feet stand under their own sockets, one behind the other, so
     // the stance's own spread is the pelvis's width — the rear foot 0.28 rig
@@ -338,8 +338,8 @@ export const DEFAULT_TUNING = {
     // leg starts its step (0 = step the moment the windup starts, 1 = step
     // only at release). The delayed step plants into the swing.
     strideDelayFrac: 0.72,
-    legFrontStrideLift: 0.07,
-    legFrontKneeLift: 0.08,
+    legFrontStrideLift: 0.10,
+    legFrontKneeLift: 0.12,
     // How far the *lead* foot comes off the ground once the swing fires. It is 0, and
     // the rule behind the number is the one a batter's lead foot follows: the heel is
     // on the floor from the plant through the follow-through, and what the foot does
@@ -350,10 +350,9 @@ export const DEFAULT_TUNING = {
     // into the plant, and the toe lift below, which is a lift with the heel down.
     legFrontUnplantLift: 0.03,
     backFootPivot: 0.75,
-    // How much of the body's own turn the lead foot takes. At 1 the shoe's yaw is the
-    // hips' own, so the foot pivots open with the body it is standing under rather
-    // than holding its set angle while the batter turns over it (0.2, which left the
-    // shoe pointing 80% of the way to the set all swing long).
+    // How much of the torso's own opening turn the lead foot and leg take. At 1
+    // the shoe and knee pivot open with the torso as the swing opens rather than
+    // remaining locked to the hips or holding the set angle.
     frontFootPivot: 1,
     // ...and how far the lead foot's toes lift as the swing arrives: the foot tips up
     // about its own ankle through the follow-through, so the toe end points up out of
@@ -467,7 +466,7 @@ const clampTuningValue = (group, key, value) => {
   if (group === 'pitch' && ['smokeRedWindowTop', 'smokeGreyBlackPower', 'smokeToneBoostMax', 'smokeWhiteBoost'].includes(key)) return Math.max(0, value);
   if (group === 'battedBall' && ['throwSpeedMph', 'maxRunSpeedMph', 'trailFadeTime', 'traceFadeTime'].includes(key)) return Math.max(0.001, value);
   if (group === 'battedBall' && key === 'groundRollSpeedMph') return Math.max(0, value);
-  if (group === 'batter' && ['fadeEndDistance', 'swingLead', 'followThrough', 'followHold', 'recoveryTime', 'loadTime', 'leanOutTime', 'leanLead', 'loadLead'].includes(key)) return Math.max(0, value);
+  if (group === 'batter' && ['fadeEndDistance', 'swingLead', 'followThrough', 'followHold', 'recoveryTime', 'loadTime', 'leanOutTime', 'leanLead', 'loadLead', 'frontFootPivot'].includes(key)) return Math.max(0, value);
   if (group === 'batter' && key === 'returnPeakFrac') return Math.min(0.85, Math.max(0.15, value));
   return value;
 };
@@ -487,6 +486,12 @@ export const mergeTuning = (saved) => {
   // speed is never permanently stuck in 5x slow-mo.
   if (merged.playback && Math.abs(merged.playback.timeScale - 0.2) < 0.001) {
     merged.playback.timeScale = DEFAULT_TUNING.playback.timeScale;
+  }
+  // Sanitize: frontFootPivot previously defaulted to 0.2 (which kept the lead foot
+  // locked sideways facing the plate); migrate old saved values of 0.2 to the new
+  // default (1.0) so the lead foot pivots open with the torso and leg to face forwards.
+  if (merged.batter && Math.abs(merged.batter.frontFootPivot - 0.2) < 0.001) {
+    merged.batter.frontFootPivot = DEFAULT_TUNING.batter.frontFootPivot;
   }
   return merged;
 };

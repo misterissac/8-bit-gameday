@@ -986,7 +986,7 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
     }, [comparisonPlays]);
 
     return (
-        <Canvas camera={{ position: initialCam?.position ?? [0, 1.6, 2.2], fov: 60 }}>
+        <Canvas shadows camera={{ position: initialCam?.position ?? [0, 1.6, 2.2], fov: 60 }}>
             <CameraController snapTrigger={snapTrigger} controlsRef={controlsRef} />
 
             {/* Persists the view to localStorage so it survives page reloads */}
@@ -1002,7 +1002,21 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
             
             {/* Lighting */}
             <ambientLight intensity={0.5} />
-            <directionalLight position={[10, 10, 5]} intensity={1} castShadow />
+            <directionalLight
+                position={[10, 10, 5]}
+                intensity={1}
+                castShadow
+                shadow-mapSize-width={2048}
+                shadow-mapSize-height={2048}
+                shadow-camera-left={-15}
+                shadow-camera-right={25}
+                shadow-camera-top={15}
+                shadow-camera-bottom={-15}
+                shadow-camera-near={0.5}
+                shadow-camera-far={60}
+                shadow-bias={-0.0005}
+                shadow-normalBias={0.02}
+            />
             
             {/* Environment to make it look a bit nicer out of the box */}
             <Sky sunPosition={[100, 20, 100]} />

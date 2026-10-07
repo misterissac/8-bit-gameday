@@ -12,9 +12,11 @@ import * as THREE from 'three'
 //   * the face wears no eyebrows: the eyes are bare plates on it, so a brow is laid over
 //     the top of each one, in the face's own tone taken down.
 //   * the eyes are tall enough that their tops run up behind the brim, so they are
-//     scaled down until they sit clear under it — and *flat* plates on a face that
-//     curves, so their edges sink into it and the nose takes their inner corners: each
-//     plate is then conformed to the face it is drawn on.
+//     scaled down until they sit clear under it — and the width that shrink costs each
+//     plate is handed back outward, about the corner on the nose's side, so the eye is
+//     wider ("a little wider", and only the eye: the pair stay where the model drew them)
+//     — and *flat* plates on a face that curves, so their edges sink into it and the nose
+//     takes their inner corners: each plate is then conformed to the face it is drawn on.
 //   * the jersey has no front on it, so its opening is added: a line down the chest from
 //     the collar to the belt, with hollow buttons on it — drawn in the cloth's own
 //     material and tone, so it is the fabric taken down rather than a grey shape laid over
@@ -60,7 +62,7 @@ import * as THREE from 'three'
 //     stands proud of the collar: z 0.1003 at y 1.5586. So an opening read off the
 //     body's front near the midline finds the neck above the collar and the jaw above
 //     that, which is how a line drawn to 1.588 ended up on the face.
-//   the jersey's front, from the trunks' band (y 1.258-1.293) up to the collar: a line
+//   the jersey's front, from the belt (y 1.055) up to the collar: a line
 //     of vertices down the chest's centre, x 0.000, whose front runs z 0.101 at the
 //     belly (y 1.30), in to 0.076 at the sternum (y 1.46) and back out to 0.100 at the
 //     chest (y 1.56). The cloth is one flat colour in the atlas, read off it there:
@@ -201,13 +203,46 @@ const EYE_TOP_MAX_Y = 1.9
 // Read as a target rather than as a factor, so the pass is idempotent: an eye already
 // under the brim is left alone, and one that is somehow over it is taken down without a
 // second pass compounding the first.
-// The eye is taken down to here and no further: the brim's underside is at 1.7954, so
-// this leaves 0.025 rig of clearance under it — and leaves the room *above* the eye a
-// brow needs, which is the whole of what there is: skin (BROW_GAP_Y) and the brow itself
-// (BROW_DEPTH_Y and its arch) come to 0.029. Measured, the eye ends up 0.089 rig tall,
-// against the 0.094 the reference model's own proportions call for.
-const EYE_TOP_CLEAR_Y = 1.7664
+//
+// ...and the brim it is read under is the *worn* headgear's, because the two hats are
+// not the same height: the helmet's band runs y[1.7954, 1.821] and the cap's runs
+// y[1.7835, 1.8083], each measured off its own mesh as the shell that juts over the face
+// (the numbers are the model's own, read the way the block at the top of this file reads
+// them — a cap is worn lower over the eyes than a helmet is, and it is the brim that
+// hides an eye, not the hat). A pitcher's body and a batter's are the same body with the
+// same face on it, so the eyes are put right against whichever brim is above them.
+const BRIM_UNDERSIDE = { helmet: 1.7954, cap: 1.7835 }
+// How much of the room under that brim is spent on the brow: the eye's own top is taken
+// down to here, which leaves 0.025 rig of clearance under a helmet's brim — and leaves
+// the room *above* the eye that a brow needs, which is the whole of what there is: skin
+// (BROW_GAP_Y) and the brow itself (BROW_DEPTH_Y and its arch) come to 0.029. Measured
+// under the helmet, the eye ends up 0.089 rig tall, against the 0.094 the reference
+// model's own proportions call for.
+const EYE_BROW_ROOM = 0.029
+// ...and the brow's own ceiling: a hair under the brim's underside, which is the room
+// the batter's own eye was read with.
+const BROW_BRIM_CLEAR = 0.0022
 const EYE_SCALE_MIN = 0.5 // ...and never below this share of its own size, whatever the brim says
+// ...and how *wide* each one of them is, which is not a thing the brim has any say in
+// either. Coming down to clear the brim costs an eye a little under half of its own
+// width — the two it is scaled about are uniform (see the shrink above: one scale, its
+// own bottom edge as the pivot) — so each plate is stretched along x by this share of
+// its own width, given *back* in the one direction the face has room for it: outward.
+//
+// The stretch is about the plate's own *inner* corner, the one on the nose's side, so
+// what grows is the eye itself — the plate ends up wider and larger, with the line the
+// pair are drawn on, and the gap between the two of them, left exactly where the model
+// drew it. That is the whole of the difference between a wider eye and a wider pair: a
+// shift moves both corners out and takes the two eyes apart, and this moves only the
+// outer one and leaves the pair alone.
+//
+// Measured on the batter's face: the plate's own width falls from 0.079 as shipped to
+// 0.0439 under the brim and comes back to 0.0549 — the inner corner held at 0.0355, the
+// outer taken from 0.0794 to 0.0904 (the model's own outer corner is at 0.097) — and the
+// plate's own shape, 0.516 wide-of-tall as the model draws it, reads 0.64. What was
+// asked for is "a little wider", so it is a share of the width rather than a size: the
+// eye is the model's own oval, a quarter wider across, and never a round one.
+const EYE_WIDER_X = 0.25
 // ...and then out onto the face: a plate is flat and the face is not, which is what put
 // *half* of each eye's 53 vertices inside it — 36 of 53 on the one measured, up to 0.026
 // rig deep at the inner corner, where the plate's own edge runs into the cheek. The
@@ -239,9 +274,10 @@ const EYE_FACE_CLEAR = 0.003
 // 0.0136 the brim used to leave room for.
 const BROW_GAP_Y = 0.0092 // skin between the top of the eye and the bottom of the brow
 const BROW_DEPTH_Y = 0.016 // ...and how deep the brow itself is (0.0160 as drawn)
-const BROW_TOP_MAX_Y = 1.7932 // never past here: the brim's underside is at 1.7954, the
-// ...suite wants 0.002 of room under it, and the brow's own middle arches BROW_ARCH above
-// ...the rest of it
+// (Its own ceiling — never past the brim's underside, less the 0.0022 of room under it
+// that leaves, while its middle arches BROW_ARCH above the rest of it — is the brim's
+// own less BROW_BRIM_CLEAR, handed to `addBrows`; see BRIM_UNDERSIDE for the two brims
+// there are.)
 // How much longer than its own eye a brow is at each end: in towards the nose, and out
 // towards the ear, which is the end that runs on towards the temple.
 const BROW_OVERHANG_IN_X = 0.010
@@ -314,11 +350,10 @@ const LINE_HALF_WIDTH = 0.0015 // 0.003 rig across: a line drawn on the cloth, n
 // the cloth's own tone — that keeps the line reading as a seam in the fabric rather than
 // a strip laid on it.
 const LINE_LIFT = 0.005
-const LINE_FROM_Y = 1.293 // the belt's own top edge, read off the model's texture (the
-// ...trunks' band runs y 1.258-1.293 — see `the twist reads at the waistband`): the
-// ...opening ends just before the belt, not short of it and not on it
-const LINE_TO_Y = 1.548 // ...and up to the jersey's *own* collar, whose rim is at 1.5544
-const LINE_BANDS = 24 // how many rings of the line follow the surface
+const LINE_FROM_Y = 1.055 // the belt's own top edge (the jersey hem meets the belt band at y 1.055):
+// ...the opening extends from collar all the way down to reach the belt
+const LINE_TO_Y = 1.512 // ...terminating cleanly below the collar notch (1.5158) so it stays on fabric
+const LINE_BANDS = 48 // how many rings of the line follow the surface
 // The buttons: hollow rings, on the cloth beside the line, from the collar down to the
 // belt. A men's jersey buttons on the wearer's right, which is the model's -x.
 //
@@ -330,7 +365,7 @@ const LINE_BANDS = 24 // how many rings of the line follow the surface
 // of rings down the seam is a jersey that buttons.
 const BUTTON_COUNT = 6
 const BUTTON_X = -0.0145
-const BUTTON_MARGIN_Y = 0.006 // the first and last sit this far inside the line's own ends
+const BUTTON_MARGIN_Y = 0.012 // the first and last sit this far inside the line's own ends
 const BUTTON_OUTER_RADIUS = 0.0115
 const BUTTON_INNER_RADIUS = 0.0055
 const BUTTON_SEGMENTS = 12
@@ -753,14 +788,14 @@ function shoeColourOf(body, shells) {
 // against the collar's 0.0143, with the jaw above that. So a front read off the whole
 // body finds the neck the moment the line reaches the collar and the jaw above it —
 // which is how the opening came to be drawn up onto the face.
-const CHEST_TOP_MAX_Y = 1.56 // the jersey's own collar rim is at 1.5544
+const CHEST_TOP_MAX_Y = 1.52 // stop below the jersey collar notch (1.5158)
 // The bones that carry the torso's own cloth. The chest is read off the triangles those
 // bones hold, rather than off a shell or a column of vertices, because the body is one
 // mesh: the *arms* swing across the front of the belly (measured in the set stance, the
 // lead forearm passes 0.26 rig in front of the opening's lower half) and the *neck*
 // stands proud of the collar, so a front read off whatever is nearest the midline finds
 // an arm or the neck instead of the cloth.
-const TORSO_BONES = ['spine', 'spine001', 'spine002', 'spine006',
+const TORSO_BONES = ['spine', 'spine001', 'spine002',
   'shoulderL', 'shoulderR', 'pelvisL', 'pelvisR']
 const CHEST_FRONT_MIN_Z = 0.02 // ...and how far out a triangle has to reach to be its front
 const CHEST_WINDOW = 0.045 // how far either way of a station a covering triangle may sit
@@ -1319,7 +1354,7 @@ function faceToneOf(body, eyes) {
 // The brows, as one small skinned mesh over both eyes: a bar laid across the top of
 // each eye plate, arched, and read off the face's own front at every station it is
 // drawn at, so it cannot float off the face.
-function addBrows(body, eyes, face) {
+function addBrows(body, eyes, face, topMax) {
   const position = body.geometry.getAttribute('position')
   const index = body.geometry.getIndex()
   const own = new Set(eyes.flatMap((eye) => eye.vertices))
@@ -1344,7 +1379,7 @@ function addBrows(body, eyes, face) {
     // The brow rides *above* the eye's own top edge, with skin between the two of them:
     // a bar laid over the top of the eye reads as more eye, which is what it looked like.
     const bottom = scaledBox.y[1] + BROW_GAP_Y
-    const top = Math.min(bottom + BROW_DEPTH_Y, BROW_TOP_MAX_Y - BROW_ARCH)
+    const top = Math.min(bottom + BROW_DEPTH_Y, topMax - BROW_ARCH)
     const half = (top - bottom) / 2
     const middle = (bottom + top) / 2
     const low = []
@@ -1675,7 +1710,7 @@ function addShoeDetail(body, { shells, shoe, pant }) {
  *   right-handed batter, whose trailing arm is the model's right one
  * @returns {object} what was done, for the tests and the debug drawer
  */
-export function applyBatterLook(model, { sign = 1 } = {}) {
+export function applyBatterLook(model, { sign = 1, headgear = 'helmet' } = {}) {
   let helmet = null
   let body = null
   model.traverse((node) => {
@@ -1684,12 +1719,26 @@ export function applyBatterLook(model, { sign = 1 } = {}) {
     if (node.name === 'JOINED') body = node
   })
   const report = { flap: null, brows: null, eyes: null, jersey: null, shoes: null }
-  if (!helmet || !body) return report
+  if (!body) return report
+  // Which hat is actually *worn* — the batter plays in the helmet and the pitcher
+  // throws in the cap (each hides the other: see HIDDEN_MESHES and the pitcher's own
+  // uniform pass) — because the two things that depend on it are not the same hat: the
+  // eyes are read under the brim's own underside (a cap is worn lower than a helmet, so
+  // the eyes come down with it — see BRIM_UNDERSIDE), and the ear-flap work is the
+  // *helmet's* alone. A cap that has no ear cover to take off and no cover to lengthen
+  // is not asked to; the helmet's own pass is skipped outright for it rather than done
+  // on a mesh nobody can see.
+  const brim = BRIM_UNDERSIDE[headgear] ?? BRIM_UNDERSIDE.helmet
+  const eyeTopClearY = brim - EYE_BROW_ROOM
+  const browTopMaxY = brim - BROW_BRIM_CLEAR
+  report.headgear = headgear
+  report.brim = brim
+  const shapeHelmet = headgear === 'helmet' && helmet !== null
   // Work on the mesh's own copy of its geometry. The meshes came off a *cached* asset,
   // so the geometry can be shared with the cache and with another render of this same
   // component; the kit belongs to this body, so the pass edits a copy and the asset
   // keeps the shape it shipped with.
-  helmet.geometry = helmet.geometry.clone()
+  if (shapeHelmet) helmet.geometry = helmet.geometry.clone()
   body.geometry = body.geometry.clone()
 
   // The side of the model the batter turns *away* from the pitcher. A right-handed
@@ -1699,8 +1748,8 @@ export function applyBatterLook(model, { sign = 1 } = {}) {
   const trailing = (x) => (sign > 0 ? x <= -EAR_COVER_SIDE_X : x >= EAR_COVER_SIDE_X)
 
   // The cover that goes: the separate hanging shell on that side first...
-  const flaps = earFlapsOf(helmet.geometry)
-  const gone = flaps.filter(({ box }) => (sign > 0 ? box.x[1] < 0 : box.x[0] > 0))
+  const flaps = shapeHelmet ? earFlapsOf(helmet.geometry) : []
+  const gone = shapeHelmet ? flaps.filter(({ box }) => (sign > 0 ? box.x[1] < 0 : box.x[0] > 0)) : []
   let triangles = gone.reduce((sum, { vertices }) => sum + dropShell(helmet.geometry, vertices), 0)
   // ...and then the cover the *main* shells carry beside that same ear, which is all
   // that is left of it once the separate flap is gone: the band hanging below the brim,
@@ -1734,15 +1783,17 @@ export function applyBatterLook(model, { sign = 1 } = {}) {
         EAR_EDGE_EAR_Z, EAR_EDGE_EAR_Y, EAR_EDGE_SLOPE_EAR,
       )
   }
-  const ear = foldOntoEdge(helmet.geometry, { edge: earEdgeY, side: trailing })
+  const ear = shapeHelmet
+    ? foldOntoEdge(helmet.geometry, { edge: earEdgeY, side: trailing })
+    : { folded: 0, lowY: null }
 
   // The cover that stays is lengthened: stretched about its hinge, graded, so the
   // surface it hangs from is not torn, and carried forward as it goes.
-  const helmetPosition = helmet.geometry.getAttribute('position')
-  const coverSpan = FLAP_HINGE_Y - Math.min(
+  const helmetPosition = shapeHelmet ? helmet.geometry.getAttribute('position') : null
+  const coverSpan = shapeHelmet ? FLAP_HINGE_Y - Math.min(
     FLAP_HINGE_Y,
     ...flaps.flatMap(({ box }) => box.y),
-  )
+  ) : 0
   let lengthened = 0
   let flapLow = FLAP_HINGE_Y
   if (coverSpan > 0) {
@@ -1759,8 +1810,8 @@ export function applyBatterLook(model, { sign = 1 } = {}) {
       lengthened += 1
     }
   }
-  helmetPosition.needsUpdate = true
-  report.flap = {
+  if (helmetPosition) helmetPosition.needsUpdate = true
+  report.flap = shapeHelmet ? {
     found: flaps.length,
     taken: gone.length + (ear.folded > 0 ? 1 : 0),
     kept: flaps.length - gone.length,
@@ -1771,14 +1822,14 @@ export function applyBatterLook(model, { sign = 1 } = {}) {
     stretched: FLAP_STRETCH,
     lowY: Number(flapLow.toFixed(4)),
     side: sign > 0 ? 'right' : 'left',
-  }
+  } : { worn: 'cap', found: 0, taken: 0, kept: 0, triangles: 0, folded: 0, lengthened: 0 }
 
   // The eyes: first down about their own bottom edges until the brim stops covering
   // them, then out onto the face.
   const eyes = eyeShellsOf(body.geometry)
   const scaled = eyes.map(({ vertices, box }) => {
     const height = box.y[1] - box.y[0]
-    const room = height > 0 ? (EYE_TOP_CLEAR_Y - box.y[0]) / height : 1
+    const room = height > 0 ? (eyeTopClearY - box.y[0]) / height : 1
     const scale = Math.min(1, Math.max(room, EYE_SCALE_MIN))
     const about = {
       x: (box.x[0] + box.x[1]) / 2,
@@ -1789,15 +1840,31 @@ export function applyBatterLook(model, { sign = 1 } = {}) {
     // ...and where the eye ended up, so the brow above it can be laid over its own top
     // edge rather than over a size the eye no longer has.
     const at = (value, centre) => centre + (value - centre) * scale
+    const scaledBox = {
+      x: box.x.map((value) => at(value, about.x)),
+      y: box.y.map((value) => at(value, about.y)),
+      z: box.z.map((value) => at(value, about.z)),
+    }
+    // ...and the width it lost to the brim handed back outward (see EYE_WIDER_X): the
+    // plate's own vertices and the box the brow is laid over, so the brow above the eye
+    // stays above *this* eye, whatever width it has. The pivot is the plate's own inner
+    // corner, which is the one nearest the midline — which side that is depends on which
+    // side of the face the plate is on, since each is wholly on one of them (an eye
+    // crosses no midline; the nose does).
+    const side = Math.sign(box.x[0] + box.x[1]) || 1
+    const inner = side > 0 ? scaledBox.x[0] : scaledBox.x[1]
+    const wider = 1 + EYE_WIDER_X
+    const eyePosition = body.geometry.attributes.position
+    for (const vertex of vertices) {
+      eyePosition.setX(vertex, inner + (eyePosition.getX(vertex) - inner) * wider)
+    }
+    scaledBox.x = scaledBox.x.map((value) => inner + (value - inner) * wider)
     return {
       vertices,
       box,
       scale: Math.min(scale, 1),
-      scaledBox: {
-        x: box.x.map((value) => at(value, about.x)),
-        y: box.y.map((value) => at(value, about.y)),
-        z: box.z.map((value) => at(value, about.z)),
-      },
+      wider,
+      scaledBox,
     }
   })
   // ...and the plate's own flatness is what put part of it inside the head: every vertex
@@ -1826,15 +1893,19 @@ export function applyBatterLook(model, { sign = 1 } = {}) {
   const topAt = (box, scale) => box.y[0] + (box.y[1] - box.y[0]) * scale
   report.eyes = {
     count: eyes.length,
-    brimUnderside: 1.7954,
+    brim,
     scale: scaled.length ? Math.max(...scaled.map((eye) => eye.scale)) : null,
     topBefore: eyes.length ? Math.max(...eyes.map(({ box }) => box.y[1])) : null,
     topAfter: scaled.length ? Math.max(...scaled.map(({ box, scale }) => topAt(box, scale))) : null,
     heightAfter: scaled.length ? (scaled[0].box.y[1] - scaled[0].box.y[0]) * scaled[0].scale : null,
-    widthAfter: scaled.length ? (scaled[0].box.x[1] - scaled[0].box.x[0]) * scaled[0].scale : null,
+    // The width as drawn: the model's own oval, taken down by the brim's own scale and
+    // then stretched across by the widening above — so this is the plate's realised
+    // width and not the shrink's alone (see EYE_WIDER_X).
+    widthAfter: scaled.length ? scaled[0].scaledBox.x[1] - scaled[0].scaledBox.x[0] : null,
     lifted,
     deepest: Number(deepest.toFixed(4)),
     clear: EYE_FACE_CLEAR,
+    wider: scaled.length ? scaled[0].wider : null,
   }
 
   // The brows, over the tops of the eyes just placed, then the jersey's own front and
@@ -1844,7 +1915,7 @@ export function applyBatterLook(model, { sign = 1 } = {}) {
   // same model has to leave them where they are rather than draw them again — the guard
   // is the pass's own report, carried on the model it was made for.
   const done = model.userData.batterLook ?? {}
-  report.brows = done.brows ?? addBrows(body, scaled, faceToneOf(body, scaled))
+  report.brows = done.brows ?? addBrows(body, scaled, faceToneOf(body, scaled), browTopMaxY)
   report.jersey = done.jersey ?? addJerseyFront(body, jerseyColourOf(body))
   if (done.shoes) {
     report.shoes = done.shoes

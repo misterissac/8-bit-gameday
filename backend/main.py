@@ -1694,6 +1694,14 @@ def _build_pitch_payload(data: dict, play: dict, pitch_event: dict, pitch_index:
         player = data.get('gameData', {}).get('players', {}).get(f"ID{batter_id}", {})
         batter_height = _parse_height_inches(player.get('height'))
 
+    # The pitcher's own listed height, from the same gameData lookup: the frontend
+    # stands his body at his own stature rather than at a size solved from the pitch's
+    # release point (see pitcherProfile in util/pitcherSequence.js).
+    pitcher_height = None
+    if pitcher_id is not None:
+        player = data.get('gameData', {}).get('players', {}).get(f"ID{pitcher_id}", {})
+        pitcher_height = _parse_height_inches(player.get('height'))
+
     start_speed = pitch_data.get('startSpeed', 0)
     all_plays = data['liveData']['plays']['allPlays']
     total_pitches = sum(
@@ -1779,6 +1787,7 @@ def _build_pitch_payload(data: dict, play: dict, pitch_event: dict, pitch_index:
         "swing_path_tilt": bat_tracking["swing_path_tilt"],
         "attack_angle": bat_tracking["attack_angle"],
         "batter_height": batter_height,
+        "pitcher_height": pitcher_height,
         "pitch_type": pitch_type_code,
         "pitch_type_description": pitch_type_description,
         "speed_mph": start_speed,

@@ -224,3 +224,25 @@ test('mergeTuning sanitizes saved tuning containing 0.2 timeScale back to defaul
   const validMerged = mergeTuning(validSaved)
   assert.equal(validMerged.playback.timeScale, 0.75)
 })
+
+test('mergeTuning migrates stale saved frontFootPivot 0.2 to new default 1.0', () => {
+  const staleSaved = {
+    batter: {
+      frontFootPivot: 0.2,
+      legBackStance: 0.1,
+    },
+  }
+
+  const merged = mergeTuning(staleSaved)
+  assert.equal(merged.batter.frontFootPivot, DEFAULT_TUNING.batter.frontFootPivot)
+  assert.equal(merged.batter.legBackStance, 0.1)
+
+  const customSaved = {
+    batter: {
+      frontFootPivot: 1.25,
+    },
+  }
+  const customMerged = mergeTuning(customSaved)
+  assert.equal(customMerged.batter.frontFootPivot, 1.25)
+})
+

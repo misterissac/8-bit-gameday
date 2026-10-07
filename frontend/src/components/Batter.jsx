@@ -136,9 +136,10 @@ useGLTF.preload(BAT_URL)
 // Footwork through the swing: the swing pivots around the BACK foot, which
 // stays planted in world space (counter-rotated against the hips' opening and
 // compensating for hip drive) while pivoting toward the pitcher
-// (settings.backFootPivot); the front foot unplants as the drive fires —
-// lifting and turning with the body (its pre-swing plant keeps only a small
-// settings.frontFootPivot).
+// (settings.backFootPivot); the front foot steps into the stride squared to the
+// stance, and as the swing uncoils through contact into follow-through and hold,
+// it pivots open on its planted heel with the leg and torso
+// (settings.frontFootPivot), opening up to face forwards down the field.
 // Hip drive: as the back leg unbuckles, the hips (lower body) drive forward
 // toward the pitcher and the torso, head, arms, and bat ride forward with them
 // (settings.hipDriveForward : settings.upperDriveForward is the split between
@@ -214,6 +215,29 @@ const NOMINAL_STANCE_Z_M = 1.15
 // Nothing else moves: the facing, the swing's turn, the drive's travel and the
 // thrust are the tuned pose, because this is a place to stand and not a pose.
 const STANCE_SETBACK_M = 0.1
+
+// ...and the step that puts his *feet* completely in the box, in the reference sprite's own
+// units: the rule holds a batter to "Both feet within the batter's box" (Rule
+// 5.04(b)(5)). Stepping back off the plate line and forward from the back line ensures
+// both boots, including heels and toes, stand completely inside the chalked lines of the
+// batter's box with comfortable clearance on every side.
+//
+// Measured against the box's inner line at 0.368 m, back line at 0.698 m, outer line at
+// 1.588 m, and front line at -1.130 m, these offsets stand both feet and shoes fully
+// inside the perimeter across the full range of batter heights (66" to 78") for both
+// left- and right-handed batters.
+//
+// What it costs is one thing: the plate no longer sits exactly where it did in the
+// body's own frame. Stepping off the plate line turned the plate's bearing from his
+// body by a few degrees, where a step *down* the line would have left it alone.
+// The facing, the swing's whole turn and the lean over the plate are still the pose
+// they were tuned as — the set stance's yaw is read at the plate-tuned stance, not
+// at the stance's own place (see the stance block) — and the swing still meets the
+// ball, because the contact geometry is solved from where the body actually stands
+// to where the pitch actually crosses. What moved is the few degrees between the
+// batter's chest and the plate as the pose sees it.
+const STANCE_BOX_FIT_OUT_M = 0.35 // stepped out off the plate so shoes clear inner line
+const STANCE_BOX_FIT_FORWARD_M = 0.44 // stepped forward toward pitcher so heels clear back line
 
 // The cartoon sprite reads much larger than real-world scale, so a literal
 // 1.8 m batter towers over the ~0.96 m strike-zone top. Scale every dimension
@@ -1215,19 +1239,20 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
 
   // The plate-tuned stance — the stance the animation was tuned at, and the
   // reference every angle below is read at — and the stance the body actually
-  // stands at, set back from it along the line from home plate's own centre out
-  // through the batter (see STANCE_SETBACK_M). That is the line the facing is
-  // measured along, so stepping back down it leaves the plate exactly where it
-  // was in the body's own frame: the facing, the swing's whole turn and the lean
-  // over the plate stay the pose they were tuned as, and only the distance
-  // changes. One offset covers the box's two directions, because on this line
-  // they are one — deeper in the box *is* further off the plate.
+  // stands at: set back from it along the line from home plate's own centre out
+  // through the batter (see STANCE_SETBACK_M), and then stepped the few inches
+  // that stand his feet inside the batter's box (see STANCE_BOX_FIT_* below). The
+  // facing is still measured along the first of those — the plate-tuned line — so
+  // the pose's angles stay the ones the animation was tuned at; what the second
+  // step moves is where the plate sits in the body's own frame, by the few degrees
+  // its own comment works out.
   const plateCentreZ = -PLATE_FRONT_Y / 2
   const refStanceX = NOMINAL_STANCE_X_M * heightScale
   const refStanceZ = NOMINAL_STANCE_Z_M * heightScale
   const setbackScale = STANCE_SETBACK_M / (Math.hypot(refStanceX, refStanceZ - plateCentreZ) || 1)
-  const stanceX = refStanceX * (1 + setbackScale)
+  const stanceX = refStanceX * (1 + setbackScale) + STANCE_BOX_FIT_OUT_M * heightScale
   const stanceZ = plateCentreZ + (refStanceZ - plateCentreZ) * (1 + setbackScale)
+    - STANCE_BOX_FIT_FORWARD_M * heightScale
 
   // The joint targets the animation computes are expressed inside the batter's
   // groups, which carry the torso's turn and lean, the hips' drive, and the
@@ -2006,7 +2031,18 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
   // ``arrival`` (0..1) is how far the swing has come home — nothing before contact,
   // easing through the follow-through, held, then unwinding with the recovery — and it
   // is what the lead foot's own toe lift rides (see legFrontToeLift).
-  const poseLegs = (drive, driveBack, load, stride, strideLift, lowerYaw, idleFlex = 0, idleRock = 0, arrival = 0) => {
+  const poseLegs = (
+    drive,
+    driveBack,
+    load,
+    stride,
+    strideLift,
+    lowerYaw,
+    idleFlex = 0,
+    idleRock = 0,
+    arrival = 0,
+    torsoYaw = lowerYaw,
+  ) => {
     // Where the measured skeleton's joints sit at rest, in the tuning's frame:
     // the knee and ankle targets are authored as heights, so they are hung off
     // the rig's own hip and ankle instead of the procedural rig's constants.
@@ -2059,6 +2095,18 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     const forwardX = -sinL
     const forwardZ = -cosL
     const openAngle = lowerYaw - setYaw
+    // The torso's opening turn through the swing: the leading leg and lead foot
+    // pivot open with this uncoiling on the planted heel rather than staying
+    // locked sideways to the set stance.
+    const torsoOpen = torsoYaw - setYaw
+    const leadFootPivot = typeof settings.frontFootPivot === 'number' && Math.abs(settings.frontFootPivot - 0.2) > 0.01
+      ? settings.frontFootPivot
+      : 1
+    const leadYaw = setYaw + torsoOpen * leadFootPivot
+    const cosLead = Math.cos(leadYaw)
+    const sinLead = Math.sin(leadYaw)
+    const leadForwardX = -sinLead
+    const leadForwardZ = -cosLead
     const targets = []
     for (const side of [-1, 1]) {
       const isBack = side === sign
@@ -2129,7 +2177,6 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
         footZ = THREE.MathUtils.lerp(frontStance.z, landZ, stride)
         footZ -= settings.legFrontPushForward * d
         carry = 1
-        shoeYaw = -(1 - settings.frontFootPivot) * openAngle
         ankleLift += settings.legFrontUnplantLift * drive
         toeLift = settings.legFrontToeLift * arrival
         planted = drive > 0
@@ -2155,15 +2202,17 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       const bend = 0.08
         + (isBack ? settings.legBackKneeForward : settings.legFrontKneeForward) * d
         + settings.swayKneeTravel * idleCrouchFraction
+      const kForwardX = isBack ? forwardX : leadForwardX
+      const kForwardZ = isBack ? forwardZ : leadForwardZ
       targets.push({
         side,
         knee: [
-          (hipX + footX) / 2 + forwardX * bend,
+          (hipX + footX) / 2 + kForwardX * bend,
           kneeY,
-          (hipZ + footZ) / 2 + forwardZ * bend,
+          (hipZ + footZ) / 2 + kForwardZ * bend,
         ],
         ankle: [footX, restAnkleY + ankleLift, footZ],
-        footYaw: lowerYaw + shoeYaw,
+        footYaw: isBack ? lowerYaw + shoeYaw : leadYaw,
         toeLift,
         planted,
         heelDown,
@@ -2270,7 +2319,7 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     // loop bounds the live ride with, so the geometry and the pose agree on the
     // frame that matters.
     const contactLowerYaw = setYaw + (bodyOpen - setYaw) * settings.lowerBodyOpenFactor
-    const contactLegs = poseLegs(1, 1, 0, 1, 0, contactLowerYaw, 0, 0, 0)
+    const contactLegs = poseLegs(1, 1, 0, 1, 0, contactLowerYaw, 0, 0, 0, bodyOpen)
     // The lean the contact frame itself carries: the drive's own share of it, with
     // the load spent and the idle faded out (see the frame loop, whose socket this
     // has to match for the geometry and the pose to ride the same distance).
@@ -2329,7 +2378,7 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       // is fading it out here — there is no swing to make room for).
       const wave = idleStance(state.clock.elapsedTime * settings.swaySpeed)
       const idle = idleTerms(wave)
-      const stanceLegs = poseLegs(0, 0, 0, 0, 0, setYaw, idle.flex, idle.rock)
+      const stanceLegs = poseLegs(0, 0, 0, 0, 0, setYaw, idle.flex, idle.rock, 0, setYaw)
       if (upperRef.current) {
         // YXZ order: yaw first, then the lean's forward/sideways tilts, so the
         // lean direction (rotation.x/z) stays in the body's own frame.
@@ -2883,7 +2932,7 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     const backTilt = settings.swingBackTilt * drive
     leanX += backTilt * Math.cos(bodyYaw)
     leanZ += backTilt * Math.sin(bodyYaw)
-    let legs = poseLegs(drive, driveBack, load, stride, strideLift, lowerYaw, idle.flex, idle.rock, arrival)
+    let legs = poseLegs(drive, driveBack, load, stride, strideLift, lowerYaw, idle.flex, idle.rock, arrival, bodyYaw)
     // The pelvis' own budget, read off the planted rear leg (see rearPlanted): how
     // far it may ride forward and how far it may turn, together. The push envelope
     // is the *shape* of the drive, and the ride is what it asks of a body that has
@@ -2910,7 +2959,7 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
     const planted = rearPlanted(socketY, lowerYaw, requestedRide)
     if (planted.yaw !== lowerYaw) {
       lowerYaw = planted.yaw
-      legs = poseLegs(drive, driveBack, load, stride, strideLift, lowerYaw, idle.flex, idle.rock, arrival)
+      legs = poseLegs(drive, driveBack, load, stride, strideLift, lowerYaw, idle.flex, idle.rock, arrival, bodyYaw)
     }
     const ride = planted.ride
     // ...given to the pelvis whole (see PELVIS_DRIVE_SHARE) and split between the

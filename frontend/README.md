@@ -2916,12 +2916,12 @@ away towards the temple** — standing up to 0.019 proud.
 
 **The jersey had no front on it.** The chest is one flat colour with nothing on
 the fabric, so the pass draws an opening on it: a *line* down the chest's own
-centreline, 0.003 rig across, from the belt (y 1.292, the trunks' band running
-1.258-1.293) up to the jersey's own collar (1.548, its rim being at 1.5544) — its
+centreline, 0.003 rig across, from the belt (y 1.055, where the jersey hem meets
+the belt) up to the jersey's own collar (1.548, its rim being at 1.5544) — its
 depth read per height off the front-most vertex within a short window of it, so it
 hugs the sternum's crease instead of bridging it — and **six hollow buttons**
 hard against it on the wearer's right, from the top of the line to the bottom (y
-1.5475 down to 1.2925, one every 0.0548 rig), each a ring 0.023 rig across with a
+1.5475 down to 1.0555, one every 0.0938 rig), each a ring 0.023 rig across with a
 0.011 hole in it, set so that the outward edge of a ring comes to **0.0015 rig of
 the line's own edge** — a men's placket is one piece of cloth with the seam down
 its edge and the buttons a buttonhole's width in from it, and a column of rings a
@@ -2981,8 +2981,8 @@ vertex weights are the *surface*'s, mixed across the triangle under each station
 linear blend skinning carries the detail with the cloth it is sewn in. Measured against the cloth
 it is sewn on — and against the cloth's own *surface*, which runs between its
 vertices, rather than against the nearest vertex of it — it stands **0.0015 to 0.0024
-rig in front of** the chest over 162 of its 194 vertices, with the line's own
-stations read at every one of the 25 heights from 1.293 (the belt) to 1.548 (the
+rig in front of** the chest over 210 of its 242 vertices, with the line's own
+stations read at every one of the 49 heights from 1.055 (the belt) to 1.548 (the
 collar) and never stepping back into the body by more than 0.014: laid *on* the
 cloth, never floating and never sunk. It used to stand clear of the chest — 0.008
 under the collar ramping to 0.014 at the hem, measured at **0.009 to 0.0165** — out

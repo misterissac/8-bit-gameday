@@ -1610,7 +1610,8 @@ function probeKit(scene) {
   // body its own top band reads the neck instead, which stands proud of the collar
   // (z 0.1003 against 0.0143) and so reads as the opening sinking into the chest.
   const chestVertices = (() => {
-    const list = shells(body.geometry).filter((vertices) => vertices.length >= 40)
+    const list = shells(body.geometry)
+      .filter((vertices) => vertices.length >= 40 && vertices.every((v) => v < (look?.jersey?.from ?? Infinity)))
       .map((vertices) => ({ vertices, box: bounds(body.geometry, vertices) }))
       .filter(({ box }) => box.y[0] <= 1.292 && box.y[1] <= 1.56 && box.z[1] >= 0.06)
     return list.flatMap(({ vertices }) => vertices)
@@ -1947,6 +1948,12 @@ function probeKit(scene) {
   }
 
   return {
+    // The look pass's own report for this body (see src/util/batterLook.js), handed back
+    // as it wrote it: what it did to the face, the jersey and the shoes, and which hat it
+    // read the eyes under. The pitcher's harness answers with the same row off *its* body,
+    // which is how the two actors are held to being one player wearing two hats rather
+    // than two pass builds (see pitcher.visual.spec.js).
+    look,
     helmet: helmet ? { ...describe(helmet), earCover: { lead: earCover(1), trail: earCover(-1) } } : null,
     body: describe(body),
     eyes: eyeReading(),

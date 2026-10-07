@@ -557,6 +557,11 @@ const _solePoint = new THREE.Vector3()
 const _footAxisModel = new THREE.Vector3()
 const _soleRest = new THREE.Vector3()
 const _soleNow = new THREE.Vector3()
+// ...and where the foot stands in the world, and the normal of the ground it is
+// being laid on there (a caller that hands a shaped ground in, see the leg solve's
+// roll): a shoe on the mound's slant lies down the fall with it.
+const _solePlace = new THREE.Vector3()
+const _soleNormal = new THREE.Vector3()
 const _qFootRest = new THREE.Quaternion()
 const _qFootNow = new THREE.Quaternion()
 const _qFootWant = new THREE.Quaternion()
@@ -625,6 +630,52 @@ function halfTurn(angle) {
  * a fist's own reach against the bat's plane. Zero where either vector lies along
  * the axis, since neither then has a square part to line up.
  */
+// The ground's own give (see `settleGroundedPose` and the driver's `applyPose`):
+// how far the body may settle over a planted foot whose shoe cannot reach the
+// surface under it, and the residue the rule is left holding. The cap is a
+// guard against a pathological frame dragging the body to the ground; the
+// tolerance is the same half millimetre the driver's own convergence works to,
+// because the two are the same promise read at two ends — the ankle the rule
+// moves down and the body that has to come with it.
+const GIVE_MAX = 0.08
+const GIVE_TOL = 0.0005
+
+/**
+ * A pose with the body settled `drop` rig units onto its planted feet: exactly the
+ * pose that was handed in, with everything the ground does *not* hold come down by
+ * the same amount — the pelvis (and the whole torso and head it carries), the arms
+ * (their hand and elbow places, which are written in the rig frame), the ball, and
+ * any leg the pose is *carrying* (which is not standing on anything and so travels
+ * with the body). A planted leg's own targets stay where the pose put them: the
+ * foot is what the ground holds, and the body coming down over it is the knee
+ * giving — which is what the driver's leg solve then bends to. A caller with no
+ * shaped ground never asks for this (see the driver's `applyPose`), and a pose
+ * whose feet all stand is returned untouched.
+ *
+ * A settle is a *translation* and nothing else: every value is written one axis at
+ * a time so a pose that carries directions (a knee's own plane, an arm's aim) keeps
+ * them — a direction has no height to lose.
+ */
+function settleGroundedPose(pose, drop) {
+  if (!(drop > 0)) return pose
+  const lowered = (place) => (place ? [place[0], place[1] - drop, place[2]] : place)
+  return {
+    ...pose,
+    hip: { ...pose.hip, offsetY: pose.hip.offsetY - drop },
+    legs: pose.legs.map((leg) => (leg.planted ? leg : {
+      ...leg,
+      knee: lowered(leg.knee),
+      ankle: lowered(leg.ankle),
+    })),
+    arms: pose.arms.map((arm) => ({
+      ...arm,
+      hand: lowered(arm.hand),
+      elbow: lowered(arm.elbow),
+    })),
+    ball: lowered(pose.ball),
+  }
+}
+
 function squareAngle(from, to, axis) {
   _squareFrom.copy(from).addScaledVector(axis, -from.dot(axis))
   _squareTo.copy(to).addScaledVector(axis, -to.dot(axis))
@@ -1174,6 +1225,24 @@ export function measurePlayerRig(scene, { spriteNominalHeightM = null } = {}) {
   const shinL = rig(pos(LEG_BONES.L.knee))
   const footL = rig(pos(LEG_BONES.L.ankle))
   const toeL = rig(pos(LEG_BONES.L.toe))
+  // ...and the shoe's own *heel*: the rearmost vertex of the leather the foot stands
+  // on, against that ankle. The ankle stands about a tenth of a rig unit ahead of this
+  // and a third of one behind the front of the same leather, so a planted shoe the body
+  // comes round over turns about *this* end of its own sole rather than about the joint
+  // the leg's own targets are written at — a shoe spun about its ankle sweeps its heel
+  // across the dirt instead, which is what the lead foot's own turn reads this to avoid
+  // (see util/pitcherSequence.js).
+  // Measured on the left boot, the two being each other's mirror, and read the same way
+  // the sole is: off the shoe's own vertices rather than off a bone, because no bone in
+  // the model stands at the back of the shoe (``heel02`` is the ball of the sole — see
+  // LEG_BONES). A model whose skin cannot be read gets nought rather than a guessed
+  // shoe, and a caller that reads nought simply does not turn a foot on its heel.
+  const heelL = (() => {
+    const vertices = shoeVertices(scene).L
+    if (!vertices.length) return null
+    const rear = vertices.reduce((a, b) => (b.z < a.z ? b : a))
+    return rig(new THREE.Vector3(rear.x, rear.y, rear.z)).sub(footL)
+  })()
   const spine = rig(pos(PLAYER_BONES.spine))
   const neck = rig(pos(PLAYER_BONES.neck))
   const head = rig(pos(PLAYER_BONES.head))
@@ -1202,8 +1271,15 @@ export function measurePlayerRig(scene, { spriteNominalHeightM = null } = {}) {
   return {
     modelHeight,
     unitScale,
-    // Torso pivot: where the upper body turns and leans.
+    // Torso pivot: where the upper body turns and leans. It is the *spine* bone's own
+    // rest place — the driver hinges the upper body here, not on the hip sockets — and
+    // it sits a hand's width below and behind those sockets. A pose that builds the
+    // chest by rotating its offset about the hip sockets instead (`rig.hip`) has the
+    // chest a couple of centimetres out wherever the trunk is folded, and at a release
+    // a couple of centimetres of socket is twenty degrees of elbow: the arm is asked
+    // for its straightest chord from a socket the body then turns out from under it.
     hipY: spine.y,
+    hipZ: spine.z,
     // Shoulder joints: the arm reach and the elbow choreography hang off these.
     shoulder: { y: upperArmL.y, halfWidth: Math.abs(upperArmL.x), z: upperArmL.z },
     arm: {
@@ -1223,6 +1299,7 @@ export function measurePlayerRig(scene, { spriteNominalHeightM = null } = {}) {
     hip: { y: thighL.y, halfWidth: Math.abs(thighL.x), z: thighL.z },
     ankleY: footL.y,
     toeOffset: toeL.clone().sub(footL),
+    heelOffset: heelL,
     leg: {
       thigh: shinL.distanceTo(thighL),
       shin: footL.distanceTo(shinL),
@@ -1549,7 +1626,18 @@ export function measureTrunk(root) {
  *   with the mesh it belongs to, which is what a posed read is skinned by) and the
  *   height they rest at, in the model's own units
  */
-export function measureSole(root) {
+const SHOE_VERTICES = new WeakMap()
+
+/**
+ * Every vertex of each shoe, in the model's own frame — the vertices the foot, toe and
+ * heel bones carry. Two of the driver's own reads want these and want different parts
+ * of them: the ground rule keeps the *lowest* (see `measureSole`) and the rig keeps the
+ * *rearmost* (see `heelOffset` in `measurePlayerRig`), so the skin is walked once per
+ * model and the answer kept.
+ */
+function shoeVertices(root) {
+  const cached = SHOE_VERTICES.get(root)
+  if (cached) return cached
   const found = { L: [], R: [] }
   root.traverse((node) => {
     if (!node.isSkinnedMesh) return
@@ -1565,13 +1653,25 @@ export function measureSole(root) {
           if (bone && foot.has(bone.name)) onFoot = true
         }
         if (!onFoot) continue
-        found[side].push({ mesh: node, index: vertex, y: position.getY(vertex) })
+        found[side].push({
+          mesh: node,
+          index: vertex,
+          x: position.getX(vertex),
+          y: position.getY(vertex),
+          z: position.getZ(vertex),
+        })
       }
     }
   })
+  SHOE_VERTICES.set(root, found)
+  return found
+}
+
+export function measureSole(root) {
+  const found = shoeVertices(root)
   const out = { L: null, R: null }
   for (const side of ['L', 'R']) {
-    const vertices = found[side].sort((a, b) => a.y - b.y).slice(0, SOLE_PROBES)
+    const vertices = [...found[side]].sort((a, b) => a.y - b.y).slice(0, SOLE_PROBES)
     if (!vertices.length) continue
     out[side] = {
       // Read once and kept: a posed read is these vertices skinned by the bones the
@@ -1805,10 +1905,14 @@ function shapeRigidParts(root, metrics, waistband) {
  * The weight cut makes each part rigid, but a vertex can only belong to one part:
  * where the *surface* spans two parts, its skin is pulled between them and has to
  * stretch, and at the belt that stretch is the whole of what read as the jersey
- * being wrung over the hips. So the surface is cut open at the belt instead —
- * every triangle the cut plane crosses is split along it, and each side of the cut
- * gets its own vertices, so the belt's skin belongs to the pelvis and the jersey's
- * to the torso. Nothing spans the cut, so nothing there can stretch.
+ * being wrung over the hips. So the surface is cut open instead — every triangle
+ * the cut plane crosses is split along it, and each side of the cut gets its own
+ * vertices, so the belt's skin belongs to the pelvis and the jersey's to the torso.
+ * Nothing spans the cut, so nothing there can stretch — and what the two sides do
+ * when the blocks turn against one another is *slide*, which is what two pieces of
+ * clothing do. The turn itself is taken about this very centre (see the driver's
+ * own note), so the slide is all that is left: the seam's own edges stay coincident
+ * and the cut never opens.
  *
  * Under the opening sits a sleeve: a duplicate of the body's own surface either
  * side of the cut, inset toward the body's axis and weighted rigidly to the
@@ -1820,19 +1924,22 @@ function shapeRigidParts(root, metrics, waistband) {
  * @param {object} metrics result of measurePlayerRig
  * @param {{top: number}} waistband where the uniform's waistband is (its top edge
  *   is the cut: see ``measureWaistband``)
- * @returns {{cut: number, margin: number, inset: number, lip: number, seam: number,
- *   sleeve: number, axis: number[], ring: number[][]}} the cut height in rig units,
- *   the sleeve's own numbers and how far the hem stands off the belt, how many
- *   vertices the cut and the sleeve added, and the cut's own ring — its body axis in
- *   the mesh's space and one point per direction of the seam, which is what
- *   `probeSleeve` measures the sleeve's coverage against
+ * @returns {{cut: number, pivot: number[]|null, margin: number, inset: number,
+ *   lip: number, seam: number, sleeve: number, axis: number[], ring: number[][]}}
+ *   the cut height in rig units, the waist's own centre in the model's frame (see the
+ *   ``pivot`` note below), the sleeve's own numbers and how far the hem stands off the
+ *   belt, how many vertices the cut and the sleeve added, and the cut's own ring — its
+ *   body axis in the mesh's space and one point per direction of the seam, which is
+ *   what `probeSleeve` measures the sleeve's coverage against
  */
 function cutBeltAndSleeve(root, metrics, waistband) {
-  if (globalThis.__NO_BELT_CUT) return { cut: waistband.top, margin: SLEEVE_MARGIN, inset: SLEEVE_INSET, lip: SEAM_LIP, seam: 0, sleeve: 0, axis: [0, 0], ring: [] }
-  const cutY = waistband.top / metrics.unitScale
+  const cut = waistband.top
+  if (globalThis.__NO_BELT_CUT) return { cut, pivot: null, margin: SLEEVE_MARGIN, inset: SLEEVE_INSET, lip: SEAM_LIP, seam: 0, sleeve: 0, axis: [0, 0], ring: [] }
+  const cutY = cut / metrics.unitScale
   const marginY = SLEEVE_MARGIN / metrics.unitScale
   const shape = {
-    cut: waistband.top,
+    cut,
+    pivot: null,
     margin: SLEEVE_MARGIN,
     inset: SLEEVE_INSET,
     lip: SEAM_LIP,
@@ -1841,6 +1948,16 @@ function cutBeltAndSleeve(root, metrics, waistband) {
     axis: [0, 0],
     ring: [],
   }
+  // The waist's *own centre*, in the model's frame: the mean of the cut's ring on each
+  // mesh the cut runs on, carried out of that mesh's own space. This is the point the
+  // pelvis and the torso turn against one another about (see the driver's own use of
+  // it): the axis a joint turns about is its own surface's centre, and the model's
+  // spine bones do not rest on it — the waist bone sits a hand's width off the body's
+  // axis and below the belt — so the centre is *measured* here rather than taken from
+  // the skeleton.
+  root.updateMatrixWorld(true)
+  const pivotSum = new THREE.Vector3()
+  let pivotCount = 0
 
   // The cut's own ring, kept as one point per direction around the body: what the
   // sleeve has to stay inside and cover is measured on it (`probeSleeve`).
@@ -1958,18 +2075,18 @@ function cutBeltAndSleeve(root, metrics, waistband) {
           ) % RING_SAMPLES
           if (!ringSamples[bucket]) ringSamples[bucket] = [x, cutY, z]
         }
-        const [one, two] = along.map(([t, from, to]) => [
+        const crossings = along.map(([t, from, to]) => [
           push([[from, 1 - t], [to, t]], lifted === 1 ? torso : pelvis),
           push([[from, 1 - t], [to, t]], lifted === 1 ? pelvis : torso),
         ])
-        // Which of the pair is the torso's copy and which the pelvis's depends on
-        // which side of the cut the *lone* vertex fell on: ``one`` is the copy on the
-        // lone vertex's own side, so it is the torso's copy in the one-above case and
-        // the pelvis's in the two-above one. Two crossings, each added twice (once per
-        // side's weights): the count is how many vertices the cut adds, which is what
-        // the suite reports.
-        const torsoCopy = lifted === 1 ? one : two
-        const pelvisCopy = lifted === 1 ? two : one
+        // Which copy is the torso's and which the pelvis's depends on which side
+        // of the cut the *lone* vertex fell on: the first element of each pair is
+        // the copy on the lone vertex's own side (torso if lifted === 1, pelvis if lifted === 2).
+        // Two crossings, each added twice (once per side's weights).
+        const loneCopy = [crossings[0][0], crossings[1][0]]
+        const otherCopy = [crossings[0][1], crossings[1][1]]
+        const torsoCopy = lifted === 1 ? loneCopy : otherCopy
+        const pelvisCopy = lifted === 1 ? otherCopy : loneCopy
         // The hem's own copy is stood a hair off the belt's, along the radius —
         // the surface's own normal at the belt — so the two sides of the seam are
         // never in the same place (see SEAM_LIP).
@@ -2055,7 +2172,18 @@ function cutBeltAndSleeve(root, metrics, waistband) {
     geometry.computeBoundingSphere()
     shape.axis = [axisX, axisZ]
     shape.ring = ringSamples.filter(Boolean)
+    if (shape.ring.length) {
+      const centre = new THREE.Vector3()
+      for (const point of shape.ring) centre.add(new THREE.Vector3(point[0], point[1], point[2]))
+      centre.multiplyScalar(1 / shape.ring.length)
+      node.localToWorld(centre)
+      root.worldToLocal(centre)
+      pivotSum.add(centre)
+      pivotCount += 1
+    }
   })
+
+  if (pivotCount) shape.pivot = pivotSum.divideScalar(pivotCount).toArray()
 
   return shape
 }
@@ -2074,8 +2202,15 @@ function cutBeltAndSleeve(root, metrics, waistband) {
  *   frame, in rig units — the offset the component gives it (the same one its
  *   JSX uses). Targets are authored against the rig frame's origin, so the
  *   driver has to subtract it before solving.
+ * @param {object} [options] the world the model stands in, where it has a shape:
+ *   ``groundAt(x, z)`` — the world height of the surface a foot stands on under a
+ *   world place, for a body whose own ground (the plane the pose's y is measured
+ *   from) is not flat: the pitcher's mound falls away from the stance he set on
+ *   (see Pitcher.jsx and constants/mound.js). Left out, the ground is the plane
+ *   the model's own nought is, which is every other body in the app.
  */
-export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0, 0]) {
+export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0, 0], options = {}) {
+  const { groundAt = null } = options
   if (!modelRoot.getObjectByName('armature')) throw new Error('player.glb is missing its armature')
   const bones = collectBones(modelRoot)
   // The trunk's own girth, read off the model once: what the open arm solve holds
@@ -2086,7 +2221,14 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
   const sole = measureSole(modelRoot)
   // The lowest point of one shoe as the solve has just posed it, in the driver's
   // own frame (where the bones were written), or null on a model whose geometry
-  // could not be read.
+  // could not be read. A caller that hands a shaped ground in gets two more reads
+  // from the same pass, in the world: the ground under the bit of sole that would
+  // sink *first* (``soleSurface``, and where it was read) and that bit's own height
+  // (``soleWorldY``) — see the leg solve's ground rule, which stands a planted shoe
+  // on the former.
+  let soleWorldY = 0
+  let soleSurface = 0
+  const soleSurfaceAt = [0, 0]
   const soleLowest = (side) => {
     const probes = sole[side]?.probes
     if (!probes?.length) return null
@@ -2094,6 +2236,7 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
     // skinned by is the model's own matrices, so they are brought up to date here.
     modelRoot.updateMatrixWorld(true)
     let lowest = Infinity
+    let deepest = -Infinity
     for (const probe of probes) {
       // `getVertexPosition` is the model's own geometry skinned by the bones as
       // they have just been written (three's `applyBoneTransform` alone reads the
@@ -2101,10 +2244,48 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
       // probe's place).
       probe.mesh.getVertexPosition(probe.index, _solePoint)
       probe.mesh.localToWorld(_solePoint)
+      const worldY = _solePoint.y
+      // The ground under this bit of the sole, read against *this bit* rather than
+      // against the shoe's lowest corner: the contact is the bit that would sink
+      // first — the max of the ground's own height minus the sole's at the same
+      // point. A shoe lying on the mound's slant has every bit of it near its own
+      // ground (nought here), where the two ends of it differ in height by the fall
+      // across the shoe; and a shoe whose toe is over the rubber's own lip has its
+      // deepest bit over the plate, so a foot at the plate's edge still stands *on*
+      // the plate (measured the other way, off the highest ground anywhere under the
+      // sole, that lip lifted the shoe's whole downhill end off the dirt).
+      if (groundAt) {
+        const here = groundAt(_solePoint.x, _solePoint.z)
+        const sunk = here - worldY
+        if (sunk > deepest) {
+          deepest = sunk
+          soleSurface = here
+          soleWorldY = worldY
+          soleSurfaceAt[0] = _solePoint.x
+          soleSurfaceAt[1] = _solePoint.z
+        }
+      }
       modelRoot.worldToLocal(_solePoint)
       if (_solePoint.y < lowest) lowest = _solePoint.y
     }
     return lowest
+  }
+  // The ground a foot stands on, in the driver's own units: how far the surface
+  // under the bit of sole that would sink first stands above that bit — the same
+  // gap the flat rule below reads off its plane, measured in the world because a
+  // shaped ground has no single plane to read it against. Reading it per bit of
+  // sole rather than off the shoe's lowest corner is what a shaped ground needs:
+  // a foot on the rubber's own lip stands on the rubber with the rest of the shoe
+  // beside it (measured: the ankle's own place alone left the harness's set foot on
+  // the dirt two centimetres past the plate's back edge, the plate under the ball of
+  // the shoe), and a shoe laid along the mound's slant stands on the slope rather
+  // than on whichever of its two ends is uphill. A body with no ``groundAt`` has no
+  // world to read, and the plane rule is the whole answer.
+  const _footScale = new THREE.Vector3()
+  const surfaceUnder = () => {
+    if (!groundAt) return 0
+    modelRoot.getWorldScale(_footScale)
+    return (soleSurface - soleWorldY) / (_footScale.y || 1)
   }
 
   // Rig units -> the skeleton's own frame, as the component places the model:
@@ -2432,6 +2613,14 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
   const hipsRotation = new THREE.Quaternion()
   const leanRotation = new THREE.Quaternion()
   const upperRotation = new THREE.Quaternion()
+  const waistRotation = new THREE.Quaternion()
+  // Where the pelvis's own turn has carried the waist's centre this frame: the
+  // point the ribcage turns about (see the waist's placement in ``solveFrame``).
+  const waistAt = new THREE.Vector3()
+  // The waist's own centre, in the model's frame: where the pelvis and the torso
+  // turn against one another about (see ``cutBeltAndSleeve``). Filled in when the
+  // body is shaped, before any pose is solved.
+  let waistPivot = null
   // The pelvis's own turn, as the chain ended up carrying it, kept for the leg
   // diagnostics below.
   const hipsDelta = new THREE.Quaternion()
@@ -2443,7 +2632,10 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
   // the bat, whether the torso is following the hips rather than fighting them,
   // and whether the pelvis is leaning with the torso or standing upright under
   // it.
-  const debug = { metrics, arms: [], legs: [], torso: {}, waistBand: null }
+  // ...and `give`: how far the ground's own rule settled this frame (see `applyPose`),
+  // which is what a caller has to know to read a place the rule moved as the place the
+  // body *holds* rather than the one the pose asked for.
+  const debug = { metrics, arms: [], legs: [], torso: {}, waistBand: null, give: 0 }
 
   // The turn a link has taken, relative to the rest pose, about the body's own
   // up axis (a yaw), read from the bone's accumulated orientation.
@@ -2710,8 +2902,18 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
     _armAsked.copy(_openTarget)
     pushOutOfTrunk(_openTarget, ELBOW_CLEARANCE)
 
+    // ...and the girdle's own budget is the *pose's* to name, where it wants one: an
+    // arm asked for the end of its reach gets the clavicle swung under it until the
+    // wrist is inside ARM_SHOULDER_BEND of the span — which moves the socket the arm
+    // hangs from a couple of centimetres *toward the ask*, so the ask that reached for
+    // the chord is answered by an arm folded back to hold a wrist the body has already
+    // reached. A pose that has already asked for the straightest chord it can hold
+    // (see util/pitcherSequence.js, and the release's own note on the girdle) hands
+    // its own share of the span instead, and the girdle is left at rest: what was a
+    // bow is then the pitch's own straight arm.
     const shoulderReach = reachWithShoulder(
-      names.shoulder, names.upperArm, _openTarget, armSpan * ARM_SHOULDER_BEND,
+      names.shoulder, names.upperArm, _openTarget,
+      armSpan * (arm.shoulderBend ?? ARM_SHOULDER_BEND),
     )
     const shoulder = liveChain.of(bone).position
     const stretch = THREE.MathUtils.clamp(shoulder.distanceTo(_openTarget) / armSpan, 1, ARM_STRETCH_MAX)
@@ -2725,7 +2927,8 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
     // the pose's, and the difference is the driver's to report (see `miss` below,
     // which is exactly this distance).
     const bendChord = Math.sqrt(
-      upper * upper + fore * fore - 2 * upper * fore * Math.cos(ELBOW_BEND_MAX),
+      upper * upper + fore * fore
+        - 2 * upper * fore * Math.cos(arm.straight ?? ELBOW_BEND_MAX),
     )
     // The arm may not fold *through* the body either: an arm bends *around* a
     // trunk. Three rules answer for that, and they are walked in this order:
@@ -2830,9 +3033,12 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
     }
 
     // Where the arm ended up, and where the ball it is holding rides: the wrist,
-    // the hand's own line off it, and the model's own carry down that line. The
-    // release anchor is this number (see pitcherSequence.js), so it is reported
-    // rather than assumed — a solved wrist is the driver's to know.
+    // the hand's own line off it, and the carry down that line — the *pose's* own
+    // where it names one (the release's ask is a longer chord than the model's rest
+    // palm was written for, and what it adds comes back out of the carry: see
+    // util/pitcherSequence.js's RELEASE_ELBOW), and the model's own palm marker where
+    // it does not. The release anchor is this number (see pitcherSequence.js), so it
+    // is reported rather than assumed — a solved wrist is the driver's to know.
     const wrist = liveChain.of(bones[names.hand]).position
     _handAim.copy(liveChain.of(bones[names.fingers]).position).sub(wrist).normalize()
     debug.arms.push({
@@ -2850,7 +3056,10 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
       shoulder: toRigVector(shoulder).toArray(),
       wrist: toRigVector(wrist).toArray(),
       aim: toRigVector(_handAim).toArray(),
-      ball: toRigVector(_openBall.copy(wrist).addScaledVector(_handAim, ballCarry[side] ?? 0)).toArray(),
+      ball: toRigVector(_openBall.copy(wrist).addScaledVector(
+        _handAim,
+        arm.carry == null ? (ballCarry[side] ?? 0) : len(arm.carry),
+      )).toArray(),
       reach: armSpan / unitLength,
       required: shoulder.distanceTo(_openTarget) / unitLength,
       requiredAtRest: shoulderReach.atRest / unitLength,
@@ -2914,6 +3123,17 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
     debug,
 
     /**
+     * The waist joint the ribcage is turned about, in the frame a sequence authors its
+     * own places in: the joint's offset from the waist bone's own rest place, which is
+     * the point the turn it takes is measured from (the offset the pelvis' turn carries,
+     * and the chest's turn is taken about — see ``solveFrame``). A sequence carries it
+     * because a pose solved about the joint has to know where the joint is (see
+     * ``releaseShoulder`` in util/pitcherSequence.js); it is null until the body has been
+     * shaped, and a pose handed no joint models the ribcage's old axis instead.
+     */
+    waistJoint: null,
+
+    /**
      * Applies one frame of the batter animation.
      *
      * @param {object} pose every point in rig units, in the rig's frame
@@ -2934,6 +3154,40 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
      * @param {Array<{side:number,elbow:Array,grip:Array}>} pose.arms
      */
     applyPose(pose) {
+      // The ground's own give: a frame whose planted feet all stand on the
+      // surface a caller handed in is solved once and returned, and one where a
+      // shoe cannot reach it — the pitch's own finish, where the mound falls away
+      // under the trailing leg faster than the leg can reach (measured 49 mm) —
+      // comes down over that foot by the shortfall and is solved again, so the
+      // shoe stands on the ground rather than riding over it. The drop is read off
+      // the solve's own report (`debug.legs`, the driver's own units), applied as a
+      // translation of everything the ground does *not* hold (see
+      // `settleGroundedPose`) and re-solved; the response is very nearly one for
+      // one, so three passes carry any residue under the rule's own half
+      // millimetre, and a level ground pays nothing for the mechanism at all.
+      let applied = pose
+      let drop = 0
+      for (let pass = 0; pass < 3; pass += 1) {
+        // What the frame just solved *is* settled by: nought until a planted shoe
+        // asks for a give, and written before the solve so a frame that needs none
+        // leaves it at nought rather than at the last one. A caller reads the ball
+        // the body holds off this (see Pitcher.jsx): the pose's own place, less what
+        // the ground moved the body by.
+        debug.give = drop
+        this.solveFrame(applied)
+        if (!groundAt) return
+        let float = 0
+        for (const leg of debug.legs) {
+          if (leg.planted && leg.sink !== null && -leg.sink > float) float = -leg.sink
+        }
+        if (float <= GIVE_TOL) return
+        drop = Math.min(drop + float, GIVE_MAX)
+        applied = settleGroundedPose(pose, drop)
+      }
+    },
+
+    /** One solve of a frame, exactly as posed (see `applyPose`). */
+    solveFrame(pose) {
       liveChain.clear()
       debug.arms.length = 0
       debug.legs.length = 0
@@ -2976,7 +3230,20 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
 
       const spine = bones[PLAYER_BONES.spine]
       setRotation(PLAYER_BONES.spine, hipsRotation)
-      const hipOffset = toModelVector([0, pose.hip.offsetY, pose.hip.offsetZ])
+      // The pelvis' own *height*, its drive, and the *carry* a delivery's own lateral
+      // spends on it (see the pitcher's ``offsetX``, which is the body coming across its
+      // stance): the pelvis goes where its step goes — the striding foot's own place is
+      // authored across by the same metres (see the pitcher's own STEP_TRACK) — so the
+      // body is over the step it took rather than behind it. What that costs the *drive*
+      // leg is the slant, and only the slant: the socket it hangs from comes across with
+      // the pelvis while the foot stays on the rubber, and the delivery's own sink is what
+      // leaves the leg a straight rod while it does (see `stanceDip`, which the pose's
+      // own ``offsetY`` carries). Left out of the offset, the pelvis the driver builds
+      // stands a body's *carry* short of the one the pose's own reads are written for —
+      // measured on the default game's own pitch: the hand's target sat 0.75 m from the
+      // socket the driver had where the arm's own chord is 0.60, and the ball landed
+      // 0.167 m off the pitch's own release point.
+      const hipOffset = toModelVector([pose.hip.offsetX ?? 0, pose.hip.offsetY, pose.hip.offsetZ])
       // The stance's weight shift: the pelvis travelling along the batter's own
       // fore/aft line *over* planted feet, which is what a batter's rock from
       // foot to foot is. It is added to the pelvis like the other offsets and to
@@ -3014,11 +3281,12 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
       liveChain.invalidate(spine)
 
       // The waist takes the twist the pelvis was rolled back by, and *nothing
-      // else*: its own place is the rest chain's, so the two blocks the belt sits
-      // between differ by a rotation about the body's own up axis and by nothing
-      // at all. With the share at 1 that leaves the waist and the ribcage at the
-      // same orientation — the rigid block the pelvis is hinged to — and the
-      // ribcage only picks up whatever a future share below 1 hands it.
+      // else*: the two blocks the belt sits between differ by a rotation about
+      // the body's own up axis and by nothing at all — a rotation taken about the
+      // waist's own centre, so that the turn is the whole of what separates them
+      // (see the move below). With the share at 1 that leaves the waist and the
+      // ribcage at the same orientation — the rigid block the pelvis is hinged to
+      // — and the ribcage only picks up whatever a future share below 1 hands it.
       //
       // The pelvis may *translate* as a whole (the pose's crouch, its rock and
       // the drive above), and the whole torso travels with it, which is what a
@@ -3028,9 +3296,46 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
       // them, and hands the swing geometry the frame it really has, rather than
       // lifting the chest up out of the sink and stretching the band by it.
       const spine01 = bones[PLAYER_BONES.spine01]
-      setRotation(PLAYER_BONES.spine01, _q1.copy(upperRotation)
-        .multiply(_q2.setFromAxisAngle(UP, -pose.torsoYawExtra * (1 - WAIST_TWIST_SHARE))))
+      waistRotation.copy(upperRotation)
+        .multiply(_q1.setFromAxisAngle(UP, -pose.torsoYawExtra * (1 - WAIST_TWIST_SHARE)))
+      setRotation(PLAYER_BONES.spine01, waistRotation)
       spine01.position.copy(rest.get(PLAYER_BONES.spine01).position)
+      // ...and the ribcage turns about the *waist's own centre*, not about this bone's
+      // own place. Those are two different points on this model: the waist bone rests a
+      // hand's width off the body's axis and below the belt, so a separation taken about
+      // it swings the two blocks' edges apart by the whole of the distance between the
+      // axes. Measured on player.glb: the relative turn's own axis passes 20 mm from the
+      // waist's centre at every phase of the delivery, so the belt's cut opened by 13 mm
+      // at the plant's own 38° — which is what the sleeve behind it was hiding (see
+      // SLEEVE_MARGIN).
+      //
+      // Taking the turn about the centre instead costs this bone one move and no more:
+      // the ribcage above it is a rigid block whose place the chain carries from this
+      // bone's own, and a rotation about a point leaves the point it is taken about
+      // exactly where it was — so the pelvis's turn and this turn agree at the waist's
+      // centre whatever they are turned apart by, and the cut's two sides stay
+      // coincident. The move is *not* the offset between the two points (which is 130 mm
+      // and would be there even at rest): it is where the turn about the centre carries
+      // this bone's rest place against where the pelvis carries it, and it is nought
+      // whenever the two blocks are turned apart by nought.
+      //
+      // What it spends is what the seam would otherwise have opened by — nought at rest,
+      // and the 13 mm above at the plant, against the 140 mm the sleeve hides — and it is
+      // the chest, and so the arms and the head, that gives it up at the waist.
+      if (waistPivot) {
+        const pelvisAt = liveChain.of(spine).position
+        const pelvisRest = restChain.of(spine).position
+        // Where the pelvis's own turn has carried the waist's centre...
+        waistAt.fromArray(waistPivot).sub(pelvisRest).applyQuaternion(hipsRotation).add(pelvisAt)
+        // ...and so where the turn about that centre carries this bone's rest place.
+        _v1.fromArray(waistPivot)
+        _v2.copy(restChain.of(spine01).position).sub(_v1)
+          .applyQuaternion(waistRotation).add(waistAt)
+        // A bone's position is written in its parent's own frame, where the parent's
+        // turn and scale are what carry it out to the model's.
+        _q1.copy(liveChain.of(spine).quaternion).invert()
+        spine01.position.copy(_v2.sub(pelvisAt).applyQuaternion(_q1).divide(liveChain.of(spine).scale))
+      }
       liveChain.invalidate(spine01)
       // The ribcage: the chest, and so the shoulders, the arm solves and the
       // head's reference, end up exactly where the tuning put the upper body.
@@ -3264,6 +3569,34 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
             _qFootRest.copy(restChain.of(bones[names.ankle]).quaternion).invert(),
           )
           _soleNow.copy(_soleRest).applyQuaternion(liveChain.of(bones[names.ankle]).quaternion)
+          // What the sole is laid on: the world's own up on a plane, and on a caller's
+          // shaped ground the surface's own normal under the foot — read off the same
+          // function the ground rule stands it on (``groundAt``) by the fall either
+          // side of the foot's own place, so the read agrees with the ground the rule
+          // is about rather than with a plane that is no longer there. On the mound's
+          // flank a shoe asked to be flat is a shoe *on the slope*: level to the
+          // world, it could only stand on an uphill edge, with the whole downhill end
+          // of it in the air (measured at the finish: 3.0 cm of it, with the leg six
+          // millimetres short of the ground at the far end); laid down the fall, its
+          // toe comes down on the dirt it is over and the heel rises off it, which is
+          // the foot a trail leg really leaves on a mound. On the level — the field,
+          // the plateau, the plate — the normal is the world's up and nothing moves.
+          if (groundAt) {
+            bones[names.ankle].updateWorldMatrix(true, false)
+            bones[names.ankle].getWorldPosition(_solePlace)
+            const step = 0.12
+            const gx = (
+              groundAt(_solePlace.x + step, _solePlace.z) -
+              groundAt(_solePlace.x - step, _solePlace.z)
+            ) / (2 * step)
+            const gz = (
+              groundAt(_solePlace.x, _solePlace.z + step) -
+              groundAt(_solePlace.x, _solePlace.z - step)
+            ) / (2 * step)
+            _soleNormal.set(-gx, 1, -gz).normalize()
+          } else {
+            _soleNormal.copy(UP)
+          }
           // The line the roll turns about is the one *the sole* runs along: the
           // horizontal direction in the sole's own plane, which is what a subtalar roll
           // levelling a shoe on the dirt actually turns about. It is *not* the bone's
@@ -3275,10 +3608,10 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
           // is 5° of knee on a leg with nothing left to spend). Read off the sole, the
           // roll is exactly the turn that lays it flat, and what is left over is the
           // shoe's own leather rather than its angle.
-          _footAxisModel.crossVectors(_soleNow, UP)
+          _footAxisModel.crossVectors(_soleNow, _soleNormal)
           if (_footAxisModel.lengthSq() < 1e-9) return 0
           _footAxisModel.normalize()
-          const roll = squareAngle(_soleNow, UP, _footAxisModel) * flatShare
+          const roll = squareAngle(_soleNow, _soleNormal, _footAxisModel) * flatShare
           _qFootNow.copy(liveChain.of(bones[names.ankle]).quaternion)
           _qFootWant.copy(_qFootNow).premultiply(_qFootRoll.setFromAxisAngle(_footAxisModel, roll))
           _qFootWant.multiply(_qFootRest.copy(rest.get(names.ankle).orientation).invert())
@@ -3328,6 +3661,15 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
         const standsOn = sole[leg.side === 1 ? 'R' : 'L']
         const ground = standsOn?.height ?? null
         let lowestSole = null
+        // A caller that stood the body on a shaped ground (the pitcher on his
+        // mound, see `createPlayerRig`) has its surface answer for the plane: the
+        // foot stands on the surface under its own place, in the world, wherever
+        // the pose's own nought happens to be. Every pass re-reads it, so a foot
+        // the solve re-aims is stood on the surface it is standing on.
+        const standOn = groundAt && leg.planted && ground !== null ? surfaceUnder : null
+        // The last gap the rule read (its own units), so the report below can say
+        // how far the shoe came out of the ground it was really stood on.
+        let soleGap = 0
         if (leg.planted && ground !== null) {
           // A planted foot stands *on* the ground and not in it, and not a
           // centimetre above it either: the rule answers a float as well as a sink,
@@ -3359,9 +3701,24 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
           for (let pass = 0; pass < 6; pass += 1) {
             lowestSole = soleLowest(leg.side === 1 ? 'R' : 'L')
             if (lowestSole === null) break
-            const sinking = ground - lowestSole
+            const sinking = standOn ? standOn() : ground - lowestSole
+            soleGap = sinking
             if (!(Math.abs(sinking) > 1e-5)) break
-            const step = sinking * (pass === 0 ? 1 : 0.8)
+            // One pass asks for no more length than the leg has left. Asking for
+            // the whole gap when the leg is nearly out of reach is what used to
+            // hand the toe roll a target past the limb's own length on the way
+            // *down*: the roll answers a target it cannot reach by pivoting the
+            // ankle up over the toe, which takes back most of the step, and the
+            // passes then trade the gap back and forth instead of closing it
+            // (measured at the finish: the same 4.8 mm read by every pass while
+            // the branch's own slack sat at 9). Held to the slack, the ankle
+            // walks the shoe down the leg's own length, and the roll stays what it
+            // is for — a shoe whose ground the leg cannot reach at all.
+            const spare = legLength - Math.hypot(
+              hip.x - ankle.x, hip.y - ankle.y, hip.z - ankle.z,
+            )
+            const asked = sinking * (pass === 0 ? 1 : 0.8)
+            const step = spare > 0 ? Math.max(asked, -spare * 0.9) : asked
             ankle.y += step
             toe.y += step
             lifted += step
@@ -3392,7 +3749,18 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
           // planted on the ground, in rig units, so a foot that is standing in the
           // dirt rather than on it is a number here (see the ground rule above).
           sole: lowestSole === null ? null : lowestSole / unitLength,
-          sink: ground === null || lowestSole === null ? null : (ground - lowestSole) / unitLength,
+          // ...and the ground rule's own gap: nought for a shoe stood on the ground
+          // it was solved against, whether that is the driver's own plane or the
+          // surface a caller handed in under the foot (see the rule above).
+          sink: ground === null || lowestSole === null ? null : soleGap / unitLength,
+          // ...and, for a caller that handed a surface in, where the shoe stood in
+          // the *world*: the point the surface was read under, its own height, and
+          // the shoe's lowest point beside it — the two the ground rule is the
+          // agreement of, readable without the driver's own arithmetic. Absent on
+          // the driver's own plane, where the world is the caller's business.
+          standing: standOn && lowestSole !== null
+            ? { at: [soleSurfaceAt[0], soleSurfaceAt[1]], surface: soleSurface, contact: soleWorldY }
+            : null,
           // The socket the leg hangs from, as posed, and where the foot was asked for
           // and landed — the same promise the arms report: a foot is planted where
           // the pose says it is unless the leg had to give (see rollFootOnToe), and a
@@ -4377,8 +4745,26 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
   debug.waistBand.contour = parts.contour
   // The belt cut open, and the sleeve hidden under it: the numbers the tests
   // read back (how tall the cut's own faces are, and how many vertices each
-  // added).
-  debug.sleeve = cutBeltAndSleeve(modelRoot, metrics, waistband)
+  // added). The waist's own centre comes back with them, and it is what the two
+  // blocks turn against one another about (see ``solveFrame``).
+  const sleeve = cutBeltAndSleeve(modelRoot, metrics, waistband)
+  debug.sleeve = sleeve
+  waistPivot = sleeve.pivot
+  // ...and the joint that centre *is*, written the way a sequence reads it: in the
+  // metrics' own frame — the same body facing the other way, so x and z change sign —
+  // and as the offset from the waist bone's own rest place, which is the point the
+  // joint's turn is measured from on the rig. The waist bone rides on the pelvis and
+  // the chest rides on the waist bone, so that offset is carried by the pelvis' turn
+  // while the chest's turn is taken about it: a pose that means to stand the ribcage on
+  // the joint has to carry the difference (see ``releaseShoulder``).
+  if (waistPivot) {
+    const pivot = restChain.of(bones[PLAYER_BONES.spine01]).position
+    driver.waistJoint = [
+      -(waistPivot[0] - pivot.x),
+      waistPivot[1] - pivot.y,
+      -(waistPivot[2] - pivot.z),
+    ]
+  }
   modelRoot.userData.playerRig = debug
   return driver
 }

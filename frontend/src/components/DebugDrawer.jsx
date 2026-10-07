@@ -227,7 +227,7 @@ const CONTROL_META = {
     legFrontKneeLift: ['Knee lift', 0, 0.4, 0.01, 'm'],
     legFrontUnplantLift: ['Unplant lift', 0, 0.4, 0.01, 'm'],
     backFootPivot: ['Back foot pivot', 0, 1, 0.01, '×'],
-    frontFootPivot: ['Front foot pivot', 0, 1, 0.01, '×'],
+    frontFootPivot: ['Front foot pivot', 0, 1.5, 0.01, '×'],
     legFrontToeLift: ['Front toe lift (follow-through)', 0, 0.5, 0.01, 'rad'],
     // The drive's own split, read against each other: how far the body travels is
     // the planted rear leg's budget and not a distance this drawer can set.

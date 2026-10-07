@@ -7,7 +7,14 @@ import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.j
 import { getCycleDuration, getTimeScale, stepSimulation } from '../constants/playback';
 import { getTuning, useTuning } from '../constants/tuning';
 import { createPlayerRig, measurePlayerRig } from '../util/playerRig';
-import { blendPose, pitcherIdle, pitcherPose } from '../util/pitcherSequence';
+import { applyBatterLook } from '../util/batterLook';
+import { AUTHORED_LANDING_TIME, AUTHORED_RELEASE_TIME, blendPose, pitcherFinish, pitcherIdle, pitcherPlacement, pitcherPose, pitcherProfile } from '../util/pitcherSequence';
+import { MOUND, moundSurfaceY } from '../constants/mound';
+
+// The world's own up: the axis a rig place is turned about to be read in the world,
+// where the group's yaw is what stands between the two frames (see the placement's
+// own read of the mound under the finish).
+const UP = new THREE.Vector3(0, 1, 0);
 
 // ---------------------------------------------------------------------------
 // Pitcher at the mound: the reference project's player.glb character, driven the
@@ -48,8 +55,6 @@ const AWAY_TEXTURE_URL = '/textures/AwayPlayer_BaseColor.png';
 // Warm the GLTF cache so the first pitch doesn't suspend for long.
 useGLTF.preload(PLAYER_MODEL_URL);
 
-const UP = new THREE.Vector3(0, 1, 0);
-const _ball = new THREE.Vector3();
 
 export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
     const tuning = useTuning();
@@ -63,6 +68,18 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
         // The model's joints in the rig's frame, measured once at its rest pose —
         // the frame every target in the delivery is authored in.
         const metrics = measurePlayerRig(model);
+        // ...and the pitcher's own kit, put right the way the batter's is (see
+        // util/batterLook.js): one body, one face, one uniform, so the pitcher wears the
+        // batter's own corrected face — brows, and eyes brought down and out onto it —
+        // and the same jersey front and shoes the batter does. What differs is the hat,
+        // and it is handed over as such: the pitcher throws in the *cap* (the helmet is
+        // hidden below), so the eyes are read under the cap's own brim, 0.012 rig lower
+        // than the helmet's, and the helmet's ear-flap work is left undone rather than
+        // done on a mesh nobody sees. Run here rather than in a material pass, because
+        // this is a *geometry* pass: the body it edits is this instance's own — the
+        // model is the pitcher's own clone (see cloneSkeleton above) and the pass works
+        // on its own copy of each mesh's geometry on top of that.
+        applyBatterLook(model, { headgear: 'cap' });
         // ...and the rest pose itself, snapshotted before the driver writes to it:
         // the pose is authored *relative* to the resting skeleton (see
         // createPlayerRig).
@@ -77,10 +94,26 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
         return { model, metrics, restPose };
     }, [gltf]);
     const model = body.model;
-    const rig = body.metrics;
+    // The waist joint the driver turns the ribcage about, in the metrics' own frame:
+    // measured when the body is shaped, so the profile, the placement and every frame
+    // of the delivery are all solved against the same joint.
+    const [waistJoint, setWaistJoint] = useState(null);
+    // The rig every number below is authored in — and the one the driver's own waist
+    // joint is added to once the body has been *shaped*: the joint is the cut's own
+    // centre, measured in createPlayerRig, and the pose has to carry it because the rig
+    // turns the ribcage about it rather than about the pelvis' pivot (see the driver's
+    // ``waistJoint`` and ``releaseShoulder``). Until then the metrics stand alone, which
+    // is the rig the unit suite's own pose solves are handed.
+    const rig = useMemo(
+        () => (waistJoint ? { ...body.metrics, waistJoint } : body.metrics),
+        [body.metrics, waistJoint],
+    );
     const groupRef = useRef();
     const prevPhaseRef = useRef(null);
     const fadeRef = useRef(0);
+    // The mound's own step under the finish, solved off the ground rule and kept
+    // against the placement it was solved for (see the frame loop).
+    const settleRef = useRef(null);
 
     const pitchHand = pitchData?.pitch_hand || 'R';
     const isRHP = pitchHand === 'R';
@@ -108,7 +141,13 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
         const gloveL = get('GloveL');
         if (!bodyMesh || !handR || !handL || !gloveL) return;
 
-        const bodyMaterial = new THREE.MeshStandardMaterial({ map: tex, roughness: 1 });
+        const bodyMaterial = new THREE.MeshStandardMaterial({
+            map: tex,
+            roughness: 1,
+            vertexColors: true,
+            side: THREE.DoubleSide,
+            shadowSide: THREE.DoubleSide,
+        });
         bodyMesh.material = bodyMaterial;
         cap.material = bodyMaterial;
         handR.material = bodyMaterial;
@@ -117,7 +156,12 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
         // The glove keeps its original leather texture (the reference's mit
         // material), just re-created so the cache's material stays pristine.
         const gloveMap = gloveL.material?.map ?? null;
-        gloveL.material = new THREE.MeshStandardMaterial({ map: gloveMap, roughness: 1 });
+        gloveL.material = new THREE.MeshStandardMaterial({
+            map: gloveMap,
+            roughness: 1,
+            side: THREE.DoubleSide,
+            shadowSide: THREE.DoubleSide,
+        });
 
         model.traverse((child) => {
             if (child.isMesh) {
@@ -178,7 +222,16 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
         // The model sits at the group's own origin (no placement offset): the
         // delivery's targets are authored from the model's own root, so the rig
         // frame and the group's frame are the same frame.
-        rigDriverRef.current = createPlayerRig(body.model, body.metrics, body.restPose);
+        // The mound the body stands on, handed to the driver as its ground: a foot
+        // the pose plants stands on the surface under its own place rather than on a
+        // plane, so the pivot shoe stands on the rubber's own top at the set and the
+        // stride's foot lands down the mound's slant (see constants/mound.js, and the
+        // driver's leg solve).
+        const driver = createPlayerRig(body.model, body.metrics, body.restPose, [0, 0, 0], {
+            groundAt: moundSurfaceY,
+        });
+        rigDriverRef.current = driver;
+        setWaistJoint(driver.waistJoint);
         return () => { rigDriverRef.current = null };
     }, [modelNode, body]);
 
@@ -189,50 +242,126 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
         fadeRef.current = 0;
     }, [pitchData, replayKey]);
 
-    // Where the body stands, and which way it faces, for this pitch.
-    //
-    // The delivery's own release frame is the anchor: its ball's place in the rig
-    // frame (`pitcherPose` at the release clock) is the point that has to land on
-    // the trajectory's first sample, so the group is placed at the release point
-    // less that — the same "place the body from the release" the clip-driven
-    // version did, but read off a pose this model really holds instead of a
-    // constant read off another project's scene. The pitch's release height is
-    // read *into* the pose (see pitcherRelease): a delivery is aimed and leaned by
-    // where its own ball leaves from, so a pitch released higher is thrown by a
-    // taller slot and not by a stretched arm.
-    //
-    // The group faces home plate with the model's own half turn inside it (the rig
-    // frame faces -Z, the model rests facing +Z), so the yaw is the one that
-    // points the group's +Z away from the plate: `atan2(x, z)` of the body's own
-    // place. It is solved twice because the body's place is what the yaw is
-    // measured from and the yaw is what places it — two passes converge to well
-    // under a millimetre, and the residual is the same order as the driver's own
-    // wrist solve.
-    const placement = useMemo(() => {
+    // The pitcher this pitch is thrown by, per pitch: his proportions clamped to the
+    // ranges a real staff spans, his own listed height standing the body at its own
+    // stature — the same gameData lookup the batter's height comes from, and *not* a
+    // size solved from the pitch — and the stance the delivery is thrown from: the
+    // drive foot on the rubber, both feet on the ground (see pitcherProfile and its own
+    // notes above). Every release point the feed hands over is a new reading, so a
+    // pitching change is a new body rather than the same one throwing from somewhere
+    // else.
+    const releasePoint = useMemo(() => {
         const traj = pitchData?.trajectory;
         if (!traj || traj.length === 0) return null;
-        const release = new THREE.Vector3(traj[0].x, traj[0].z, -traj[0].y);
-        const releaseTime = Math.max(0.001, tuning.playback.ballReleaseTime);
-        const pose = pitcherPose(releaseTime, {
-            rig,
-            hand: pitchHand,
-            height: release.y,
-            releaseTime,
-        });
-        _ball.set(pose.ball[0], pose.ball[1], pose.ball[2]);
-        const position = release.clone();
-        let yaw = 0;
-        for (let pass = 0; pass < 2; pass += 1) {
-            yaw = Math.atan2(position.x, position.z);
-            position.copy(release).sub(_ball.clone().applyAxisAngle(UP, yaw));
-        }
-        return {
-            position,
-            yaw,
-            release,
-            contactTime: traj[traj.length - 1].t,
+        // The world point the pitch is drawn from, in the app's own mapping (x -> x,
+        // height -> y, distance -> -z), which is the frame the profile and the
+        // placement both work in.
+        return [traj[0].x, traj[0].z, -traj[0].y];
+    }, [pitchData]);
+
+    // The pitcher's own height, in metres, out of the feed's own inches (the same
+    // conversion Batter.jsx makes for the batter's listed height); null where the feed
+    // has none, which leaves the model's own stature standing in.
+    const pitcherHeightM = pitchData?.pitcher_height != null
+        ? pitchData.pitcher_height * 0.0254
+        : null;
+
+    // The body, the stance and the mound under them for this pitch: one solve,
+    // because the three are one answer. The profile is where the stance comes from
+    // (the drive foot on the rubber, the release reached by the delivery's own
+    // travel), the placement is where the body stands for it, and the ground under
+    // the stance — the surface the profile's own slot is measured from and the
+    // placement's height is — is the mound's, read at the place the stance really
+    // came out on. So the pass that has no ground to start from is taken at the mound's
+    // own rubber line (the surface under the mound's centre) and the second at the
+    // surface under the drive foot the first one stood: for a stance off the plate's
+    // own leather the two differ by the mound's slope, and the second pass is the one
+    // the pitch keeps.
+    const stance = useMemo(() => {
+        if (!releasePoint) return null;
+        // The mound's own line: the rubber's centre, which is the mound's and the
+        // plate's (see constants/mound.js), and the line the pitch's own lateral is
+        // read against. A pitch's release x carries a body's own width away from the
+        // plate's line whatever the stance does, so it is handed to the *arm* (see
+        // ``side`` in util/pitcherSequence.js) and the stance's line is held on the
+        // rubber (see `pitcherPlacement`) rather than the whole body being slid across
+        // the mound to meet the ball.
+        const solve = (ground) => {
+            const profile = pitcherProfile({
+                rig,
+                hand: pitchHand,
+                height: releasePoint[1],
+                release: releasePoint,
+                pitcherHeight: pitcherHeightM,
+                ground,
+                side: releasePoint[0] - MOUND.centre[0],
+            });
+            return {
+                profile,
+                placement: pitcherPlacement({
+                    profile, release: releasePoint, line: MOUND.centre[0],
+                }),
+            };
         };
-    }, [pitchData, rig, pitchHand, tuning.playback.ballReleaseTime]);
+        const first = solve(moundSurfaceY(MOUND.centre[0], MOUND.centre[1]));
+        // ...read under the bit of *shoe* that stands on it rather than under the ankle
+        // inside the leather: the two are a shoe's own lead apart, and it is the shoe
+        // the ground is under (see SHOE_LEAD in util/pitcherSequence.js).
+        const foot = first.placement.shoe;
+        return solve(moundSurfaceY(foot[0], foot[2]));
+    }, [releasePoint, rig, pitchHand, pitcherHeightM]);
+
+    // Where the body stands, and which way it faces, for this pitch.
+    //
+    // The body is placed from its *stance* rather than from the release: the set's
+    // drive foot stands on the rubber (or as much of the shoe as the pitch's own
+    // extension leaves on it, see the profile's ``contact``), the group's height is
+    // the ground's — a pitcher in the set is a pitcher standing on the mound, his own
+    // soles on its surface — and the release point is what the delivery's own travel
+    // reaches, at the size his own height stands him at (see `pitcherPlacement`). The
+    // yaw is the way the body faces home plate from where that leaves it, and it is
+    // solved with the place because each is measured from the other: four passes,
+    // which converge to well under a millimetre.
+    const placement = useMemo(() => {
+        if (!stance || !releasePoint) return null;
+        const { profile: solvedProfile, placement: solved } = stance;
+        // The mound's own step under the finish: the surface the delivery's last feet
+        // stand on — a metre and a half out in front of the rubber by then, down the
+        // mound's own front slope — read in the world and handed to the pose in the
+        // rig's own units, so the body steps down the slope as it drives rather than
+        // dropping at the frame the shoes touch the dirt (see ``settle`` in
+        // util/pitcherSequence.js). The deepest of the two feet is the one the body has
+        // to be low enough for; the other's shoe is stood on the surface by the
+        // driver's ground rule.
+        const finish = pitcherFinish({ rig: solvedProfile.rig, hand: solvedProfile.hand });
+        const surfaceAt = (place) => {
+            const world = new THREE.Vector3(...place)
+                .multiplyScalar(solved.scale)
+                .applyAxisAngle(UP, solved.yaw)
+                .add(new THREE.Vector3(...solved.position));
+            return moundSurfaceY(world.x, world.z);
+        };
+        const settle = (
+            Math.min(surfaceAt(finish.drive), surfaceAt(finish.stride)) - solvedProfile.ground
+        ) / solved.scale;
+        return {
+            position: new THREE.Vector3(...solved.position),
+            yaw: solved.yaw,
+            scale: solved.scale,
+            foot: solved.foot,
+            slide: solved.slide,
+            release: new THREE.Vector3(...releasePoint),
+            profile: solvedProfile,
+            // The stance's own line in the world, and the metres the ball came off the
+            // pitch's own lateral by for it: the pitch's own lateral is the arm's to
+            // reach (see the profile's ``side``), and this is where the shoe's own
+            // leather put the limit of it (see `pitcherPlacement`).
+            line: solved.line,
+            side: solved.side,
+            settle,
+            contactTime: pitchData.trajectory[pitchData.trajectory.length - 1].t,
+        };
+    }, [stance, releasePoint, pitchData]);
 
     useFrame((state, delta) => {
         const { time: t } = stepSimulation(delta, state.clock.elapsedTime);
@@ -241,10 +370,12 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
         const driver = rigDriverRef.current;
         if (!group || !placement) return;
 
-        // The body stands where its own delivery's release is this pitch's, and
-        // faces home plate.
+        // The body stands where this pitch's own stance puts it — drive foot on the
+        // rubber, soles on the ground — at the size the *pitcher's* own height asks for,
+        // facing home plate.
         group.position.copy(placement.position);
         group.rotation.set(0, placement.yaw, 0);
+        group.scale.setScalar(placement.scale);
         if (!driver) return;
 
         // Shared cycle clock (same as Pitch/Batter/BattedBall).
@@ -298,7 +429,49 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
             : 1;
         const pitchShare = isPitch ? k : 1 - k;
 
-        const ctx = { rig, hand: pitchHand, height: placement.release.y, releaseTime };
+        // The pose is handed the *fitted* body and the release height in its own
+        // units: the group's scale is the world's, so a rig unit is a rig unit of the
+        // model's own frame — the pitch's height comes back out at world size when the
+        // ball is drawn (see the profile's own notes).
+        const ctx = {
+            rig: placement.profile.rig,
+            hand: pitchHand,
+            height: placement.profile.rigHeight,
+            releaseTime,
+            stride: placement.profile.stride,
+            // ...and where the pitch's own release stands across the body (see
+            // ``side`` above): the same ask the profile solved its stride against, so
+            // the delivery's own anchor is the one the placement was read off.
+            side: placement.profile.side,
+            // ...and the mound's own step under the finish (see the placement above):
+            // the body walks down its front slope rather than dropping onto it. Its
+            // *depth* is the ground rule's own answer rather than the surface's: a
+            // shoe laid on the slope rides its own leather, so its ankle stands a
+            // centimetre or two higher than the surface's own fall would put it, and
+            // only the driver — the thing that knows the shoe — can say how far the
+            // body really has to come down for the deepest of the finish's feet to
+            // reach the dirt. So the placement's surface reading is what a pitch falls
+            // back on, and the rule's own is what it walks down; solved once per
+            // placement, on the finish's own frame, so a new pitch is a new body and
+            // a new slope under it (a pitch's placement is a new object every time).
+            settle: placement.settle,
+        };
+        if (settleRef.current?.placement !== placement) {
+            // The finish's frame, read off the pose the delivery really writes there:
+            // the keys are the authored clock's, so it is the *authored* release this
+            // pose is posed against rather than the tuning's own.
+            const landing = pitcherPose(AUTHORED_LANDING_TIME, {
+                ...ctx,
+                releaseTime: AUTHORED_RELEASE_TIME,
+                settle: 0,
+            });
+            driver.applyPose(landing);
+            // What the rule settled the body by: its own answer for the deepest of the
+            // finish's feet, which is the pose's own hip less the one it was handed.
+            const depth = driver.debug.pose.hip.offsetY - landing.hip.offsetY;
+            settleRef.current = { placement, settle: depth < 0 ? depth : placement.settle };
+        }
+        ctx.settle = settleRef.current.settle;
         const pitchPose = pitcherPose(pitchTime, ctx);
         const pose = pitchShare >= 1
             ? pitchPose
@@ -311,9 +484,61 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
         // release frame says the ball is — the three the release's accuracy is
         // the agreement of.
         model.userData.pitcher = {
-            placement: { position: group.position.toArray(), yaw: placement.yaw },
+            placement: {
+                position: group.position.toArray(),
+                yaw: placement.yaw,
+                scale: placement.scale,
+                foot: placement.foot,
+                slide: placement.slide,
+                // The stance's own line in the world and how far the drive shoe came
+                // out of it (the same reading as ``slide`` across the mound rather
+                // than along it), then the metres the ball came off the pitch's own
+                // lateral by for the shoe's sake (see the placement's own notes).
+                line: placement.line,
+                side: placement.side,
+            },
+            // The pitch's own point in world space, and where the delivery's own
+            // release frame says the ball is — the two the release's accuracy is the
+            // agreement of.
             release: placement.release.toArray(),
-            ball: pose.ball,
+            // ...and the body the pitch is thrown by: his own listed stature and the
+            // rig's own (the two the scale between them is read off), the arm's own
+            // angle at the release, and where along the rubber the stance stands (see
+            // pitcherProfile).
+            profile: {
+                stature: placement.profile.stature,
+                rigStature: placement.profile.rigStature,
+                scale: placement.profile.scale,
+                rigHeight: placement.profile.rigHeight,
+                armAngle: placement.profile.armAngle,
+                stride: placement.profile.stride,
+                contact: placement.profile.contact,
+                shortfall: placement.profile.shortfall,
+                heightShortfall: placement.profile.heightShortfall,
+                // ...and what the arm's own lateral reach could not hold of the pitch's
+                // release x, in world metres on the rig's own x (see pitcherProfile;
+                // the placement's ``side`` is the same reading after the yaw).
+                side: placement.profile.side,
+                sideShortfall: placement.profile.sideShortfall,
+                ceiling: placement.profile.ceiling,
+                travel: placement.profile.travel,
+                needed: placement.profile.needed,
+                // The mound's own top under the stance: the surface the group stands
+                // on, and so the height the release's own slot is measured from.
+                ground: placement.profile.ground,
+            },
+            // ...and the ball the body it was solved *holds*, which is the pose's own
+            // place less the ground's own give: the driver settles a frame onto its
+            // planted feet by the shortfall of the deepest of them (see `give` in
+            // playerRig's applyPose), and the ball comes down with the hand that is
+            // holding it. It is the same rule the placement's own `settle` is solved
+            // into the pose for, read now on the frame itself rather than on the finish
+            // alone: a pose whose feet all reach the dirt pays nothing for it, and the
+            // delivery's own tail is where it is worth reading — measured 9 mm at
+            // 1.42 s on the centred pitch and 30 mm at 1.8 s, which is the gap between
+            // the place the pose wrote and the hand the pitcher is really holding it in.
+            ball: [pose.ball[0], pose.ball[1] - (driver.debug.give ?? 0), pose.ball[2]],
+            give: driver.debug.give ?? 0,
             clip: { pitching: isPitch, time: pitchTime, pitchShare },
         };
     });

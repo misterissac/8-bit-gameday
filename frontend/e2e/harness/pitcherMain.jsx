@@ -1,6 +1,6 @@
 // oxlint-disable react/only-export-components -- Vite entry point: it mounts the
 // harness and intentionally exports nothing.
-import React, { Suspense, useRef } from 'react'
+import React, { Suspense, useEffect, useMemo, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
@@ -9,6 +9,7 @@ import { setCycleDuration, setSimulationTime, setTimeScale } from '../../src/con
 import { DEFAULT_TUNING, setTuningValue } from '../../src/constants/tuning'
 import { PLATE_FRONT_Y } from '../../src/util/MathUtil.js'
 import { PART_BONES } from '../../src/util/playerRig.js'
+import { MOUND, createMoundGeometry } from '../../src/constants/mound.js'
 
 // ---------------------------------------------------------------------------
 // Test/look harness for the pitcher. It mounts the real <Pitcher> component on a
@@ -25,6 +26,13 @@ import { PART_BONES } from '../../src/util/playerRig.js'
 //   ?view=three-quarter  three-quarter | side | front | back | top | low
 //   ?zoom=1.4           framing distance multiplier
 //   ?hand=L             which arm throws (the pitch's own hand by default)
+//   ?height=78          the pitcher's own height, in inches (6'2" by default;
+//                       ``none`` for a pitch whose feed carries none)
+//   ?x=0                the release point's own lateral offset, in metres (−0.55,
+//                       off the third-base side of the rubber, by default): the
+//                       body is placed from it, so a pitch released over the
+//                       plate's own line is what stands the stance on the rubber
+//                       (see Pitcher.jsx's placement and constants/mound.js)
 //
 // `window.__vr.probe()` reads back what matters about the release: the world
 // point the pitch's trajectory starts from, where the body was placed for it,
@@ -40,27 +48,51 @@ const FROZEN_TIME_SCALE = 1e-9
 const RELEASE_TIME = DEFAULT_TUNING.playback.ballReleaseTime
 
 // A right-handed four-seamer: 94 mph off the third-base side of the rubber,
-// released 1.78 m up and 54 ft from the plate.
+// released 1.78 m up and 54 ft from the plate. ``?up=`` and ``?out=`` override the
+// release's own height and its distance from the plate, in metres, so a suite can
+// throw a *feed's* own release point rather than this file's — the two numbers a
+// real pitch varies that the delivery's own stance solve reads (see `PITCH`).
 const RELEASE_POINT = { t: 0, x: -0.55, y: 16.46, z: 1.78 }
+const releaseUpQuery = new URLSearchParams(window.location.search).get('up')
+const releaseOutQuery = new URLSearchParams(window.location.search).get('out')
+if (releaseUpQuery != null) RELEASE_POINT.z = Number(releaseUpQuery)
+if (releaseOutQuery != null) RELEASE_POINT.y = Number(releaseOutQuery)
 const CROSSING = { t: 0.44, x: 0.02, y: PLATE_FRONT_Y, z: 0.86 }
 const handQuery = new URLSearchParams(window.location.search).get('hand')
 const PITCH_HAND = handQuery === 'L' ? 'L' : 'R'
+// The pitcher's own listed height, in the feed's own inches — the ``pitcher_height``
+// the backend looks up out of gameData beside the batter's (6'2", the middle of a
+// staff). It is the body's own stature in the delivery rather than a size the pitch's
+// release point asks for (see pitcherProfile in util/pitcherSequence.js), and
+// ``?height=`` overrides it in inches: ``?height=none`` is a pitch whose feed carries
+// no height at all, which is the fallback the model's own stature stands in for.
+const HEIGHT_IN = 74
+const heightQuery = new URLSearchParams(window.location.search).get('height')
+const PITCHER_HEIGHT_IN = heightQuery === 'none'
+  ? null
+  : (heightQuery == null ? HEIGHT_IN : Number(heightQuery))
+// Where along the rubber the pitch is released from, in metres: the pitch's own
+// lateral reading, which the body is placed from — so a suite can stand the
+// delivery over the plate's own line (x=0) as well as off its edge.
+const releaseXQuery = new URLSearchParams(window.location.search).get('x')
+const RELEASE_X = releaseXQuery == null ? RELEASE_POINT.x : Number(releaseXQuery)
 export const PITCH = {
   play_id: 'pitcher-harness',
   pitch_hand: PITCH_HAND,
   pitch_type: 'FF',
   pitch_type_description: 'Four-Seam Fastball',
   speed_mph: 94,
+  pitcher_height: PITCHER_HEIGHT_IN,
   is_top_inning: false,
   trajectory: [
-    RELEASE_POINT,
+    { ...RELEASE_POINT, x: RELEASE_X },
     { t: CROSSING.t - 0.05, x: 0.0, y: PLATE_FRONT_Y + 1.1, z: 0.9 },
     CROSSING,
   ],
 }
 // The world point the pitch is drawn from (the app's own mapping: x -> x,
 // height -> y, distance -> -z).
-const RELEASE_WORLD = new THREE.Vector3(RELEASE_POINT.x, RELEASE_POINT.z, -RELEASE_POINT.y)
+const RELEASE_WORLD = new THREE.Vector3(RELEASE_X, RELEASE_POINT.z, -RELEASE_POINT.y)
 
 const query = new URLSearchParams(window.location.search)
 const clipParam = Number(query.get('clip'))
@@ -371,6 +403,14 @@ function probe() {
     separation: copyPlain(debug?.torso?.separation ?? null),
     pose: debug?.pose ?? null,
     pitcherData: model?.userData?.pitcher ?? null,
+    // What the *look* pass did to this body — the same pass the batter's own body is
+    // put through, run here with the pitcher's headgear (see the body memo in
+    // Pitcher.jsx). Read off the model the pass wrote its own report to rather than
+    // re-measured, so a run against the cap is the pass saying so: which hat it read
+    // the eyes under, where the eyes came out, and that the brows, the jersey's front
+    // and the shoes are the batter's own (the flap row is the one difference, and it is
+    // the *helmet's* work left undone for a hat that has no ear cover to take off).
+    look: copyPlain(model?.userData?.batterLook ?? null),
   }
 }
 
@@ -500,13 +540,34 @@ vr.sweep = async (from, to, step) => {
   return out
 }
 
-/** The ground plane the pitcher stands on, at the mound's own height. */
-function Ground() {
+/**
+ * The mound the pitcher stands on, from the app's own description of it (see
+ * src/constants/mound.js): the field's surface, the mound's rings, and the rubber
+ * plate — the same surfaces Pitcher.jsx hands the rig driver as its ground. The
+ * stage draws them so that what the suite measures and what it screenshots is the
+ * mound the app really stands the delivery on, plate and slant and all.
+ */
+function Mound() {
+  const geom = useMemo(() => createMoundGeometry(), [])
+  useEffect(() => () => geom.dispose(), [geom])
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, -17.4]}>
-      <planeGeometry args={[24, 24]} />
-      <meshStandardMaterial color="#c8a06a" roughness={1} />
-    </mesh>
+    <>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[MOUND.centre[0], MOUND.surface, MOUND.centre[1]]}>
+        <planeGeometry args={[24, 24]} />
+        <meshStandardMaterial color="#c8a06a" roughness={1} />
+      </mesh>
+      <group position={[MOUND.centre[0], MOUND.surface, MOUND.centre[1]]}>
+        <mesh geometry={geom} receiveShadow>
+          <meshStandardMaterial color="#b98c58" roughness={1} />
+        </mesh>
+        {/* The rubber's own plate, its top standing its thickness over the plateau:
+            the one surface a delivery's pivot foot has to stand on (see pitcherProfile). */}
+        <mesh position={[0, MOUND.rise + MOUND.rubber.rise / 2, 0]} receiveShadow>
+          <boxGeometry args={[MOUND.rubber.halfWidth * 2, MOUND.rubber.rise, MOUND.rubber.halfDepth * 2]} />
+          <meshStandardMaterial color="#ffffff" roughness={0.45} />
+        </mesh>
+      </group>
+    </>
   )
 }
 
@@ -596,7 +657,7 @@ createRoot(document.getElementById('root')).render(
         it: three's clock has already accumulated the frame's delta by the time
         the subscribers run. */}
     <TimePin />
-    <Ground />
+    <Mound />
     <Suspense fallback={null}>
       <Stage />
     </Suspense>
