@@ -325,34 +325,79 @@ const WAISTBAND_FALLBACK = [0.14, 0.2]
 // Reading the band off the texture: the trunk's ring is sampled every 0.005 rig
 // units, each sample counting for the 0.015 either side of it (the mesh is too
 // coarse to read a 0.04 band off single heights), and the waistband is the lowest
-// run of heights where most of the ring is drawn in the uniform's trim colour.
-// Half the ring is the test that separates a waistband from a *stripe* — a trouser
-// stripe covers a sliver of the ring at every height, a waistband goes all the way
-// round — and the run has to be at least a band and no taller than a waistband.
+// run of heights where a *share* of the ring is drawn in a colour that is *neither
+// of the two cloths the height sits between* — the shirt above it and the trousers
+// below it, each read off the ring itself (see ``isBeltColour``) — and the run has
+// to be at least a band and no taller than a waistband.
 const WAISTBAND_STEP = 0.005
 const WAISTBAND_SPAN = 0.015
-const WAISTBAND_SHARE = 0.5
+// What that share is, and why it is a share rather than *half* the ring: the
+// jersey's hem folds down over the belt, so the ring's own vertices at the belt's
+// height are part belt and part hem — the belt owns 0.47 of the ring on this pair's
+// pitcher and 0.48 on the batter (measured over the ±0.015 band, home and away),
+// against 0.18 for the most the cloth's own texels reach at any other height in the
+// window, where a few vertices land on a shade that is not quite the modal one.
+// Half the ring — the first guess — therefore found *no* band on either model, which
+// is how the hem's overlap was found; the test sits between the belt and that
+// scatter instead. A trouser *stripe* is the thing it has to keep out: a stripe
+// covers a sliver of the ring at every height and cannot reach this, where a belt
+// always does.
+const WAISTBAND_SHARE = 0.3
 const WAISTBAND_MIN_SAMPLES = 4
 const WAISTBAND_MIN_WIDTH = 0.02
 const WAISTBAND_MAX_WIDTH = 0.12
-// The trim colour, as the texture draws it: the belt's own red. The test is on
-// the model's samples rather than on the material — a texel is trim when it is
-// bright enough to be lit cloth rather than shadow, and red-dominant by more than
-// a shade's worth of shading. A different uniform drawn in a different trim
-// colour is re-pointed by changing these two numbers; the heights are the model's
-// either way.
-const WAISTBAND_TRIM_MIN = 0.3
-const WAISTBAND_TRIM_GAP = 0.15
+// The cloth of each end of the search window, as the ring is read: the modal
+// colour among the samples in the bottom and top band of the window — the trousers
+// and the shirt. A band rather than a height, because a single height's own texels
+// can all be a fold.
+const WAISTBAND_CLOTH_BAND = 0.05
+// How far a texel's *chroma* has to sit from the cloth's before it is a different
+// colour rather than the cloth's own shading. Chroma is what shading does not move
+// — see ``chromaOf`` — and the two uniforms this was measured on put the belt
+// 0.26 and 0.084 chroma from their own cloth, against 0.000 for the cloth's own
+// drawn shades, so the gap sits between them rather than at either.
+const WAISTBAND_CHROMA_GAP = 0.05
+
+// How far *above* the belt's own top edge the surface is cut — and so where the
+// two blocks turn against one another about, since the joint is the cut's own centre
+// (see ``cutBeltAndSleeve``).
+//
+// A share of the belt's own height rather than a height, so a uniform that draws its
+// belt taller or shorter keeps the cut in the same place in its own fold. Measured on
+// this uniform, whose belt is 35 mm (1.14079 to 1.17579 rig units off the trunk's own
+// ring), half of it is 0.0175 rig units: the cut lands 1.19329, just above the belt
+// and inside the tuck where the jersey's cloth turns under, and the fold is what
+// slides over the belt rather than the belt being cut. Measured at the plant, where
+// the two blocks separate by 38°: the hem's own drawn line drifted 0.00 mm with the
+// cut taken here, against 83.6 mm with it taken on the hem's own line.
+//
+// The belt band is *below* the cut whole (1.14079 to 1.17579 against a cut at
+// 1.19329), which is the first of the two things this buys: the turn cannot split the
+// belt, because the belt is one side of it. The second is where the jersey's own
+// opening is broken: the look pass draws that line down the chest past the belt
+// (batterLook.js's ``LINE_FROM_Y``), and the stretch the two blocks separate is the
+// lowest of it — the part inside the tuck and under the hem, where the cloth has
+// turned under and there is a layer of cloth over a layer of cloth rather than a seam
+// across the front.
+const WAIST_CUT_FOLD = 0.5
 
 // The belt is a *cut*, not a band. Everything the swing turns lives between the
 // hips and the shoulders, and the belt is where the trousers meet the jersey —
 // two pieces of clothing, not one piece of skin. A band of skin across the belt
 // can only answer the turn by stretching, and the belt is 0.08 rig units tall
 // against a 0.139 rig unit pull, which is what read as the jersey wrung over the
-// hips. So the surface is cut open along the belt's own top edge instead (the
-// uniform draws the jersey's hem there), the skin below belongs to the pelvis and
-// the skin above to the torso, and the two edges slide over one another the way
-// the clothing does. Nothing spans the cut, so nothing there can stretch.
+// hips. So the surface is cut open at the waist instead (the uniform draws the
+// jersey's hem there), the skin below belongs to the pelvis and the skin above to
+// the torso, and the two edges slide over one another the way the clothing does.
+// Nothing spans the cut, so nothing there can stretch.
+//
+// *Where* at the waist is the other half of it, because the belt is not where the
+// two surfaces meet: the jersey's cloth folds inward over the belt and runs down
+// inside it, so the belt's own top edge is a fold rather than a seam. A cut taken
+// on that edge runs along the one line the eye already reads as the waist — the
+// belt's own edge is what appears to split, and the jersey's opening, which the
+// look pass draws down to the belt, is broken at the same height. ``WAIST_CUT_FOLD``
+// takes the cut up into the mouth of the fold instead.
 
 // What hides under the cut: a duplicate of the body's own surface either side of
 // it, inset toward the body's axis and weighted rigidly to the pelvis — the belt
@@ -1324,8 +1369,9 @@ function partOfBone(name) {
  * chest and the head are the two ends.
  *
  * @param {number} height in rig units
- * @param {number} cut the waistband's own top edge, which is where the surface
- *   changes hands from the pelvis to the torso (see ``measureWaistband``)
+ * @param {number} cut where the surface changes hands from the pelvis to the torso:
+ *   the belt's own top edge, a share of the belt's height above it (see
+ *   ``waistCut``)
  * @param {number[]} hip the hip crease band, [bottom, top], from the model's own
  *   hip sockets (see ``HIP_BAND_LOW``)
  * @param {number[]} neck the neck band, [bottom, top], from the model's own neck
@@ -1388,6 +1434,14 @@ function textureData(image) {
  * neighbours: the model's clothing colours are flat regions of the atlas, and a
  * vertex sitting on a boundary would otherwise be blended with the colour next to
  * it.
+ *
+ * A UV outside the unit is *wrapped* rather than clamped, which is what the atlas
+ * is laid out for: the model's own u runs past 1 (to 1.734 on this one, a mirrored
+ * copy of the same atlas a whole unit of u away — the material wraps), so clamping
+ * every one of those vertices onto the image's right-hand column reads the mirror's
+ * edge texel instead of the cloth the vertex is actually wearing. Measured on the
+ * pitcher: clamping put the waistband 12 cm up the body, on a run of heights where
+ * the ring is entirely plain cloth.
  */
 function texelAt(mesh, u, v) {
   const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
@@ -1397,27 +1451,90 @@ function texelAt(mesh, u, v) {
   // glTF's UVs start at the image's top left (``flipY`` false); an image flipped
   // on upload is read the other way up.
   const row = map.flipY ? 1 - v : v
-  const x = Math.min(pixels.width - 1, Math.max(0, Math.floor(u * pixels.width)))
-  const y = Math.min(pixels.height - 1, Math.max(0, Math.floor(row * pixels.height)))
+  const wrap = (value) => value - Math.floor(value)
+  const x = Math.min(pixels.width - 1, Math.floor(wrap(u) * pixels.width))
+  const y = Math.min(pixels.height - 1, Math.floor(wrap(row) * pixels.height))
   const at = (y * pixels.width + x) * 4
   return [pixels.data[at] / 255, pixels.data[at + 1] / 255, pixels.data[at + 2] / 255]
 }
 
-// Is this texel drawn in the uniform's trim colour — the belt's own red, as
-// opposed to the trousers', the jersey's, or the shading of either?
-function isTrimColor([r, g, b]) {
-  return r > WAISTBAND_TRIM_MIN && r - Math.max(g, b) > WAISTBAND_TRIM_GAP
+// A colour as *chroma*: its three channels as shares of its own brightness, so
+// that the same colour at any lightness reads the same. Shading is what the model's
+// own cloth is drawn in — this uniform's shirt and trousers are one grey-blue drawn
+// over three or four shades (0.6875/0.6875/0.8125 down to 0.5625/0.5625/0.6875, all
+// of them [0.314, 0.314, 0.371] as chroma) — and chroma is the part of a colour
+// that shading does not move, so it is what can tell a *cloth* from the differently
+// coloured garment worn over it.
+function chromaOf([r, g, b]) {
+  const brightness = r + g + b
+  return brightness < 1e-6 ? [0, 0, 0] : [r / brightness, g / brightness, b / brightness]
+}
+
+/**
+ * Is this texel drawn in a colour that is neither of the cloths it sits between —
+ * the belt's own colour, as opposed to the shirt's, the trousers', or the shading of
+ * either?
+ *
+ * The test is colour-agnostic on purpose: it asks the *ring* what its two cloths are
+ * (see ``measureWaistband``) rather than knowing the uniform's belt colour, so the
+ * same rule reads a belt drawn in red and a belt drawn in dark purple (this project's
+ * own two kits, measured: the home belt 0.26 chroma from the cloth, the away belt
+ * 0.084, against 0.000 for every drawn shade of the cloth). Exported because it is
+ * the whole of the colour rule, and the rule is what has to be right on the model —
+ * see the unit tests.
+ *
+ * @param {number[]} colour the texel, as [r, g, b] in 0..1
+ * @param {number[][]} cloth the cloths to judge it against, as [r, g, b] each (the
+ *   shirt and the trousers; a single one is enough when only one end was readable)
+ * @returns {boolean} true when the colour is a *different* colour from every cloth
+ *   handed in, rather than one of their shades
+ */
+export function isBeltColour(colour, cloth) {
+  const here = chromaOf(colour)
+  return cloth.every((reference) => {
+    if (!reference) return true
+    const there = chromaOf(reference)
+    const apart = Math.max(
+      Math.abs(here[0] - there[0]),
+      Math.abs(here[1] - there[1]),
+      Math.abs(here[2] - there[2]),
+    )
+    return apart > WAISTBAND_CHROMA_GAP
+  })
+}
+
+// The cloth at a height, as the texture draws it: the most common colour among the
+// samples there. Quantised before counting, because the cloth is drawn over a range
+// of shades and every one of them has to land on the same bucket for the modal
+// colour to be the cloth rather than one of its shades.
+const WAISTBAND_COLOUR_BUCKETS = 16
+function modalColour(samples) {
+  if (!samples.length) return null
+  const tally = new Map()
+  let best = null
+  for (const { colour } of samples) {
+    const key = colour.map((channel) => Math.round(channel * WAISTBAND_COLOUR_BUCKETS)).join(',')
+    const seen = (tally.get(key) ?? 0) + 1
+    tally.set(key, seen)
+    // The bucket's own centre rather than the sample's own colour, so the cloth is
+    // the same colour whichever sample happened to fill the bucket last.
+    if (!best || seen > best.count) {
+      best = { count: seen, colour: key.split(',').map((step) => Number(step) / WAISTBAND_COLOUR_BUCKETS) }
+    }
+  }
+  return best.colour
 }
 
 /**
  * The waistband from a profile of the trunk's own ring by height: the *lowest*
- * run of heights where most of the ring is drawn in the trim colour, at least a
- * band and no taller than a waistband. Exported because it is the whole of the
- * rule, and the rule is what has to be right on the model — see the unit tests.
+ * run of heights where a share of the ring is drawn in a colour that is not either
+ * cloth (see ``WAISTBAND_SHARE``), at least a band and no taller than a waistband.
+ * Exported because it is the whole of the rule, and the rule is what has to be
+ * right on the model — see the unit tests.
  *
  * @param {{height: number, count: number, trim: number}[]} profile one entry per
  *   height, bottom first: how many samples the ring has there and how many of
- *   them are trim-coloured
+ *   them are drawn in a colour the cloth cannot account for
  * @returns {{bottom: number, top: number, share: number}|null} the band in rig
  *   units, and the *worst* share of the ring inside it, or null for no band
  */
@@ -1462,10 +1579,15 @@ export function waistbandFromShares(profile) {
  *
  * The read is on the *trunk's* vertices — the ones the model's own skinning
  * weights to a spine or pelvis bone — because the band is what the body's ring is
- * wearing, and a sleeve or a shoe drawn in the same trim colour is not the waist.
- * Each vertex's UV is looked up in the model's base-color map, and the waistband
- * is the lowest band of heights, inside the waist window, where most of the ring
- * is drawn in the trim colour (see ``waistbandFromShares``).
+ * wearing, and a sleeve or a shoe drawn in the same colour is not the waist. Each
+ * vertex's UV is looked up in the model's base-color map, and the waistband is the
+ * lowest band of heights, inside the waist window, where most of the ring is drawn
+ * in a colour that is neither of the two cloths the heights sit between: the modal
+ * colour of the window's own top band and of its bottom band, read off the ring
+ * rather than named, so the rule holds on any uniform (see ``isBeltColour`` and
+ * ``WAISTBAND_SHARE``). The
+ * belt's own colour is therefore not written down anywhere — a belt drawn in red
+ * and a belt drawn in purple read the same way.
  *
  * @param {THREE.Object3D} root the loaded model, at its rest pose
  * @param {object} metrics result of measurePlayerRig
@@ -1513,6 +1635,15 @@ export function measureWaistband(root, metrics) {
   })
   if (!samples.length) return fallback
 
+  // What the ring is wearing: the cloth at each end of the window, as the ring's
+  // own modal colour there. The top of the window is the shirt above the belt and
+  // the bottom is the trousers below it, and a belt is a colour that is neither.
+  const cloth = [
+    modalColour(samples.filter((sample) => sample.height >= window[1] - WAISTBAND_CLOTH_BAND)),
+    modalColour(samples.filter((sample) => sample.height <= window[0] + WAISTBAND_CLOTH_BAND)),
+  ].filter(Boolean)
+  const onBelt = (colour) => isBeltColour(colour, cloth)
+
   const profile = []
   for (let at = window[0]; at <= window[1] + 1e-9; at += WAISTBAND_STEP) {
     let count = 0
@@ -1520,7 +1651,7 @@ export function measureWaistband(root, metrics) {
     for (const sample of samples) {
       if (Math.abs(sample.height - at) > WAISTBAND_SPAN) continue
       count += 1
-      if (isTrimColor(sample.colour)) trim += 1
+      if (onBelt(sample.colour)) trim += 1
     }
     profile.push({ height: at, count, trim })
   }
@@ -1528,17 +1659,36 @@ export function measureWaistband(root, metrics) {
   const band = waistbandFromShares(profile)
   if (!band) return { ...fallback, samples: samples.length }
 
-  // What the band's own colour measures: the mean of the trim samples inside it.
-  // Reported rather than assumed, so the README can quote the uniform's belt
-  // instead of the name of a colour.
+  // What the band's own colour measures: the mean of the belt-coloured samples
+  // inside it. Reported rather than assumed, so the README can quote the uniform's
+  // belt instead of the name of a colour.
   const inside = samples.filter(
-    (sample) => sample.height >= band.bottom && sample.height <= band.top && isTrimColor(sample.colour),
+    (sample) => sample.height >= band.bottom && sample.height <= band.top && onBelt(sample.colour),
   )
   const trim = inside.length
     ? [0, 1, 2].map((channel) => inside.reduce((sum, s) => sum + s.colour[channel], 0) / inside.length)
     : null
 
-  return { bottom: band.bottom, top: band.top, source: 'texture', window, samples: samples.length, share: band.share, trim }
+  return { bottom: band.bottom, top: band.top, source: 'texture', window, samples: samples.length, share: band.share, trim, cloth }
+}
+
+/**
+ * Where the surface is cut open, in rig units: a share of the belt's own height
+ * above the belt's own top edge (see ``WAIST_CUT_FOLD``).
+ *
+ * This is the height the skin changes hands at — below it the trunks are the
+ * pelvis's and above it the jersey is the torso's — and, since the cut is what the
+ * joint is taken about (see ``cutBeltAndSleeve``'s ``pivot``), the height the two
+ * blocks turn against one another at as well. Read off the waistband rather than
+ * kept beside it, so the rule is one rule wherever it is asked for (this is what
+ * the batter's own test pins ``contour`` against).
+ *
+ * @param {{bottom: number, top: number}} waistband where the uniform's waistband is
+ *   (see ``measureWaistband``)
+ * @returns {number} the cut, in rig units
+ */
+export function waistCut(waistband) {
+  return waistband.top + WAIST_CUT_FOLD * (waistband.top - waistband.bottom)
 }
 
 /**
@@ -1687,9 +1837,9 @@ export function measureSole(root) {
 /**
  * Where the torso's twist *reads*: the height at which the pelvis's share of the
  * pelvis-plus-torso skin crosses 0.5, in rig units. With the weights cut into
- * parts at the waistband's top edge this is that edge — which is the point of the
- * cut: the twist reads where the uniform's trousers meet the jersey, not smeared
- * up the stomach.
+ * parts at the waist (see ``waistCut``) this is that height — which is the point of
+ * the cut: the twist reads at the fold where the uniform's trousers meet the
+ * jersey, not smeared up the stomach.
  */
 function waistBandContour(root, metrics) {
   const lower = new Set(PELVIS_BONES)
@@ -1747,9 +1897,10 @@ function waistBandContour(root, metrics) {
  *   carries of another part's bones, and where the twist reads
  */
 function shapeRigidParts(root, metrics, waistband) {
-  // The belt's own top edge: where the surface changes hands from the pelvis to
-  // the torso, and where the geometry is cut open to match.
-  const cut = waistband.top
+  // The belt's own top edge lifted into the fold above it: where the surface
+  // changes hands from the pelvis to the torso, and where the geometry is cut open
+  // to match (see ``waistCut``).
+  const cut = waistCut(waistband)
   // The neck band, on the joint the model hinges the head about.
   const neck = [metrics.neckY - NECK_BAND_HALF_WIDTH, metrics.neckY + NECK_BAND_HALF_WIDTH]
   // ...and the hip crease, on the hip sockets the legs hinge about.
@@ -1891,8 +2042,8 @@ function shapeRigidParts(root, metrics, waistband) {
     waist: [waistband.bottom, waistband.top],
     neck: [neck[0], neck[1]],
     // Where the surface is *cut* open rather than blended: the belt's own top
-    // edge, from which the jersey's hem is what turns with the torso (see
-    // ``cutBeltAndSleeve``).
+    // edge lifted into the fold above it, from which the jersey is what turns
+    // with the torso (see ``waistCut`` and ``cutBeltAndSleeve``).
     cut,
     leaks,
     contour: waistBandContour(root, metrics),
@@ -1922,8 +2073,9 @@ function shapeRigidParts(root, metrics, waistband) {
  *
  * @param {THREE.Object3D} root the model, with its weights already cut into parts
  * @param {object} metrics result of measurePlayerRig
- * @param {{top: number}} waistband where the uniform's waistband is (its top edge
- *   is the cut: see ``measureWaistband``)
+ * @param {{bottom: number, top: number}} waistband where the uniform's waistband
+ *   is: the cut is taken above its top edge, in the fold the jersey's hem turns
+ *   under (see ``waistCut``)
  * @returns {{cut: number, pivot: number[]|null, margin: number, inset: number,
  *   lip: number, seam: number, sleeve: number, axis: number[], ring: number[][]}}
  *   the cut height in rig units, the waist's own centre in the model's frame (see the
@@ -1933,7 +2085,7 @@ function shapeRigidParts(root, metrics, waistband) {
  *   what `probeSleeve` measures the sleeve's coverage against
  */
 function cutBeltAndSleeve(root, metrics, waistband) {
-  const cut = waistband.top
+  const cut = waistCut(waistband)
   if (globalThis.__NO_BELT_CUT) return { cut, pivot: null, margin: SLEEVE_MARGIN, inset: SLEEVE_INSET, lip: SEAM_LIP, seam: 0, sleeve: 0, axis: [0, 0], ring: [] }
   const cutY = cut / metrics.unitScale
   const marginY = SLEEVE_MARGIN / metrics.unitScale
@@ -4735,9 +4887,10 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
   // The last frame's joint solves, kept on the model: a small window into the
   // driver for tests and for debugging a pose in the browser.
   // Where this model's own uniform puts its waistband, read off its base-color
-  // texture before anything is cut: everything below is taken at that height.
+  // texture before anything is cut, and the height above it the cut is taken at:
+  // everything below that height is the pelvis's and everything above the torso's.
   const waistband = measureWaistband(modelRoot, metrics)
-  debug.waistBand = { ...waistband, contour: null }
+  debug.waistBand = { ...waistband, cut: waistCut(waistband), contour: null }
   // The reshaped skin: the bands it was cut into, the worst residual any part's
   // own skin still carries of another part, and where the twist now reads.
   const parts = shapeRigidParts(modelRoot, metrics, waistband)

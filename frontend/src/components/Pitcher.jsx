@@ -1,13 +1,11 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { useFrame, useLoader } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { TextureLoader } from 'three';
-import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { getCycleDuration, getTimeScale, stepSimulation } from '../constants/playback';
 import { getTuning, useTuning } from '../constants/tuning';
-import { createPlayerRig, measurePlayerRig } from '../util/playerRig';
-import { applyBatterLook } from '../util/batterLook';
+import { buildPlayerBody, useBodyRig } from '../util/playerBody';
 import { AUTHORED_LANDING_TIME, AUTHORED_RELEASE_TIME, blendPose, pitcherFinish, pitcherIdle, pitcherPlacement, pitcherPose, pitcherProfile } from '../util/pitcherSequence';
 import { MOUND, moundSurfaceY } from '../constants/mound';
 
@@ -62,42 +60,48 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
     const gltf = useGLTF(PLAYER_MODEL_URL);
     // Deep clone (skeleton re-bound) so the shared useGLTF cache isn't mutated
     // by the per-pitch materials/visibility — the same SkeletonUtils.clone the
-    // reference uses for every character.
-    const body = useMemo(() => {
-        const model = cloneSkeleton(gltf.scene);
-        // The model's joints in the rig's frame, measured once at its rest pose —
-        // the frame every target in the delivery is authored in.
-        const metrics = measurePlayerRig(model);
-        // ...and the pitcher's own kit, put right the way the batter's is (see
-        // util/batterLook.js): one body, one face, one uniform, so the pitcher wears the
-        // batter's own corrected face — brows, and eyes brought down and out onto it —
-        // and the same jersey front and shoes the batter does. What differs is the hat,
-        // and it is handed over as such: the pitcher throws in the *cap* (the helmet is
-        // hidden below), so the eyes are read under the cap's own brim, 0.012 rig lower
-        // than the helmet's, and the helmet's ear-flap work is left undone rather than
-        // done on a mesh nobody sees. Run here rather than in a material pass, because
-        // this is a *geometry* pass: the body it edits is this instance's own — the
-        // model is the pitcher's own clone (see cloneSkeleton above) and the pass works
-        // on its own copy of each mesh's geometry on top of that.
-        applyBatterLook(model, { headgear: 'cap' });
-        // ...and the rest pose itself, snapshotted before the driver writes to it:
-        // the pose is authored *relative* to the resting skeleton (see
-        // createPlayerRig).
-        const restPose = new Map();
-        model.traverse((child) => {
-            if (!child.isBone) return;
-            restPose.set(child, {
-                position: child.position.clone(),
-                quaternion: child.quaternion.clone(),
-            });
-        });
-        return { model, metrics, restPose };
-    }, [gltf]);
+    // reference uses for every character, and the same body the batter wears (see
+    // util/playerBody.js, which is where both actors' plumbing lives).
+    const body = useMemo(
+        () =>
+            buildPlayerBody(gltf.scene, {
+                // No sprite nominal height: the pitcher's rig frame is the model's own —
+                // the body already stands at world size on the mound, so one rig unit is
+                // one metre, and the frame every target in the delivery is authored in.
+                // ...and the pitcher's own kit, put right the way the batter's is (see
+                // util/batterLook.js): one body, one face, one uniform, so the pitcher
+                // wears the batter's own corrected face — brows, and eyes brought down
+                // and out onto it — and the same jersey front and shoes the batter does.
+                // What differs is the hat, and it is handed over as such: the pitcher
+                // throws in the *cap* (the helmet is hidden with the uniform below), so
+                // the eyes are read under the cap's own brim, 0.012 rig lower than the
+                // helmet's, and the helmet's ear-flap work is left undone rather than
+                // done on a mesh nobody sees. Run in the look pass rather than in a
+                // material pass, because this is a *geometry* pass: the body it edits is
+                // this instance's own — the model is the pitcher's own clone — and the
+                // pass works on its own copy of each mesh's geometry on top of that.
+                look: { headgear: 'cap' },
+            }),
+        [gltf],
+    );
     const model = body.model;
-    // The waist joint the driver turns the ribcage about, in the metrics' own frame:
-    // measured when the body is shaped, so the profile, the placement and every frame
-    // of the delivery are all solved against the same joint.
-    const [waistJoint, setWaistJoint] = useState(null);
+    // The bone driver, built once the model is really in the scene — it reads the live
+    // bones and the frame the model sits in, and `useBodyRig` waits on the mounted node
+    // for that (a node held in state rather than a ref, for the reason it records:
+    // player.glb can finish loading before the component's first commit that mounts the
+    // body, and a ref read once would be empty). Two things below are the pitcher's own:
+    // the model sits at the group's origin, with no placement offset, because the
+    // delivery's targets are authored from the model's own root — so the rig frame and
+    // the group's frame are the same frame — and it is handed the mound it stands on: a
+    // foot the pose plants stands on the surface under its own place rather than on a
+    // plane, so the pivot shoe stands on the rubber's own top at the set and the stride's
+    // foot lands down the mound's slant (see constants/mound.js, and the driver's leg
+    // solve).
+    //
+    // It also hands back the waist joint the driver turns the ribcage about, in the
+    // metrics' own frame: measured when the body is shaped, so the profile, the placement
+    // and every frame of the delivery are all solved against the same joint.
+    const { driverRef: rigDriverRef, setModelNode, waistJoint } = useBodyRig(body, { groundAt: moundSurfaceY });
     // The rig every number below is authored in — and the one the driver's own waist
     // joint is added to once the body has been *shaped*: the joint is the cut's own
     // centre, measured in createPlayerRig, and the pose has to carry it because the rig
@@ -209,31 +213,6 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
             }
         });
     }, [model, overlay, pitcherTuning.overlayOpacity]);
-
-    // The bone driver needs the model mounted — it reads the live bones and the
-    // frame the model sits in — so it is built once the model is really in the
-    // scene. Held in state rather than a ref for the reason Batter.jsx records:
-    // player.glb can finish loading before the component's first commit that
-    // mounts the body, and a ref read once would be empty.
-    const rigDriverRef = useRef(null);
-    const [modelNode, setModelNode] = useState(null);
-    useLayoutEffect(() => {
-        if (!modelNode) return undefined;
-        // The model sits at the group's own origin (no placement offset): the
-        // delivery's targets are authored from the model's own root, so the rig
-        // frame and the group's frame are the same frame.
-        // The mound the body stands on, handed to the driver as its ground: a foot
-        // the pose plants stands on the surface under its own place rather than on a
-        // plane, so the pivot shoe stands on the rubber's own top at the set and the
-        // stride's foot lands down the mound's slant (see constants/mound.js, and the
-        // driver's leg solve).
-        const driver = createPlayerRig(body.model, body.metrics, body.restPose, [0, 0, 0], {
-            groundAt: moundSurfaceY,
-        });
-        rigDriverRef.current = driver;
-        setWaistJoint(driver.waistJoint);
-        return () => { rigDriverRef.current = null };
-    }, [modelNode, body]);
 
     // Reset the crossfade whenever a new pitch arrives or replay fires, keeping
     // the windup in phase with the simulation clock.

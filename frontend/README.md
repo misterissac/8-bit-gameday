@@ -72,21 +72,36 @@ property of the *model*, not of the animation. So `measureWaistband` in
   own hip-to-neck span keeps it right for a rig of any proportions.
 - **The samples** are the *trunk's* vertices only — the ones the model's own
   skinning weights to a spine or pelvis bone — so a sleeve or a shoe drawn in the
-  same trim colour is not mistaken for the waist. Each one's UV is looked up in
-  the model's base-color map (the texel its UV falls in, not a filtered blend, so
-  a vertex on a boundary is not half one colour and half another).
-- **The rule** is the lowest run of heights where most of the ring (≥ 50% of the
-  samples) is drawn in the uniform's trim colour, at least 0.02 and no more than
-  0.12 rig units tall. Half the ring is what separates a waistband from a
-  *stripe*: the trouser stripe is trim-coloured at every height but covers a
-  sliver of the ring, and taking the *lowest* run keeps a chest trim from moving
-  the twist up. The rule is the exported `waistbandFromShares`, and it is tested
-  on synthetic profiles in `test/waistband.test.js` — a belt under a stripe, a
-  gap between two bands, a panel too tall to be a belt.
-- **What it finds on this model**: 314 trunk samples, and the band 1.258-1.293
-  rig units — 50% of the ring in rgb 0.75, 0.33, 0.18, the uniform's belt red.
-  The recorded 1.26-1.30 was measured by eye when the cut was built; the read
-  agrees with it to 0.007, and it is the read the driver uses.
+  same colour is not mistaken for the waist. Each one's UV is looked up in the
+  model's base-color map, at the texel it falls in and not a filtered blend, so a
+  vertex on a boundary is not half one colour and half another — and wrapping
+  rather than clamping, since the atlas's own UVs run past 1 (they reach 1.88 on
+  this model: a mirrored copy of the same atlas a whole unit of u away).
+- **The rule** is the lowest run of heights where a share of the ring (≥ 30% of
+  the samples) is drawn in a colour *neither of the cloths the height sits
+  between* — the shirt's own colour just above the belt and the trousers' just
+  below, each read off the ring itself rather than named, so a belt drawn in red
+  and a belt drawn in purple are the same problem. The colour is judged by its
+  *chroma* (its channels as shares of its own brightness), which is what shading
+  does not move: this uniform's shirt and trousers are one grey-blue drawn over
+  three or four shades, and every shade of it is the same chroma. The run has to
+  be at least 0.02 and no more than 0.12 rig units tall, and the share is what
+  separates a waistband from a *stripe* — the trouser stripe is the belt's own
+  colour at every height but covers a sliver of the ring — while taking the
+  *lowest* run keeps a chest trim from moving the twist up. The 30% is not half
+  the ring because the jersey's hem folds down *over* the belt: the belt owns 0.42
+  to 0.48 of the ring's vertices at its own height (measured, both models, home
+  and away), against 0.18 for the most the cloth's own stray texels reach. The
+  rule is the exported `waistbandFromShares` and `isBeltColour`, and both are
+  tested on synthetic profiles and a hand-drawn atlas in
+  `test/waistband.test.js` — a belt under a stripe, a gap between two bands, a
+  panel too tall to be a belt, the same belt in both kits' colours, cloth shades
+  with no belt drawn, and a stripe in the belt's own colour.
+- **What it finds on this model**: 401 trunk samples, and the band 1.263-1.293
+  rig units, a third of the ring in rgb 0.69, 0.30, 0.16 — the home kit's belt
+  red (the away kit's purple reads the same, at 0.29, 0.16, 0.32). The recorded
+  1.26-1.30 was measured by eye when the cut was built; the read agrees with it to
+  0.02, and it is the read the driver uses.
 
 If the texture cannot be read — a model with no base-color image, or a canvas a
 browser will not hand back pixels for — the band falls back to the recorded one
@@ -94,9 +109,9 @@ browser will not hand back pixels for — the band falls back to the recorded on
 which is 1.26-1.30 on the model those numbers were measured on). The driver
 reports which it used, so the suite can require the read rather than the fallback
 (`the twist reads at the waistband, on a band the width of a joint`: it pins the
-band's window to the model's own metrics, the trim colour it found, that the band
-still sits on the belt the recorded numbers described, and that the twist reads at
-the band's own top edge).
+band's window to the model's own metrics, the colour it found — through the same
+rule, rather than as red — that the band still sits on the belt the recorded
+numbers described, and that the twist reads above the band's own top edge).
 
 ### The head turns as a block, hinged at the neck
 

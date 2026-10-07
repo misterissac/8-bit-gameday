@@ -12,7 +12,7 @@ import {
 } from './harness/fixture.js'
 import { SWEET_SPOT_FRACTION } from '../src/util/batterSwing.js'
 import { DEFAULT_TUNING } from '../src/constants/tuning.js'
-import { WRIST_BEND_MAX, WRIST_TWIST_MAX } from '../src/util/playerRig.js'
+import { WRIST_BEND_MAX, WRIST_TWIST_MAX, isBeltColour, waistCut } from '../src/util/playerRig.js'
 import { PLATE_FRONT_Y } from '../src/util/MathUtil.js'
 
 // The rulebook's batter's box: 4 ft wide by 6 ft long, drawn with its inner line
@@ -385,14 +385,15 @@ test.describe('the body holds the bat', () => {
     const rig = await readRig(page)
     const { hip, waist } = rig.solve.parts
     const band = rig.solve.waistBand
-    const { contour } = band
+    const { contour, cut } = band
     const hipJoint = rig.bone('thighL')[1]
     const middle = (band.window[0] + band.window[1]) / 2
     console.log(
       `bands: hip crease ${hip[0]}..${hip[1]} (hip joints at ${hipJoint.toFixed(3)}) · ` +
       `waistband ${waist[0].toFixed(3)}..${waist[1].toFixed(3)} from the ${band.source} ` +
       `(${band.samples} trunk samples, ${(band.share * 100).toFixed(0)}% of the ring in ` +
-      `rgb ${band.trim?.map((c) => c.toFixed(2)).join(',')}) · twist reads at ${contour?.toFixed(3)}`,
+      `rgb ${band.trim?.map((c) => c.toFixed(2)).join(',')}) · cut at ${cut?.toFixed(3)} ` +
+      `(${((cut - band.top) * 1000).toFixed(1)} mm above the belt) · twist reads at ${contour?.toFixed(3)}`,
     )
 
     // The read: the texture itself, inside the window, and the window is the
@@ -406,10 +407,14 @@ test.describe('the body holds the bat', () => {
     )
     expect(band.bottom, 'the band should be inside its own window').toBeGreaterThanOrEqual(band.window[0])
     expect(band.top, 'the band should be inside its own window').toBeLessThanOrEqual(band.window[1])
-    expect(band.share, 'most of the ring should be the uniform’s trim colour').toBeGreaterThanOrEqual(0.5)
-    // The uniform's trim, as the texture draws it: the belt's red.
-    const [r, g, b] = band.trim
-    expect(r - Math.max(g, b), 'the band should be the uniform’s trim colour').toBeGreaterThan(0.15)
+    // A *share* of the ring rather than most of it: the jersey's hem folds down
+    // over the belt, so the belt owns just under half the ring's vertices there
+    // (the rule's own threshold, and its reason, are in ``WAISTBAND_SHARE``).
+    expect(band.share, 'a share of the ring should be the uniform’s belt colour').toBeGreaterThanOrEqual(0.3)
+    // And that share is the belt's own colour — the home kit's red, which is not a
+    // colour the rule knows: it is asserted *through* the rule that found it, so
+    // the same test holds on a uniform whose belt is any other colour.
+    expect(isBeltColour(band.trim, band.cloth), 'the band should be the uniform’s belt colour').toBe(true)
 
     // And it is the belt this uniform actually draws: the band still measures
     // what the recorded 1.26-1.30 was, so a read that drifted off the belt — onto
@@ -420,7 +425,24 @@ test.describe('the body holds the bat', () => {
       'the derived band should sit on the belt the recorded numbers described',
     ).toBeLessThan(0.03)
     expect(contour, 'the band should have a measurable contour').not.toBeNull()
-    expect(contour, 'the twist should be taken at the band’s own top edge').toBeCloseTo(band.top, 3)
+    // And the twist is taken where the surface is *cut*: the belt's own top edge
+    // lifted into the fold above it, by a share of the belt's own height (see
+    // ``waistCut``). Pinned against the driver's own rule rather than a height, so
+    // a cut that drifted back onto the belt's edge — where the turn reads as the
+    // belt splitting — or up out of the fold fails here.
+    // The contour is read off the mesh's own vertices, which are a couple of
+    // millimetres apart at the waist, so it lands within one of them of the cut
+    // rather than on it (measured on the stance pose: 0.74 mm inside it). The bound
+    // is that, and what it is there for is the rule: the twist is taken *above* the
+    // belt's own top edge, in the fold, rather than on the edge the belt draws.
+    const cutAt = waistCut(band)
+    expect(contour, 'the twist should be taken above the belt’s own top edge').toBeGreaterThan(band.top)
+    expect(
+      Math.abs(contour - cutAt),
+      `the twist should be taken where the surface is cut (${contour?.toFixed(4)} against ${cutAt.toFixed(4)})`,
+    ).toBeLessThan(0.005)
+    expect(cut, 'the cut should be above the belt’s own top edge').toBeGreaterThan(band.top)
+    expect(cut - band.top, 'and inside the fold above it, not above the waist').toBeLessThan(waist[1] - waist[0])
     expect(waist[1] - waist[0], 'the waistband band should be narrow').toBeLessThanOrEqual(0.1)
     expect(waist[1] - waist[0], 'the waistband band should be a band, not a line').toBeGreaterThanOrEqual(0.02)
     expect(hip[1] - hip[0], 'the hip band should be narrow').toBeLessThanOrEqual(0.1)

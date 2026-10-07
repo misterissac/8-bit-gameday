@@ -1,8 +1,7 @@
-import React, { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import React, { useLayoutEffect, useMemo, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { useGLTF } from '@react-three/drei'
 import * as THREE from 'three'
-import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import { getCycleDuration, getTimeScale, getBattedBallPosition, getBallReleaseTime, stepSimulation } from '../constants/playback'
 import { FIELD } from '../constants/field'
 import { PLATE_FRONT_Y, clamp, plateCrossing } from '../util/MathUtil'
@@ -14,8 +13,8 @@ import {
   idleStance,
   HIP_Y,
 } from '../util/batterSwing'
-import { HIDDEN_MESHES, createPlayerRig, measurePlayerRig } from '../util/playerRig'
-import { applyBatterLook } from '../util/batterLook'
+import { HIDDEN_MESHES } from '../util/playerRig'
+import { buildPlayerBody, useBodyRig } from '../util/playerBody'
 import { useTuning } from '../constants/tuning'
 
 // The batter's body is the skinned player model from the solomon-gumball
@@ -1108,48 +1107,32 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
   const glbPlayer = useGLTF(PLAYER_URL)
   const glbBat = useGLTF(BAT_URL)
 
-  // The body is the reference project's skinned player model. It is cloned with
-  // SkeletonUtils (so its bones can be posed without disturbing the cached
-  // asset) and measured once: measurePlayerRig reports the skeleton's joints in
-  // THIS component's units — feet at y = 0, body SPRITE_NOMINAL_HEIGHT_M tall —
-  // so the animation tuning below keeps driving the same numbers the procedural
-  // part rig hard-coded, and only the way they are realised changes (bones and
-  // 2-bone IK instead of rigidly placed part meshes).
-  const body = useMemo(() => {
-    const model = cloneSkeleton(glbPlayer.scene)
-    model.traverse((child) => {
-      if (!child.isMesh) return
-      child.castShadow = true
-      child.receiveShadow = true
-      // The batter wears the helmet and grips the bat with bare hands, so the
-      // cap and the gloves stay hidden (same choice the reference makes for its
-      // offensive players).
-      if (HIDDEN_MESHES.includes(child.name)) child.visible = false
-    })
-    const metrics = measurePlayerRig(model, { spriteNominalHeightM: SPRITE_NOMINAL_HEIGHT_M })
-    // The batter's own kit, read off the model and put right: the helmet's single
-    // ear flap, eyes that clear both the brim and the face, the jersey's opening
-    // and its buttons, and shoes that read as shoes above the socks (see
-    // applyBatterLook). Run *after* the rig has shaped the body, so it edits this
-    // instance's own geometry rather than the cached asset's, and keyed on the
-    // batter's own side, because which ear the flap belongs to follows from it.
-    const look = applyBatterLook(model, {
-      sign: (pitchData?.bat_side || 'R') === 'L' ? -1 : 1,
-    })
-    // Snapshot the resting skeleton before the driver starts writing to it: the
-    // animation is authored relative to the rest pose, and this is what it is
-    // read from.
-    const restPose = new Map()
-    model.traverse((child) => {
-      if (child.isBone) {
-        restPose.set(child, {
-          position: child.position.clone(),
-          quaternion: child.quaternion.clone(),
-        })
-      }
-    })
-    return { model, metrics, restPose, look }
-  }, [glbPlayer, pitchData?.bat_side])
+  // The body is the reference project's skinned player model, dressed and measured
+  // by the shared body plumbing — the clone, the meshes he does not wear, the look
+  // pass and the resting skeleton are all in util/playerBody.js, because the pitcher
+  // wears the same body. What stays here is the *frame*: it is measured in THIS
+  // component's units — feet at y = 0, body SPRITE_NOMINAL_HEIGHT_M tall — so the
+  // animation tuning below keeps driving the same numbers the procedural part rig
+  // hard-coded, and only the way they are realised changes (bones and 2-bone IK
+  // instead of rigidly placed part meshes). The pitcher's own frame is the model's
+  // (metres); that, and not the plumbing, is what the two actors do not share.
+  const body = useMemo(
+    () =>
+      buildPlayerBody(glbPlayer.scene, {
+        spriteNominalHeightM: SPRITE_NOMINAL_HEIGHT_M,
+        // He wears the helmet and grips the bat with bare hands, so the cap and the
+        // gloves stay hidden (same choice the reference makes for its offensive
+        // players).
+        hide: HIDDEN_MESHES,
+        // His own kit, read off the model and put right: the helmet's single ear
+        // flap, eyes that clear both the brim and the face, the jersey's opening and
+        // its buttons, and shoes that read as shoes above the socks (see
+        // applyBatterLook) — keyed on the batter's own side, because which ear the
+        // flap belongs to follows from it.
+        look: { sign: (pitchData?.bat_side || 'R') === 'L' ? -1 : 1 },
+      }),
+    [glbPlayer, pitchData?.bat_side],
+  )
   const rig = body.metrics
   // How far apart the two fists grip the handle: the model's own spacing, one
   // number for the arms' targets, the bat's own hand markers and the JSX branch
@@ -1158,30 +1141,17 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
 
   const batModel = useMemo(() => glbBat.scene.clone(true), [glbBat])
 
-  // The bone driver needs the model mounted — it reads the live bones and the
-  // frame the model sits in — so build it once the body is really in the scene.
-  // Until then the batter simply renders in the skeleton's rest pose.
-  //
-  // Which node is mounted is held in state rather than read from a ref: the
-  // component is rendered with no pitch at all until an at-bat arrives, and
-  // player.glb can finish loading before that, so the commit that creates the
-  // driver is not necessarily the commit that mounts the body. A ref would be
-  // read once — empty — and the driver would never be built, leaving the model
-  // in its rest pose while only the bat moved.
-  const rigDriverRef = useRef(null)
-  const [modelNode, setModelNode] = useState(null)
-
   // Where the model sits inside the batter's own frame, in the tuning's units:
   // shifted so its hip joints land on the frame's centreline, the way the
   // procedural pelvis did. The driver is told the same offset, because every
   // joint target it is handed is authored from the frame's origin.
   const bodyPlacement = useMemo(() => [0, 0, -rig.hip.z], [rig])
 
-  useLayoutEffect(() => {
-    if (!modelNode) return undefined
-    rigDriverRef.current = createPlayerRig(body.model, body.metrics, body.restPose, bodyPlacement)
-    return () => { rigDriverRef.current = null }
-  }, [modelNode, body, bodyPlacement])
+  // The bone driver, built once the body is really in the scene — it reads the live
+  // bones and the frame the model sits in, and `useBodyRig` waits on the mounted
+  // node for that (see its own note on why the node is state rather than a ref).
+  // Until then the batter simply renders in the skeleton's rest pose.
+  const { driverRef: rigDriverRef, setModelNode } = useBodyRig(body, { placement: bodyPlacement })
 
   // Collect every material the body and bat render with so a single per-frame
   // opacity update fades the whole batter together, the same pattern the catcher
