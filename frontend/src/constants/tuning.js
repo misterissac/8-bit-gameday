@@ -26,6 +26,14 @@ export const DEFAULT_TUNING = {
     fielderRestoreDuration: 0.6,
     fielderHeadHeight: 1.8,
     fielderLabelHeight: 2.8,
+    // The band a body fades out over as the camera comes up to it (see
+    // playerKit.js's playerFadeOpacity): nothing within this many metres of the
+    // camera, everything past the far end, the line between them. Tuned so that
+    // the *fielder camera* — whose position is a fielder's own head, a head height
+    // over his feet — takes the body the camera is standing in out of the frame and
+    // leaves every other body on the field whole.
+    playerFadeNear: 2,
+    playerFadeFar: 4.5,
   },
   pitcher: {
     // The delivery is longer than the throw: the finish is held for a second before

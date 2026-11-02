@@ -48,6 +48,10 @@ export const SWING_PITCH = {
   speed_mph: SPEED_MPH,
   bat_side: BAT_SIDE,
   batter_height: BATTER_HEIGHT_IN,
+  // The bottom half, so the club at the plate is the home side and the baseline
+  // suite pins the home kit (the one every committed render was taken in). See
+  // util/playerKit.js's `defenseKitForInning`: the visitors bat in the top.
+  is_top_inning: false,
   swing: true,
   attack_angle: ATTACK_ANGLE_DEG,
   swing_path_tilt: SWING_PATH_TILT_DEG,
@@ -73,6 +77,7 @@ export const STANCE_PITCH = {
   speed_mph: SPEED_MPH,
   bat_side: BAT_SIDE,
   batter_height: BATTER_HEIGHT_IN,
+  is_top_inning: false,
   swing: false,
 }
 

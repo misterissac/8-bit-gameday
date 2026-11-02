@@ -2760,12 +2760,12 @@ def get_batter_pitches(at_bat_index: Optional[int] = None, game_pk: str = GAME_P
         raise HTTPException(status_code=500, detail=f"Batter pitches parsing failed: {e}")
 
 
-def _occupied_bases(all_plays: list, game_type: str = None) -> list:
-    """Return the bases currently occupied ('1B'/'2B'/'3B'), sorted.
+def _replay_half_bases(half_plays: list, inning, half: str, game_type: str = None) -> set:
+    """The bases occupied at the end of one half-inning's plays, as a set.
 
     The feed's ``runners`` list only includes runners who moved, scored, or were
     put out during a play, so stationary runners must be carried forward. This
-    replays the runner movements of the current half-inning from its start.
+    replays the runner movements of one half-inning from its start.
 
     Two feed quirks make naive base accounting wrong: a runner can appear twice
     in one play (e.g. a wild pitch then a sacrifice fly), and the runners are
@@ -2783,11 +2783,6 @@ def _occupied_bases(all_plays: list, game_type: str = None) -> list:
     seed still applies — the common case is regular season, and postseason
     feeds always carry ``gameData.game.type`` so they are never ambiguous.
     """
-    if not all_plays:
-        return []
-    last_about = all_plays[-1].get('about') or {}
-    inning = last_about.get('inning')
-    half = last_about.get('halfInning')
     bases = set()
     ghost_active = False
     if inning is not None and inning > 9 and half in ('top', 'bottom') \
@@ -2795,10 +2790,7 @@ def _occupied_bases(all_plays: list, game_type: str = None) -> list:
         bases.add('2B')
         ghost_active = True
     ghost_accounted = False
-    for play in all_plays:
-        about = play.get('about') or {}
-        if about.get('inning') != inning or about.get('halfInning') != half:
-            continue
+    for play in half_plays:
         first_start_by_runner = {}
         last_leg_by_runner = {}
         is_batter_by_runner = {}
@@ -2859,7 +2851,27 @@ def _occupied_bases(all_plays: list, game_type: str = None) -> list:
                 ghost_accounted = True
         bases -= departures
         bases |= arrivals
-    return sorted(bases)
+    return bases
+
+
+def _occupied_bases(all_plays: list, game_type: str = None) -> list:
+    """Return the bases currently occupied ('1B'/'2B'/'3B'), sorted.
+
+    The current half-inning's runner movements are replayed from its start —
+    see ``_replay_half_bases`` for the feed quirks that replay has to handle,
+    including the extra-innings ghost runner seeded on second.
+    """
+    if not all_plays:
+        return []
+    last_about = all_plays[-1].get('about') or {}
+    inning = last_about.get('inning')
+    half = last_about.get('halfInning')
+    half_plays = [
+        play for play in all_plays
+        if (play.get('about') or {}).get('inning') == inning
+        and (play.get('about') or {}).get('halfInning') == half
+    ]
+    return sorted(_replay_half_bases(half_plays, inning, half, game_type))
 
 
 def _current_count(all_plays: list) -> tuple:
@@ -2918,26 +2930,113 @@ def _prefix_through_pitch(data: dict, target_play: dict, pitch_index: Optional[i
     return prefix
 
 
+def _scored_runners_in_play(play) -> int:
+    """The runners one play sent home (each runner counted once per play)."""
+    counted = set()
+    total = 0
+    for runner_index, runner in enumerate(play.get('runners') or []):
+        movement = runner.get('movement') or {}
+        runner_id = ((runner.get('details') or {}).get('runner') or {}).get('id')
+        key = runner_id if runner_id is not None else runner_index
+        if key in counted:
+            continue
+        if (movement.get('end') == 'score' or movement.get('isScoringEvent')) \
+                and not movement.get('isOut'):
+            total += 1
+            counted.add(key)
+    return total
+
+
 def _runs_through_plays(all_plays: list) -> dict:
     """Count scored runners through a feed prefix, split by batting team."""
     runs = {'away': 0, 'home': 0}
-    for play_index, play in enumerate(all_plays):
+    for play in all_plays:
         half = (play.get('about') or {}).get('halfInning')
         side = 'away' if half == 'top' else 'home' if half == 'bottom' else None
         if side is None:
             continue
-        counted = set()
-        for runner_index, runner in enumerate(play.get('runners') or []):
-            movement = runner.get('movement') or {}
-            runner_id = ((runner.get('details') or {}).get('runner') or {}).get('id')
-            key = (play_index, runner_id if runner_id is not None else runner_index)
-            if key in counted:
-                continue
-            if (movement.get('end') == 'score' or movement.get('isScoringEvent')) \
-                    and not movement.get('isOut'):
-                runs[side] += 1
-                counted.add(key)
+        runs[side] += _scored_runners_in_play(play)
     return runs
+
+
+_ERROR_EVENTS = {'Error', 'Field Error', 'Fielding Error'}
+
+
+def _half_inning_is_complete(half_plays: list, later_half_started: bool) -> bool:
+    """Whether a half-inning's third out is in the feed prefix.
+
+    The next half's first play is the surest sign — once it exists the half
+    before it is over. Before the feed moves on, the half's own last play says
+    so when it is complete and ended with three outs. A queued mid-at-bat
+    snapshot's play is neither (its copy is trimmed to the pitch being
+    animated), so an in-progress half strands nobody yet.
+    """
+    if later_half_started:
+        return True
+    last_play = half_plays[-1]
+    if not (last_play.get('about') or {}).get('isComplete'):
+        return False
+    return (last_play.get('count') or {}).get('outs') == 3
+
+
+def _linescore_through_plays(all_plays: list, game_type: str = None) -> dict:
+    """Per-inning runs plus the hits, errors and left-on-base of one prefix.
+
+    This is the park's big-screen linescore (util/billboard.js) at one pitch of
+    the game — the state the solomon-gumball reference keeps for its jumbotron
+    (its Scoreboard.tsx derives the same numbers by walking its feed's
+    completed plays). Everything is counted from the play log rather than the
+    feed's live linescore, so a queued older pitch shows the totals that pitch
+    carried and not the ones the live game has already reached.
+
+    Three conventions the grid pins:
+
+    - hits are counted for the team at bat (the play's event in _HIT_EVENTS);
+    - errors are charged to the team IN THE FIELD — a play's error belongs to
+      the defense that committed it, so it lands on the side opposite the one
+      at bat (the linescore's E column counts errors a team's defense made);
+    - left-on-base is the runners still standing on a base when the third out
+      ends a half-inning, summed over the finished half-innings. The count is
+      the end-of-half occupancy read by replaying the half's movements (see
+      ``_replay_half_bases``), so a double play that empties the bases strands
+      nobody and the extra-innings ghost runner strands like any other.
+
+    Returns ``{'innings': {inning: {'away': runs|None, 'home': runs|None}},
+    'away': {...totals...}, 'home': {...totals...}}``; a half's runs are None
+    while that half has not started (the grid leaves those cells blank).
+    """
+    totals = {side: {'runs': 0, 'hits': 0, 'errors': 0, 'leftOnBase': 0}
+              for side in ('away', 'home')}
+    halves = {}
+    for play in all_plays:
+        about = play.get('about') or {}
+        half = about.get('halfInning')
+        side = 'away' if half == 'top' else 'home' if half == 'bottom' else None
+        inning = about.get('inning')
+        if side is None or inning is None:
+            continue
+        halves.setdefault((inning, half), []).append(play)
+        result = play.get('result') or {}
+        event = result.get('event')
+        if event in _HIT_EVENTS:
+            totals[side]['hits'] += 1
+        if event in _ERROR_EVENTS \
+                or (result.get('eventType') or '').lower() in ('error', 'field_error'):
+            totals['home' if side == 'away' else 'away']['errors'] += 1
+
+    innings = {}
+    ordered = sorted(halves, key=lambda key: (key[0], 0 if key[1] == 'top' else 1))
+    for index, key in enumerate(ordered):
+        inning, half = key
+        side = 'away' if half == 'top' else 'home'
+        half_plays = halves[key]
+        runs = sum(_scored_runners_in_play(play) for play in half_plays)
+        totals[side]['runs'] += runs
+        innings.setdefault(inning, {'away': None, 'home': None})[side] = runs
+        if _half_inning_is_complete(half_plays, index < len(ordered) - 1):
+            totals[side]['leftOnBase'] += len(
+                _replay_half_bases(half_plays, inning, half, game_type))
+    return {'innings': innings, 'away': totals['away'], 'home': totals['home']}
 
 
 def _inning_ordinal(number) -> str | None:
@@ -3367,6 +3466,7 @@ def _game_state_snapshot(data: dict, target_play: dict,
         team = (game_data.get('teams') or {}).get(side) or {}
         teams[side] = {
             'name': team.get('name', '—'),
+            'teamName': team.get('teamName') or team.get('name', '—'),
             'abbreviation': team.get('abbreviation', side.upper()),
             'id': team.get('id'),
         }
@@ -3440,6 +3540,47 @@ def _game_state_snapshot(data: dict, target_play: dict,
     batter_summary = _batter_play_summary(matchup.get('batter', {}).get('id'), prefix)
     batter_season_stats = batter_entry.get('seasonStats', {}).get('batting') or {}
     pitcher_season_stats = box_entry(current_pitcher_id).get('seasonStats', {}).get('pitching') or {}
+
+    # The park's big screen (util/billboard.js) draws the reference jumbotron:
+    # the at-bat's team name, the batter card, and the 17-column linescore.
+    # Its data rides this snapshot so a replayed pitch shows the board the
+    # game carried at that moment (see _linescore_through_plays).
+    batter_id = matchup.get('batter', {}).get('id')
+    players_by_id = game_data.get('players') or {}
+    batter_person = players_by_id.get(f'ID{batter_id}') or {}
+    batter_full_name = (
+        matchup.get('batter', {}).get('fullName')
+        or batter_person.get('fullName') or ''
+    )
+    batter_first = batter_person.get('firstName')
+    batter_last = batter_person.get('lastName')
+    if not batter_first and batter_full_name:
+        batter_first = batter_full_name.split(' ', 1)[0]
+    if not batter_last and ' ' in batter_full_name:
+        batter_last = batter_full_name.split(' ', 1)[1]
+    batting_side = 'away' if is_top else 'home' if is_top is not None else None
+    batting_team = ((game_data.get('teams') or {}).get(batting_side) or {}
+                    if batting_side else {})
+    team_name = batting_team.get('teamName') or batting_team.get('name')
+    # The next three due up for the side at bat, in batting order (wrapping
+    # past the ninth hitter, skipping the man at the plate).
+    batting_order = ((box_teams.get(batting_side) or {}).get('battingOrder') or []
+                     if batting_side else [])
+    upcoming = batting_order
+    if batter_id is not None and batter_id in batting_order:
+        at = batting_order.index(batter_id)
+        upcoming = batting_order[at + 1:] + batting_order[:at]
+    next_batters = []
+    for order_id in upcoming[:3]:
+        person = players_by_id.get(f'ID{order_id}') or {}
+        name = person.get('firstLastName') or person.get('fullName')
+        if not name:
+            entry = ((box_teams.get(batting_side) or {}).get('players') or {}).get(f'ID{order_id}') or {}
+            name = (entry.get('person') or {}).get('fullName')
+        if name:
+            next_batters.append(name.upper())
+    board_linescore = _linescore_through_plays(prefix, game_type)
+    max_inning = max(board_linescore['innings']) if board_linescore['innings'] else 0
     # Game-line totals for the pitcher as of this snapshot (mirrors the live
     # /api/game-state computation), so the frozen/replay scoreboard keeps the
     # pitcher's SO/BB/strikes/pitches hover populated instead of dropping it.
@@ -3466,6 +3607,36 @@ def _game_state_snapshot(data: dict, target_play: dict,
     challenges = _calculate_challenges(prefix, inning_number, away_id, home_id)
     (review, review_is_overturned, review_challenger,
      review_type, review_target, review_team) = _parse_review_info(target_play)
+    # Walk-off: the play that ENDS the game — the home team scores the go-ahead
+    # run in the bottom of the 9th or later (by rule the game is over the
+    # moment that run scores). A finished game's feed carries its FINAL status
+    # on EVERY play, so terminality alone cannot brand replayed hits: the
+    # game-ending play is identified by this lead change instead. The check
+    # also holds before the live feed flips its status, so a live walk-off is
+    # still flagged while its payload is building.
+    last_play = all_plays[-1] if all_plays else None
+    target_at_bat_index = about.get('atBatIndex')
+    is_final_play = bool(last_play) and (
+        target_play is last_play
+        or (target_at_bat_index is not None
+            and target_at_bat_index == (last_play.get('about') or {}).get('atBatIndex'))
+    )
+    is_walk_off = False
+    if is_final_play and half == 'bottom':
+        try:
+            late_inning = int(inning_number) >= 9
+        except (TypeError, ValueError):
+            late_inning = False
+        if late_inning:
+            # ``prefix`` ends with the target play (possibly trimmed to an
+            # earlier pitch), so the lead change must be measured against the
+            # play's COMPLETE runner list, not the trimmed copy's.
+            runs_before = _runs_through_plays(prefix[:-1])
+            runs_after = _runs_through_plays(prefix[:-1] + [target_play])
+            is_walk_off = (
+                runs_after['home'] > runs_after['away']
+                and runs_before['home'] <= runs_before['away']
+            )
     target_terminal = (
         target_is_latest
         and (
@@ -3500,6 +3671,13 @@ def _game_state_snapshot(data: dict, target_play: dict,
         'pitcher': matchup.get('pitcher', {}).get('fullName', '—'),
         'pitcherId': matchup.get('pitcher', {}).get('id'),
         'batter': matchup.get('batter', {}).get('fullName', '—'),
+        'batterId': batter_id,
+        'batterNumber': batter_person.get('primaryNumber'),
+        'batterFirst': batter_first,
+        'batterLast': batter_last,
+        # The next three due up for the side at bat (the jumbotron's
+        # BATTING ORDER panel).
+        'nextBatters': next_batters,
 
         'batterLine': batter_line,
         'batterSummary': batter_summary,
@@ -3507,6 +3685,9 @@ def _game_state_snapshot(data: dict, target_play: dict,
         'pitchesThrown': pitches_thrown,
         'pitcherGameLine': pitcher_game_line,
         'gameState': status.get('detailedState'),
+        # True only on the game-ending play (home takes the lead in the bottom
+        # of the 9th or later) — see the walk-off computation above.
+        'isWalkOff': is_walk_off,
         'isLive': status.get('abstractGameState') == 'Live',
         'abstractGameState': status.get('abstractGameState'),
         'venue': (game_data.get('venue') or {}).get('name'),
@@ -3514,8 +3695,21 @@ def _game_state_snapshot(data: dict, target_play: dict,
             'avg': batter_season_stats.get('avg'),
             'obp': batter_season_stats.get('obp'),
             'slg': batter_season_stats.get('slg'),
+            'ops': batter_season_stats.get('ops'),
             'hr': batter_season_stats.get('homeRuns'),
             'rbi': batter_season_stats.get('rbi'),
+        },
+        # The park's big screen's linescore as of this pitch: per-inning runs
+        # (None while a half has not started) and each side's H/E/LOB totals —
+        # see _linescore_through_plays for the scoring conventions.
+        'linescore': {
+            'innings': {
+                side: [board_linescore['innings'].get(number, {}).get(side)
+                       for number in range(1, max_inning + 1)]
+                for side in ('away', 'home')
+            },
+            'away': board_linescore['away'],
+            'home': board_linescore['home'],
         },
         'pitcherSeason': {
             'era': pitcher_season_stats.get('era'),

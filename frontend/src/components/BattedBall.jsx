@@ -1,23 +1,14 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
-import {
-  PLATE_FRONT_Y,
-  clamp,
-  feetToM,
-  getBallXYSpeed,
-  getLandingLocation,
-  lerp,
-  makeSymmetricalArc,
-  mphToMetersPerSecond,
-  plateCrossing,
-  resolveFieldedIntercept,
-  statcastHitToWorld,
-} from '../util/MathUtil'
-import { isHitFieldingReady, hitMatchesAtBat, isBattedBallLaunchable, shouldAutoAdvanceStuckPlay, getBaseTargetLocation, resolveFielderCamTarget } from '../util/battedBall'
-import { FIELD } from '../constants/field'
-import { setCycleDuration, getCycleDuration, getTimeScale, getCyclePause, getBallReleaseTime, setBattedBallPosition, setChaserPosition, setPlayBallPosition, setFielderCamLookTarget, getFielderCamActive, stepSimulation, getSimulationTime } from '../constants/playback'
-import { getTuning, useTuning } from '../constants/tuning'
+import { PLATE_FRONT_Y, plateCrossing } from '../util/MathUtil'
+import { isHitFieldingReady, hitMatchesAtBat, isBattedBallLaunchable, shouldAutoAdvanceStuckPlay, resolveFielderCamTarget, resolveFielderCamThrowTarget } from '../util/battedBall'
+import { buildPlan, evalSegments } from '../util/playPlan'
+import { BATTER_ACTOR, ballCarrierAt, pitcherIsInvolved } from '../util/playCast'
+import { defenseKitForInning } from '../util/playerKit'
+import { setCycleDuration, getCycleDuration, getTimeScale, getCyclePause, getBallReleaseTime, setBattedBallPosition, setChaserPosition, setPlayBallPosition, setFielderCamLookTarget, getCastHandPosition, setCastHandPosition, setPlayClock, setBatterRun, setPitcherFielding, stepSimulation, getSimulationTime } from '../constants/playback'
+import { useTuning } from '../constants/tuning'
+import { FieldCast } from './FieldCast'
 import { ConfettiBurst } from './ConfettiBurst'
 
 // ---------------------------------------------------------------------------
@@ -36,8 +27,15 @@ import { ConfettiBurst } from './ConfettiBurst'
 //       * "OUT" / "DOUBLE PLAY" / "TRIPLE PLAY" text is emitted as each out is
 //         recorded.
 //
-// The full defensive alignment (all nine fielders) is rendered at its spots;
-// the chaser and any putout fielders move. The batted ball launches from the
+// What is on the field, and what each body does while the ball is in play, is
+// the cast's own business: util/playPlan.js builds the schedule, util/playCast.js
+// says where every actor is at a given second of it, and components/FieldCast.jsx
+// draws them (the real player.glb, seven fielders plus the runners, in place of
+// the capsule-and-ball placeholders that used to stand at each spot). This
+// component plays the ball half of that same plan — the arc, the roll, the throw
+// chain and the trail — and the rest of the choreography it leaves to the cast.
+//
+// The batted ball launches from the
 // spot the pitch ball is at when it reaches the front of home plate (the
 // moment the batter's swing connects), timed to the same real-time playback
 // cycle the Pitch and Batter components share (see constants/playback.js). When
@@ -75,12 +73,6 @@ function makeFoulHit(pitchData) {
     coordY: null,
   }
 }
-
-// Throw speed for the assist chain, matching solomon-gumball's 70 mph.
-
-// Outfield wall radius (matches Ballpark.jsx): the circle a home run clears in
-// the air, and where the confetti burst fires as the ball leaves the park.
-const WALL_RADIUS = feetToM(330)
 
 // Batted-ball trail + yellow trace: the same look as the pitch's — a constant
 // yellowish-white tail that fades out behind the ball over a persistent thin
@@ -196,332 +188,6 @@ function createTraceMaterial() {
     })
 }
 
-// Defense-side spot for a base, mirroring solomon-gumball's
-// getLocationForBaseCode(code, 'defense') — this app's FIELD.BASE already
-// carries the negated X/Z handedness, so the base locations are used directly.
-function getDefenseBaseLocation(baseKey) {
-  switch (baseKey) {
-    case '1B': return FIELD.BASE.FIRST.clone()
-    case '2B': return FIELD.BASE.SECOND.clone()
-    case '3B': return FIELD.BASE.THIRD.clone()
-    case 'score':
-    case 'home': return FIELD.BASE.HOME.clone().add(new THREE.Vector3(-0.5, 0, 0.5))
-    default: return FIELD.BASE.HOME.clone()
-  }
-}
-
-// Where the batted-ball's ground path first crosses the outfield wall circle
-// (radius WALL_RADIUS around home plate). Returns the parametric distance s in
-// [0, 1] along launch -> landing, or null if the ball stays inside the wall.
-function findWallExit(launch, landing) {
-  const dx = landing.x - launch.x
-  const dz = landing.z - launch.z
-  const a = dx * dx + dz * dz
-  if (a < 1e-9) return null
-  const b = 2 * (launch.x * dx + launch.z * dz)
-  const c = launch.x * launch.x + launch.z * launch.z - WALL_RADIUS * WALL_RADIUS
-  const disc = b * b - 4 * a * c
-  if (disc < 0) return null
-  const root = Math.sqrt(disc)
-  const s1 = (-b - root) / (2 * a)
-  const s2 = (-b + root) / (2 * a)
-  if (s1 >= 0 && s1 <= 1) return s1
-  if (s2 >= 0 && s2 <= 1) return s2
-  return null
-}
-
-// Evaluate a piecewise-linear motion schedule (list of {from, to, start,
-// duration}) at wall-clock time t. Before a segment starts the fielder holds at
-// that segment's ``from``; during it they lerp ``from`` -> ``to``; after the
-// last segment they hold at its ``to``.
-function evalSegments(segments, t) {
-  if (!segments || segments.length === 0) return null
-  for (const seg of segments) {
-    if (t < seg.start) return seg.from.clone()
-    if (t < seg.start + seg.duration) {
-      const p = clamp((t - seg.start) / seg.duration, 0, 1)
-      return seg.from.clone().lerp(seg.to, p)
-    }
-  }
-  return segments[segments.length - 1].to.clone()
-}
-
-function buildPlan(hit, launchPoint, settings = getTuning().battedBall) {
-  const maxRunSpeed = mphToMetersPerSecond(settings.maxRunSpeedMph)
-  const throwSpeed = mphToMetersPerSecond(settings.throwSpeedMph)
-  const launch = launchPoint.clone()
-
-  // Prefer the raw Statcast hit coordinates when present; fall back to the
-  // total-distance + spray-angle reconstruction for the bundled demo samples.
-  const landing = (hit.coordX != null && hit.coordY != null)
-    ? statcastHitToWorld(hit.coordX, hit.coordY)
-    : getLandingLocation(hit.totalDistance, hit.sprayAngle)
-
-  const speed = mphToMetersPerSecond(hit.launchSpeed)
-
-  // Batted-ball trajectory (matches solomon-gumball's makeSymmetricalArc call
-  // convention: x0, y0=horizontal Z, z0=height -> xf, yf=horizontal Z, zf=0).
-  const arc = makeSymmetricalArc(
-    launch.x, launch.z, launch.y,
-    landing.x, landing.z, 0,
-    speed, hit.launchAngle,
-  )
-  const ballAirTime = arc.totalDuration()
-
-  // For a home run, find where the ball's ground path crosses the outfield
-  // wall so the confetti can burst there (the ball leaves the park in the air).
-  let wallExit = null
-  if (hit.eventType === 'home_run') {
-    const s = findWallExit(launch, landing)
-    if (s != null) {
-      const exitTime = s * ballAirTime
-      wallExit = { position: arc.positionAtTime(exitTime), time: exitTime }
-    }
-  }
-
-  const flatLaunch = new THREE.Vector3(launch.x, 0, launch.z)
-  const flatLanding = new THREE.Vector3(landing.x, 0, landing.z)
-  const ballDir = flatLanding.clone().sub(flatLaunch).normalize()
-
-  // The fielder who fields this ball ALWAYS starts at their standard defensive
-  // spot and sprints to the fielding point (ported from solomon-gumball, which
-  // runs the catching player from FIELD_LOCATION.DEFENSE[abbr]).
-  const chaser = hit.fielder || 'CF'
-  const chaserHome = FIELD.DEFENSE[chaser] ?? FIELD.DEFENSE.CF
-
-  // Fielder trajectory: only fielded (not caught) balls are intercepted,
-  // mirroring solomon-gumball's LiveGameView. The ball flies to its arc
-  // landing at its horizontal (exit) speed, then ROLLS on the ground at
-  // ``groundRollSpeedMph`` (0 = auto = the exit speed, i.e. the historical
-  // timing). Re-solving the interception with the tuned roll speed keeps the
-  // catch point AND the fielder's sprint consistent with however fast the user
-  // makes the ball roll, so ball and fielder still arrive together.
-  const airXY = getBallXYSpeed(speed, hit.launchAngle)
-  const rollXY = settings.groundRollSpeedMph
-    ? mphToMetersPerSecond(settings.groundRollSpeedMph)
-    : airXY
-  const contactDistance = flatLaunch.distanceTo(flatLanding)
-  const intersection = hit.wasCaught
-    ? undefined
-    : resolveFieldedIntercept(
-        flatLaunch,
-        ballDir,
-        airXY,
-        rollXY,
-        ballAirTime,
-        contactDistance,
-        chaserHome,
-        maxRunSpeed,
-      )
-
-  const ballCatch = intersection ?? { location: flatLanding, t: ballAirTime }
-  const catchLocation = ballCatch.location
-  const timeUntilChaserReaches = chaserHome
-    ? Math.min(ballCatch.t, catchLocation.distanceTo(chaserHome) / maxRunSpeed)
-    : ballCatch.t
-
-  // ── Force-out / double-play choreography (ported from solomon-gumball) ──
-  // Parse the runners' movement + credits into:
-  //   chaserSegments — the chaser's piecewise run (home -> fielding point,
-  //                    then -> out base for an unassisted putout)
-  //   putoutMoves    — fielders with f_putout run to the out base in flight
-  //   throws         — the assist chain (ball thrown fielder -> fielder)
-  //   outs           — { time, text } when each out is recorded
-  const chaserSegments = [{
-    from: chaserHome.clone(),
-    to: catchLocation.clone(),
-    start: 0,
-    duration: Math.max(timeUntilChaserReaches, 0.001),
-  }]
-  const putoutMoves = []
-  const outs = []
-  let chaserPutoutBase = null
-
-  const runners = hit.runners || []
-  for (const runner of runners) {
-    const outBase = runner.outBase
-    if (!outBase) continue
-    for (const credit of runner.credits || []) {
-      if (credit.credit !== 'f_putout') continue
-      const fielder = credit.position
-      if (fielder === chaser) {
-        chaserPutoutBase = outBase
-      } else {
-        const from = FIELD.DEFENSE[fielder]
-        const to = getDefenseBaseLocation(outBase)
-        if (from && to) {
-          putoutMoves.push({
-            fielder,
-            from: from.clone(),
-            to,
-            duration: Math.max(Math.min(to.distanceTo(from) / maxRunSpeed, ballCatch.t), 0.001),
-          })
-        }
-      }
-    }
-  }
-
-  // Ordered assist/putout/fielded chain (deduped), starting from the chaser —
-  // the sequence the ball travels through on a force-out / double play.
-  const seen = new Set([chaser])
-  const chainPositions = [chaser]
-  for (const runner of runners) {
-    for (const credit of runner.credits || []) {
-      if (['f_assist', 'f_putout', 'f_fielded_ball'].includes(credit.credit)) {
-        const pos = credit.position
-        if (pos && !seen.has(pos)) {
-          seen.add(pos)
-          chainPositions.push(pos)
-        }
-      }
-    }
-  }
-
-  // Chain positions that record a putout (for the OUT / DOUBLE PLAY text).
-  const putoutPositions = new Set()
-  for (const runner of runners) {
-    if (!runner.outBase) continue
-    for (const credit of runner.credits || []) {
-      if (credit.credit === 'f_putout' && credit.position !== chaser) putoutPositions.add(credit.position)
-    }
-  }
-
-  const throws = [] // { fromPos, toPos, arc, isPutout, start, duration }
-  const positionOf = (pos) => {
-    const move = putoutMoves.find((m) => m.fielder === pos)
-    if (move) return move.to.clone()
-    return (FIELD.DEFENSE[pos] ?? FIELD.DEFENSE.CF).clone()
-  }
-
-  let outCount = 0
-  const recordOut = (time) => {
-    outCount += 1
-    outs.push({ time, text: outCount === 1 ? 'OUT' : outCount === 2 ? 'DOUBLE PLAY' : 'TRIPLE PLAY' })
-  }
-
-  let endTime = ballCatch.t
-
-  if (hit.wasCaught) {
-    // Caught in the air: the out is recorded the moment the ball is caught.
-    recordOut(ballCatch.t)
-  } else if (chaserPutoutBase) {
-    // Unassisted putout: the chaser runs the ball from the fielding point to
-    // the base (solomon-gumball's "run catching player to base").
-    const to = getDefenseBaseLocation(chaserPutoutBase)
-    const duration = Math.max(catchLocation.distanceTo(to) / maxRunSpeed, 0.3)
-    chaserSegments.push({ from: catchLocation.clone(), to, start: ballCatch.t, duration })
-    endTime = ballCatch.t + duration
-    recordOut(endTime)
-  } else {
-    // Assist chain: throw through the fielders, recording an out at each putout
-    // receiver (solomon-gumball's while-loop assist sequence).
-    let t = ballCatch.t
-    for (let i = 0; i < chainPositions.length - 1; i++) {
-      const fromPos = positionOf(chainPositions[i])
-      const toPos = positionOf(chainPositions[i + 1])
-      // The first throw leaves the chaser's glove at the fielding point.
-      if (i === 0) fromPos.copy(catchLocation)
-
-      // Throw from glove height to glove height; shorter throws are flatter
-      // (solomon-gumball lerps 0°..20° over the first 400 ft).
-      const handHeight = 1.5
-      const throwOrigin = new THREE.Vector3(fromPos.x, handHeight, fromPos.z)
-      const throwDest = new THREE.Vector3(toPos.x, handHeight, toPos.z)
-      const throwAngle = lerp(0, 20, clamp(fromPos.distanceTo(toPos) / feetToM(400), 0, 1))
-      const throwArc = makeSymmetricalArc(
-        throwOrigin.x, throwOrigin.z, throwOrigin.y,
-        throwDest.x, throwDest.z, throwDest.y,
-        throwSpeed, throwAngle,
-      )
-      const duration = throwArc.totalDuration()
-      throws.push({
-        fromPos: fromPos.clone(),
-        toPos: toPos.clone(),
-        arc: throwArc,
-        isPutout: putoutPositions.has(chainPositions[i + 1]),
-        start: t,
-        duration,
-      })
-      if (putoutPositions.has(chainPositions[i + 1])) recordOut(t + duration)
-      t += duration
-    }
-    if (throws.length) endTime = throws[throws.length - 1].start + throws[throws.length - 1].duration
-  }
-
-  // For non-out base hits, surface the hit type once the play settles
-  // (solomon-gumball's end-of-play SINGLE / DOUBLE / TRIPLE text).
-  let resultText = null
-  if (outs.length === 0) {
-    const endBase = runners[0]?.end
-    if (endBase === '1B') resultText = 'SINGLE'
-    else if (endBase === '2B') resultText = 'DOUBLE'
-    else if (endBase === '3B') resultText = 'TRIPLE'
-    else if (hit.eventType === 'home_run') resultText = 'HOME RUN'
-  }
-
-  const stepOnBagTarget = chaserPutoutBase
-    ? getBaseTargetLocation(chaserPutoutBase)
-    : (chaserSegments.length > 1
-      ? getBaseTargetLocation(null, chaserSegments[chaserSegments.length - 1].to)
-      : null)
-
-  return {
-    arc, ballAirTime, ballCatch, catchLocation, timeUntilChaserReaches,
-    chaser, chaserHome, landing, wallExit,
-    // Real-ground-path roll inputs (see the frame loop): the ball's ground
-    // position after it touches the plane is ``flatLaunch + ballDir * d`` with
-    // ``d = contactDistance + rollSpeedXY * (t - ballAirTime)``. When the roll
-    // knob is 0, rollSpeedXY === airXY and this reduces to the arc's own x/z.
-    flatLaunch, ballDir, rollSpeedXY: rollXY, contactDistance,
-    chaserSegments, putoutMoves, throws, outs, resultText, endTime,
-    chaserPutoutBase, stepOnBagTarget,
-    // Where the ball ends up at the end of the play (glove of the final
-    // receiver, the chaser at the base, or the catch point).
-    finalBallPos: throws.length
-      ? throws[throws.length - 1].toPos
-      : chaserSegments.length > 1
-        ? chaserSegments[chaserSegments.length - 1].to
-        : catchLocation,
-  }
-}
-
-// A fielder sprite (body + head). ``ref`` lets the frame loop move it; the
-// inner ``leanRef`` group tilts forward while the fielder is sprinting.
-// ``opacity`` makes the fielder translucent (used by the fielder camera
-// replay so the body doesn't block the view from head-height).
-const Fielder = React.forwardRef(({ position, leanRef, opacity = 1 }, ref) => {
-  const bodyMatRef = useRef(null);
-  const headMatRef = useRef(null);
-
-  // Directly set material properties when opacity changes — R3F's declarative
-  // props may not update the Three.js material in all edge cases.
-  useEffect(() => {
-    const materials = [bodyMatRef.current, headMatRef.current].filter(Boolean);
-    materials.forEach((m) => {
-      m.transparent = opacity < 1;
-      m.opacity = opacity;
-      m.depthWrite = opacity >= 1;
-      m.needsUpdate = true;
-    });
-  }, [opacity]);
-
-  return (
-    <group ref={ref} position={position}>
-      <group ref={leanRef}>
-        <mesh position={[0, 0.9, 0]} castShadow>
-          <capsuleGeometry args={[0.35, 1.1, 4, 8]} />
-          <meshStandardMaterial ref={bodyMatRef} color="#e63946" roughness={0.8} transparent={opacity < 1} opacity={opacity} depthWrite={opacity >= 1} />
-        </mesh>
-        <mesh position={[0, 1.75, 0]}>
-          <sphereGeometry args={[0.24, 12, 12]} />
-          <meshStandardMaterial ref={headMatRef} color="#f1c27d" roughness={0.8} transparent={opacity < 1} opacity={opacity} depthWrite={opacity >= 1} />
-        </mesh>
-      </group>
-    </group>
-  );
-});
-Fielder.displayName = 'Fielder'
-
 export const BattedBall = ({ pitchData, replayKey = 0, hit = null, hits = SAMPLE_HITS, onPlayResult, onComplete, comparison = false }) => {
   const tuning = useTuning()
   const battedTuning = tuning.battedBall
@@ -529,15 +195,13 @@ export const BattedBall = ({ pitchData, replayKey = 0, hit = null, hits = SAMPLE
   const [hitIndex, setHitIndex] = useState(0)
   // One-shot confetti burst for home runs (set when the ball clears the wall).
   const [confetti, setConfetti] = useState(null)
-  // Translucent fielder bodies during fielder cam replay so the head-height
-  // camera isn't blocked.
-  const [fielderOpacity, setFielderOpacity] = useState(1)
   const battedGroupRef = useRef()
   const ballRef = useRef()
-  // Position-code -> { group, lean } refs for the fielders that can move.
-  const fielderRefs = useRef({})
   // Flight clock starting from 0 the moment the ball is launched at contact.
   const flightClock = useRef(0)
+  // Whether the cast should be live this frame: the play has launched and the
+  // choreography has not run out (FieldCast reads it, and falls back to its own
+  // alignment — the reset — when it is false).
   const firedThisCycle = useRef(false)
   const launched = useRef(false)
   const recordedOuts = useRef(0)
@@ -557,6 +221,7 @@ export const BattedBall = ({ pitchData, replayKey = 0, hit = null, hits = SAMPLE
   // the batted ball launches (each play re-runs the choreography) and on a new
   // pitch.
   const fieldersReset = useRef(false)
+  const castPlaying = useRef(false)
   // Home-run confetti: fires once per cycle at the wall-crossing spot.
   const confettiFiredRef = useRef(false)
   // Pitch object that owned the current cycle duration. A live hit can arrive
@@ -616,6 +281,30 @@ export const BattedBall = ({ pitchData, replayKey = 0, hit = null, hits = SAMPLE
     if (!contact) return null
     return buildPlan(activeHit, contact.launch, battedTuning)
   }, [activeHit, contact, battedTuning])
+
+  // Hand the batter-runner's own run to the body that runs it: the batter's
+  // (see constants/playback.js's `batterRun`, and util/playCast.js on why this
+  // cast draws seven fielders and the runners on the bases but not him). One
+  // schedule, one owner — the batter reads the very walk the play was timed
+  // from, rather than keeping a second copy of it in step with this one.
+  useEffect(() => {
+    setBatterRun(plan?.runs?.find((r) => r.actor === BATTER_ACTOR) ?? null)
+    return () => setBatterRun(null)
+  }, [plan])
+
+  // ...and the pitcher's own body is handed the same plan when the play gives him
+  // something to do with the ball — a comebacker to field, a putout to make at the
+  // bag, a throw to make or to take. Like the batter's run, this is published for
+  // the component that draws that body (Pitcher.jsx) rather than drawn by the
+  // cast: the pitcher is not one of the cast's bodies either (see util/playCast.js),
+  // and the plan is only ever published when it is really his to field.
+  // ...never in comparison mode, which has no fielding at all: an overlaid pitcher is
+  // a pitch to read against others, not a body in a play (the same reason the cast is
+  // not drawn there).
+  useEffect(() => {
+    setPitcherFielding(!comparison && pitcherIsInvolved(plan) ? plan : null)
+    return () => setPitcherFielding(null)
+  }, [plan, comparison])
 
   // Tail + yellow trace (same animation as the pitch, no billow particles).
   const tailMeshRef = useRef()
@@ -724,17 +413,6 @@ export const BattedBall = ({ pitchData, replayKey = 0, hit = null, hits = SAMPLE
     playbackTuning.comparisonFinishPause,
   ])
 
-  // Register a fielder's group/lean refs by position code. Both callbacks
-  // create the entry independently so their invocation order doesn't matter.
-  const registerFielder = useCallback((pos) => (ref) => {
-    const entry = fielderRefs.current[pos] || (fielderRefs.current[pos] = {})
-    entry.group = ref
-  }, [])
-  const registerLean = useCallback((pos) => (ref) => {
-    const entry = fielderRefs.current[pos] || (fielderRefs.current[pos] = {})
-    entry.lean = ref
-  }, [])
-
   // Restart the shared playback clock only when a new pitch arrives, keeping
   // the launch in phase with the Pitch and Batter components. Deliberately NOT
   // keyed on ``hit`` (or ``activeHit``): a live hit usually arrives a poll
@@ -762,6 +440,12 @@ export const BattedBall = ({ pitchData, replayKey = 0, hit = null, hits = SAMPLE
     setChaserPosition(null)
     setPlayBallPosition(null)
     setFielderCamLookTarget(null)
+    setPlayClock(null)
+    // ...and the hand holding the ball: a pitch carries no fielding, so whatever
+    // body held it on the last play must not leave its hand behind for this one to
+    // ride (the cast and the pitcher each publish their own carrier's hand, and
+    // neither is asked for one here).
+    setCastHandPosition(null)
     noLaunchDeadlineRef.current = null
   }, [pitchData, replayKey])
 
@@ -771,18 +455,20 @@ export const BattedBall = ({ pitchData, replayKey = 0, hit = null, hits = SAMPLE
   // publishing null while the ball isn't airborne — but an unmount leaves the
   // last published position lingering in the module global, which would make
   // the follow camera lock onto a vanished ball and capture a wrong "original"
-  // view for the first animation after returning to live.
+  // view for the first animation after returning to live. The play's own clock
+  // goes with it for the same reason (a body that ran a play of a component
+  // that no longer exists would keep running it).
   useEffect(() => {
-    return () => { setBattedBallPosition(null); setChaserPosition(null); setPlayBallPosition(null); setFielderCamLookTarget(null); }
+    return () => { setBattedBallPosition(null); setChaserPosition(null); setPlayBallPosition(null); setFielderCamLookTarget(null); setPlayClock(null) }
   }, [])
 
   useFrame((state, delta) => {
-    // Sync fielder opacity from the module-level fielder-cam flag so the
-    // chaser re-renders translucent during the replay.
-    const camActive = getFielderCamActive()
-    if ((camActive ? 0 : 1) !== fielderOpacity) setFielderOpacity(camActive ? 0 : 1)
-
     const { time: currentPlayback, wrapped } = stepSimulation(delta, state.clock.elapsedTime)
+    // The play's clock is only up while the play is: every path that leaves the
+    // choreography (no plan, no flight, before the launch, after the last body
+    // has stopped) takes it away below, so a reader can never see a play that is
+    // over while its own positions still look alive.
+    setPlayClock(null)
 
     if (!battedGroupRef.current || !ballRef.current) return
     if (!contact || !plan) {
@@ -844,20 +530,9 @@ export const BattedBall = ({ pitchData, replayKey = 0, hit = null, hits = SAMPLE
       setPlayBallPosition(null)
       setBattedBallPosition(null)
       setFielderCamLookTarget(null)
-      const chaserRefs = fielderRefs.current[plan.chaser]
-      if (chaserRefs?.group) {
-        chaserRefs.group.position.copy(plan.chaserHome)
-        chaserRefs.group.rotation.set(0, 0, 0)
-      }
-      if (chaserRefs?.lean) chaserRefs.lean.rotation.x = 0
-      for (const move of plan.putoutMoves) {
-        const refs = fielderRefs.current[move.fielder]
-        if (refs?.group) {
-          refs.group.position.copy(move.from)
-          refs.group.rotation.set(0, 0, 0)
-        }
-        if (refs?.lean) refs.lean.rotation.x = 0
-      }
+      // The cast's reset is its own: with the play over (this instant is past
+      // every plan's endTime), FieldCast puts every body back on its own spot in
+      // its idle clip — the same alignment the next cycle replays from.
     }
 
     // Fire the batted ball the moment the pitch reaches the contact spot. The
@@ -938,6 +613,13 @@ export const BattedBall = ({ pitchData, replayKey = 0, hit = null, hits = SAMPLE
     battedGroupRef.current.visible = true
     flightClock.current += delta * speed
     const t = flightClock.current
+    // The cast plays exactly as long as the play does: launched, and still
+    // inside the choreography's own length. When this goes false — before the
+    // launch, and once the last runner has arrived — FieldCast puts every body
+    // back on its own spot in its idle clip, which is the reset that lets the
+    // next cycle replay the same play from the top.
+    castPlaying.current = launched.current && t <= plan.endTime
+    setPlayClock(castPlaying.current ? t : null)
 
     // Home-run confetti: burst once, at the spot the ball clears the wall.
     if (!comparison && plan.wallExit && !confettiFiredRef.current && t >= plan.wallExit.time) {
@@ -990,6 +672,16 @@ export const BattedBall = ({ pitchData, replayKey = 0, hit = null, hits = SAMPLE
       } else {
         ballRef.current.visible = false
       }
+    } else if (ballCarrierAt(plan, t) && getCastHandPosition()) {
+      // The ball is in a fielder's hand: the man who gloved it holds it through
+      // his wind-up, and each man who receives a throw holds it before making
+      // his own (the reference attaches the ball to the palm socket for exactly
+      // these windows). The cast publishes the hand each frame; with no cast
+      // hand — a ball fielded by the pitcher or the catcher, who are not in the
+      // cast — the branches below carry it instead.
+      const hand = getCastHandPosition()
+      ballRef.current.position.set(hand.x, hand.y, hand.z)
+      ballRef.current.visible = true
     } else if (t <= plan.ballCatch.t) {
       // In flight along the batted-ball arc, and the moment it first touches
       // the ground it keeps rolling forward on the same real path toward the
@@ -1090,6 +782,19 @@ export const BattedBall = ({ pitchData, replayKey = 0, hit = null, hits = SAMPLE
           duration: plan.endTime - plan.ballCatch.t,
         });
         setFielderCamLookTarget(lookTarget, pitchData?.play_id ?? null);
+      } else if (plan.throws && plan.throws.length > 0 && t >= plan.ballCatch.t) {
+        // Assist chain: once he HAS the ball the fielder turns toward the
+        // teammate he throws to (and every receiver after him turns toward the
+        // next), so the camera must look where the body looks — at the
+        // receiving fielder — not straight down at the ball, which stares at
+        // the ground.
+        const lookTarget = resolveFielderCamThrowTarget({
+          t,
+          ballCatchTime: plan.ballCatch.t,
+          throws: plan.throws,
+          catchLocation: plan.catchLocation,
+        });
+        setFielderCamLookTarget(lookTarget, pitchData?.play_id ?? null);
       } else {
         setFielderCamLookTarget(null);
       }
@@ -1102,38 +807,18 @@ export const BattedBall = ({ pitchData, replayKey = 0, hit = null, hits = SAMPLE
     // start — the chaser is parked on his defensive spot through the windup and
     // the fielder cam (which follows the published position) re-acquires the
     // ready alignment there.
-    const chaserRefs = fielderRefs.current[plan.chaser]
-    if (!fieldersReset.current && (chaserRefs?.group || plan.chaser === 'C')) {
+    // The bodies themselves are FieldCast's (below): it reads the same plan on
+    // the same clock and moves every actor, so all that is left here is to
+    // publish the chaser's live position for the fielder camera to follow.
+    // Suppressed once the fielding choreography has restarted at the windup
+    // start — the chaser is parked on his defensive spot through the windup and
+    // the fielder cam (which follows the published position) re-acquires the
+    // ready alignment there.
+    if (!fieldersReset.current) {
       const pos = evalSegments(plan.chaserSegments, t) || plan.chaserHome
-      if (chaserRefs?.group && pos) {
-        chaserRefs.group.position.copy(pos)
-        // ``activeSeg`` is only defined while the chaser is actually running
-        // (t inside [start, start+duration)), so the lean + facing drop as soon
-        // as they stop — e.g. waiting under a fly ball at the fielding point.
-        const activeSeg = plan.chaserSegments.find((s) => t >= s.start && t < s.start + s.duration)
-        if (activeSeg) {
-          chaserRefs.group.lookAt(activeSeg.to.x, chaserRefs.group.position.y, activeSeg.to.z)
-        }
-        if (chaserRefs.lean) chaserRefs.lean.rotation.x = activeSeg ? 0.22 : 0
-      }
-      // Publish the chaser's live world position so the fielder camera can
-      // follow along during the replay.
-      const publishedPos = chaserRefs?.group?.position || pos
-      setChaserPosition(publishedPos, pitchData?.play_id ?? null)
+      setChaserPosition(pos, pitchData?.play_id ?? null)
     } else {
       setChaserPosition(null)
-    }
-
-    // ── Putout fielders sprint to their out base while the ball is in flight ──
-    if (!fieldersReset.current) {
-      for (const move of plan.putoutMoves) {
-        const refs = fielderRefs.current[move.fielder]
-        if (!refs?.group) continue
-        const progress = clamp(t / move.duration, 0, 1)
-        refs.group.position.lerpVectors(move.from, move.to, progress)
-        refs.group.lookAt(move.to.x, refs.group.position.y, move.to.z)
-        if (refs.lean) refs.lean.rotation.x = progress < 1 ? 0.22 : 0
-      }
     }
 
     // ── Emit OUT / DOUBLE PLAY / TRIPLE PLAY as each out is recorded ─────
@@ -1158,26 +843,21 @@ export const BattedBall = ({ pitchData, replayKey = 0, hit = null, hits = SAMPLE
 
   if (!contact || !plan) return null
 
-  // The catcher ('C') is rendered by its own dedicated component
-  // (Catcher.jsx), so it is excluded here to avoid a duplicate sprite behind
-  // home plate — including when the chaser happens to be the catcher.
-  const chaserPos = plan.chaser
-  const renderChaser = chaserPos !== 'C'
-  const staticFielders = Object.entries(FIELD.DEFENSE)
-    .filter(([pos]) => pos !== chaserPos && pos !== 'C')
-
   return (
     <group>
-      {/* All defensive fielders at their positions (hidden in comparison) */}
+      {/* The cast: every fielder and runner this play has, in the real uniform
+          (FieldCast owns the bodies and their clips; the plan's schedule drives
+          them). Hidden in comparison mode, which has no fielding at all, and
+          while the play is not running — before the launch and after the
+          choreography has ended, when the cast sits on its own alignment ready
+          for the next cycle to replay. */}
       {!comparison && (
-        <>
-          {staticFielders.map(([pos, home]) => (
-            <Fielder key={pos} position={home.toArray()} ref={registerFielder(pos)} leanRef={registerLean(pos)} />
-          ))}
-          {renderChaser && (
-            <Fielder key={`chaser-${chaserPos}`} position={plan.chaserHome.toArray()} ref={registerFielder(chaserPos)} leanRef={registerLean(chaserPos)} opacity={fielderOpacity} />
-          )}
-        </>
+        <FieldCast
+          plan={plan}
+          clockRef={flightClock}
+          playingRef={castPlaying}
+          defenseKit={defenseKitForInning(pitchData)}
+        />
       )}
 
       {/* Batted ball + trajectory (hidden until the pitch is hit) */}

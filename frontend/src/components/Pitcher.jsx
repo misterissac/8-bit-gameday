@@ -3,16 +3,50 @@ import { useFrame, useLoader } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { TextureLoader } from 'three';
-import { getCycleDuration, getTimeScale, stepSimulation } from '../constants/playback';
+import { getCycleDuration, getPitcherFielding, getPlayClock, getTimeScale, setCastHandPosition, stepSimulation } from '../constants/playback';
 import { getTuning, useTuning } from '../constants/tuning';
 import { buildPlayerBody, useBodyRig } from '../util/playerBody';
+import { blendSnapshot, bindClips, poseSnapshot, setActorState } from '../util/playerClips';
+import { PITCHER_ACTOR, ballCarrierAt, facingYaw, isCastSpot, pitcherFrameAt } from '../util/playCast';
 import { AUTHORED_LANDING_TIME, AUTHORED_RELEASE_TIME, blendPose, pitcherFinish, pitcherIdle, pitcherPlacement, pitcherPose, pitcherProfile } from '../util/pitcherSequence';
+import { PALM_HANDLES } from '../util/playerRig';
+import { HELMET_MESH, blueKit, defenseKitForInning, playerFadeOpacity, writeBodyFade } from '../util/playerKit';
 import { MOUND, moundSurfaceY } from '../constants/mound';
+import { clamp } from '../util/MathUtil';
 
 // The world's own up: the axis a rig place is turned about to be read in the world,
 // where the group's yaw is what stands between the two frames (see the placement's
 // own read of the mound under the finish).
 const UP = new THREE.Vector3(0, 1, 0);
+
+// Scratch for the hand read while the pitcher is holding the ball during a play (a
+// frame loop allocating a Vector3 per frame is a frame loop the GC gets to run
+// during a play — the same scratch FieldCast keeps for its own bodies).
+const FIELD_HAND = new THREE.Vector3();
+
+// How long the pitcher's body takes to come out of the delivery and into a play, in
+// play seconds: the window he is eased out of the pose the pitch left him in (the
+// follow-through, or the set stance if the ball went before he finished) and the
+// window the schedule's own legs are eased in over, as one motion. Short enough to
+// read as going on the ball — a body that has to stand up out of a follow-through
+// and turn to run does it in a stride or two — and the batter-runner's own takeoff
+// to the tenth (util/batterRunner.js), because it is the same problem twice: a body
+// authored by one component, handed to the asset's clips by another.
+const PITCHER_FIELDING_TAKEOFF_SECONDS = 0.45;
+
+// The half turn between this body's own frame and the frame a look target is
+// aimed in. A body of the *cast* is drawn in the asset's own frame, which faces
+// +Z — that is the front `facingYaw` aims at a target, and it is why they carry no
+// turn of their own. This body is not: the rig frame (and so every pose the
+// delivery is authored from — see util/pitcherSequence.js) faces **-Z**, so the
+// model is mounted turned half round inside this group, and the group's own yaw
+// counts from there. The delivery's own yaw is the same aim with that turn already
+// in it — `atan2(x, z)`, the yaw that points a -Z front at the plate (see
+// `pitcherPlacement`) — so a look target has to have the half turn put back on
+// before it is written on this group, or the body stands facing exactly away from
+// what the play is looking at. It is the batter-runner's own problem and its own
+// answer (util/batterRunner.js's `BATTER_FRAME_TURN`).
+const PITCHER_FRAME_TURN = Math.PI;
 
 // ---------------------------------------------------------------------------
 // Pitcher at the mound: the reference project's player.glb character, driven the
@@ -119,12 +153,23 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
     // against the placement it was solved for (see the frame loop).
     const settleRef = useRef(null);
 
+    // Every material this body is drawn with, gathered by the kit pass below (the
+    // uniform it writes, and the glove's own leather) — what the play's own fade
+    // writes to, the way the cast writes its bodies'.
+    const bodyMaterialsRef = useRef([]);
+
     const pitchHand = pitchData?.pitch_hand || 'R';
     const isRHP = pitchHand === 'R';
-    // The pitcher is the fielding team: top of the inning → the home team
-    // bats, so the away team fields (away uniform).
-    const teamType = pitchData?.is_top_inning ? 'away' : 'home';
-    const teamTexture = useLoader(TextureLoader, teamType === 'away' ? AWAY_TEXTURE_URL : HOME_TEXTURE_URL);
+    // The pitcher is the fielding team, and which club that is for this half inning
+    // is the question every body on the field asks (util/playerKit.js): the same
+    // answer the catcher and the fielders take, so the mound cannot be in one club's
+    // colours while the man behind the plate is in the other's.
+    const teamType = defenseKitForInning(pitchData);
+    // The visitors' kit is the same atlas with its team colour turned blue (see
+    // util/playerKit.js's `blueKit`), so the two clubs on the field are a red side
+    // and a blue one rather than two dark reds — the mound included.
+    const kitTexture = useLoader(TextureLoader, teamType === 'away' ? AWAY_TEXTURE_URL : HOME_TEXTURE_URL);
+    const teamTexture = teamType === 'away' ? blueKit(kitTexture) : kitTexture;
 
     // Uniform: body + hands + cap get the team texture (flipY=false, sRGB,
     // repeat wrapping — the reference's texture setup); the helmet is hidden
@@ -143,6 +188,7 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
         const handR = get('HandR');
         const handL = get('HandL');
         const gloveL = get('GloveL');
+        const gloveR = get('GloveR');
         if (!bodyMesh || !handR || !handL || !gloveL) return;
 
         const bodyMaterial = new THREE.MeshStandardMaterial({
@@ -157,15 +203,33 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
         handR.material = bodyMaterial;
         handL.material = bodyMaterial;
         if (helmet) helmet.visible = false;
-        // The glove keeps its original leather texture (the reference's mit
-        // material), just re-created so the cache's material stays pristine.
-        const gloveMap = gloveL.material?.map ?? null;
-        gloveL.material = new THREE.MeshStandardMaterial({
-            map: gloveMap,
+        // Each glove keeps its own original leather texture (the reference's mit
+        // material), re-created so the cache's material stays pristine — both of them,
+        // because the one this pitch does not wear is still *in* the body, and a fade
+        // written to the cache's shared leather would reach every other clone of it.
+        const leather = (mesh) => new THREE.MeshStandardMaterial({
+            map: mesh.material?.map ?? null,
             roughness: 1,
             side: THREE.DoubleSide,
             shadowSide: THREE.DoubleSide,
         });
+        gloveL.material = leather(gloveL);
+        if (gloveR) gloveR.material = leather(gloveR);
+        // ...and everything the play's own fade is written to: every mesh this body is
+        // drawn with, whichever pass put it there — the kit above, the gloves, and the
+        // look pass's own details (the chest's opening and the rest are meshes of their
+        // own, hung beside the body with materials of their own, so a fade that only
+        // knew about the kit would leave a floating jersey with no man in it). The
+        // helmet is the one exception: its shell is the *asset's* material, shared with
+        // every other clone, and it is hidden on this body anyway.
+        const worn = new Set([bodyMaterial, gloveL.material, gloveR?.material].filter(Boolean));
+        model.traverse((child) => {
+            if (!child.isMesh || child.name === HELMET_MESH) return;
+            for (const mat of Array.isArray(child.material) ? child.material : [child.material]) {
+                if (mat) worn.add(mat);
+            }
+        });
+        bodyMaterialsRef.current = [...worn];
 
         model.traverse((child) => {
             if (child.isMesh) {
@@ -197,6 +261,41 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
             handL.visible = true;
         }
     }, [model, isRHP]);
+
+    // The same body, a second way of moving it. A play that gives the pitcher
+    // something to field — a comebacker hit back up the middle (the feed's own hit
+    // location sends those to him), a putout he is credited with at the bag, a throw
+    // he makes or takes in the assist chain — hands his body to the asset's own clips
+    // (the sprint, the catch, the throw) and to the plan's own schedule
+    // (util/playCast.js's `pitcherFrameAt`, published by BattedBall), the same way the
+    // cast's bodies are played. Nothing is playing while he is pitching: the mixer
+    // only ever runs for the play (see the frame loop), so no pose the delivery
+    // authors is touched by it.
+    const fieldingKit = useMemo(() => {
+        if (!model || !gltf?.animations?.length) return null;
+        const mixer = new THREE.AnimationMixer(model);
+        return { mixer, actions: bindClips(mixer, gltf.animations), state: null };
+    }, [model, gltf]);
+
+    // The bone the ball rides while the pitcher holds it during a play: the *throwing*
+    // hand's palm socket — the same socket the model's bat rig puts the handle in, and
+    // the one the reference sockets the thrown ball into — on whichever arm this pitch
+    // throws with. A bone rather than the `HandR` mesh, for the reason FieldCast
+    // records: a skinned mesh's own node never moves.
+    const throwingHand = useMemo(() => {
+        if (!model) return null;
+        const names = [PALM_HANDLES[pitchHand], `palm_handle.${pitchHand}`, `hand${pitchHand}`, `hand.${pitchHand}`];
+        for (const name of names) {
+            const node = model.getObjectByName(name);
+            if (node) return node;
+        }
+        return null;
+    }, [model, pitchHand]);
+
+    // The handoff, held across frames: the frame the play took his body over, the
+    // pose it was standing in, and where the schedule had it — so no frame of the
+    // change is a cut (see the frame loop).
+    const fieldingRef = useRef({ active: false, enteredAt: 0, snapshot: null, origin: null, scheduleAtEntry: null, fade: 1, probe: null });
 
     // Tunneling overlay: dim every mesh so several overlaid pitchers (after a
     // pitching change) can be seen through one another. depthWrite is disabled
@@ -348,6 +447,134 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
         const group = groupRef.current;
         const driver = rigDriverRef.current;
         if (!group || !placement) return;
+
+        // ── The pitcher's own half of a play ────────────────────────────────
+        // A play that gives the pitcher something to field (see `pitcherIsInvolved`
+        // in util/playCast.js) hands his body to the same choreography the cast's
+        // bodies walk: the plan's own schedule, evaluated for the pitcher's spot by
+        // `pitcherFrameAt` and published by BattedBall, played off the play's own
+        // clock — the sprint, the catch and the throw, on the asset's own clips.
+        //
+        // What that means here is that the delivery stops being authored: the
+        // procedural pose below never runs while the play has him, the mixer drives
+        // the bones instead, and the group is placed on the schedule's metres rather
+        // than on the mound.
+        //
+        // The change is not a cut, on either axis. The frame the play takes him over,
+        // the pose he is standing in is snapshotted, and the schedule's own first legs
+        // are eased in over the takeoff below (`blendSnapshot`) — and he leaves from
+        // *where he stood* rather than from the spot the schedule starts him at, by
+        // carrying the offset between the two and walking it off over the same window
+        // (the placement slides a few tenths of a metre around the rubber from pitch
+        // to pitch, so the two are not the same place). Both are the batter-runner's
+        // own handoff, twice — see util/batterRunner.js.
+        const playClock = getPlayClock();
+        const fieldingPlan = getPitcherFielding();
+        const fieldFrame = fieldingPlan && playClock != null
+            ? pitcherFrameAt(fieldingPlan, playClock)
+            : null;
+        const fielding = fieldingRef.current;
+        if (fieldFrame) {
+            if (!fielding.active) {
+                fielding.active = true;
+                fielding.enteredAt = playClock;
+                fielding.snapshot = poseSnapshot(model);
+                fielding.origin = group.position.clone();
+                fielding.scheduleAtEntry = fieldFrame.position.clone();
+            }
+            const takeoff = clamp((playClock - fielding.enteredAt) / PITCHER_FIELDING_TAKEOFF_SECONDS, 0, 1);
+            const offset = fielding.origin.clone().sub(fielding.scheduleAtEntry).multiplyScalar(1 - takeoff);
+            const spot = fieldFrame.position.clone().add(offset);
+            // His feet on the ground he is really on: the mound's own surface (its
+            // plateau, its slant and the field beyond it) where he stands on it, the
+            // field's own surface off it — the same read the delivery's feet are
+            // solved against (constants/mound.js).
+            group.position.set(spot.x, moundSurfaceY(spot.x, spot.z), spot.z);
+            // ...and turned toward what the schedule has him looking at: the same
+            // look target every cast body is turned by (see playCast's `facingYaw`),
+            // with his own frame's half turn back on it — one aim, two frames (see
+            // PITCHER_FRAME_TURN). A body nothing is asked of keeps the yaw it had.
+            const aim = facingYaw(spot, fieldFrame.lookTarget);
+            group.rotation.set(0, aim == null ? group.rotation.y : aim + PITCHER_FRAME_TURN, 0);
+            group.scale.setScalar(placement.scale);
+            if (fieldingKit) {
+                setActorState(fieldingKit, fieldFrame.state);
+                fieldingKit.mixer.update(delta * getTimeScale());
+                blendSnapshot(fielding.snapshot, takeoff);
+            }
+            // ...and how much of him is drawn, off the same distance rule every cast
+            // body is drawn at (util/playerKit.js's playerFadeOpacity), because he is
+            // one of the bodies a *play* moves now: the fielder camera's position is a
+            // fielder's own head, so when the man it is following is him — a comebacker
+            // is his to field — the body it is standing inside is the one that goes,
+            // exactly as it does for a cast fielder. Only while the play has him: the
+            // delivery's own frames are drawn whole (his harness and the visual
+            // baselines are read from inside his own frame).
+            const fade = playerFadeOpacity(
+                group.position.distanceTo(state.camera.position),
+                tuning.camera.playerFadeNear,
+                tuning.camera.playerFadeFar,
+            );
+            if (fielding.fade == null || Math.abs(fade - fielding.fade) > 0.01) {
+                fielding.fade = fade;
+                writeBodyFade(bodyMaterialsRef.current, fade);
+            }
+            // The ball in his hand, published for the ball's own renderer to ride from
+            // the moment he gloves it until the throw leaves it — the cast's own
+            // publication, for the one carrier the cast does not draw. The two never
+            // both write a frame: the carrier decides whose answer it is, and a ball
+            // charged to a spot neither component draws (the catcher) is the empty
+            // one.
+            const carrier = ballCarrierAt(fieldingPlan, playClock);
+            if (carrier === PITCHER_ACTOR && throwingHand) {
+                // The mixer has just posed this frame's bones and the group has just
+                // been moved, so the hand's world matrix is still last frame's — three
+                // only refreshes matrices at render (the same walk FieldCast does for
+                // its carrier).
+                group.updateMatrixWorld(true);
+                throwingHand.getWorldPosition(FIELD_HAND);
+                setCastHandPosition({ x: FIELD_HAND.x, y: FIELD_HAND.y, z: FIELD_HAND.z });
+            } else if (!isCastSpot(carrier)) {
+                setCastHandPosition(null);
+            }
+            // What a probe reads while the play has him — where the schedule has him,
+            // what he is playing and whether the ball is in his hand — beside the
+            // delivery's own readout below (see e2e/harness/pitcherMain.jsx).
+            const probe = fielding.probe ?? (fielding.probe = {});
+            probe.clock = playClock;
+            probe.x = spot.x;
+            probe.y = group.position.y;
+            probe.z = spot.z;
+            probe.state = fieldFrame.state;
+            probe.hasBall = carrier === PITCHER_ACTOR;
+            // ...and the two halves of his own facing: what the play has him looking
+            // at, and the yaw it stood him up by. A probe reads the turn back off the
+            // body that made it (see e2e/pitcher.visual.spec.js's fielding test).
+            probe.look = { x: fieldFrame.lookTarget.x, y: fieldFrame.lookTarget.y, z: fieldFrame.lookTarget.z };
+            model.userData.pitcher = { ...(model.userData.pitcher ?? {}), field: probe };
+            return;
+        }
+        if (fielding.active) {
+            // The play is over (or was given up): the body goes back to the mound and
+            // to the delivery on this same frame — the instant the cast puts every
+            // body back on its own spot, and the same way the batter's own body goes
+            // back in the box (Batter.jsx's leaveBox). The clips are given up with it:
+            // nothing of the mixer runs while he is pitching, and the next play's first
+            // state fades in from nothing rather than being swallowed as "already
+            // playing" (see setActorState).
+            fielding.active = false;
+            fielding.snapshot = null;
+            // ...and the body goes back to being drawn whole with it (the fade above is
+            // only ever written while the play has him).
+            if (fielding.fade !== 1) {
+                fielding.fade = 1;
+                writeBodyFade(bodyMaterialsRef.current, 1);
+            }
+            if (fieldingKit) {
+                fieldingKit.mixer.stopAllAction();
+                fieldingKit.state = null;
+            }
+        }
 
         // The body stands where this pitch's own stance puts it — drive foot on the
         // rubber, soles on the ground — at the size the *pitcher's* own height asks for,
@@ -532,7 +759,7 @@ export const Pitcher = ({ pitchData, replayKey = 0, overlay = false }) => {
                 util/pitcherSequence.js authors) has the body facing -Z. Scale is
                 the rig frame's own, which is the model's when no sprite nominal
                 height was asked for. */}
-            <group ref={setModelNode} rotation={[0, Math.PI, 0]} scale={rig.unitScale}>
+            <group ref={setModelNode} rotation={[0, PITCHER_FRAME_TURN, 0]} scale={rig.unitScale}>
                 <primitive object={model} />
             </group>
         </group>

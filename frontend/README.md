@@ -2931,8 +2931,8 @@ away towards the temple** — standing up to 0.019 proud.
 
 **The jersey had no front on it.** The chest is one flat colour with nothing on
 the fabric, so the pass draws an opening on it: a *line* down the chest's own
-centreline, 0.003 rig across, from the belt (y 1.055, where the jersey hem meets
-the belt) up to the jersey's own collar (1.548, its rim being at 1.5544) — its
+centreline, 0.003 rig across, from the belt up to the jersey's own collar (1.548,
+its rim being at 1.5544) — its
 depth read per height off the front-most vertex within a short window of it, so it
 hugs the sternum's crease instead of bridging it — and **six hollow buttons**
 hard against it on the wearer's right, from the top of the line to the bottom (y
@@ -2942,6 +2942,20 @@ the line's own edge** — a men's placket is one piece of cloth with the seam do
 its edge and the buttons a buttonhole's width in from it, and a column of rings a
 centimetre out on a bare chest is two things laid on the jersey rather than one
 jersey that buttons.
+
+**Where it begins is read off the model, rather than a height.** The bottom of the
+opening is the belt's own fold: `waistCut` of the belt the pass reads off the
+model's own base-color texture — the belt's top edge lifted into the tuck above it
+by a share of the belt's own height, which is the very height the *driver* breaks
+the body's surface at to take the twist (see the waistband section above). So the
+opening and the seam the two blocks turn against are one line, and a turn of them
+cannot open the placket across the belt. It is read in the model's *own* units —
+the frame the pass draws the geometry in — so the batter and the pitcher, whose
+rigs are the same body stated in two scales, hang the opening off the same belt;
+measured, that is **1.0583 rig units** on both of them, against the 1.055 the
+opening used to be drawn at by eye, and it holds on a model whose belt cannot be
+read at all, because `measureWaistband` answers with the model's own proportions
+there and the driver takes its cut from the same band.
 
 Three things about that opening had to be read rather than assumed. The first is
 *what the cloth is*: the chest's own front is read off the shells that carry it —
@@ -3116,6 +3130,2170 @@ tolerance, which is the tolerance a change of two or three pixels on a brow need
 What holds *that* shape is the kit test above — the rim read over the ear's own span
 and the brow's own tone, width and skin band, each measured off the geometry — rather
 than a pixel baseline at a distance where a brow is two pixels tall.
+
+## The pitcher's delivery: the throw up to the release
+
+The throw up to the ball's going — the fall, the arm's raise, the cock and the
+release — is re-authored against the reference's own stills: the twelve frames
+of `tmp-pitching sequence/PS-1.png` through `PS-12.png`, a side view and a rear
+three-quarter of one first-person delivery filmed from the plate. The frames
+read against the delivery's own clock: PS-1 the fall (1.05 s), PS-2 the raise
+(1.12-1.20), PS-3 the trunk's perpendicular (1.24-1.25), PS-6 the cock (1.26),
+PS-9 the come-through (1.30) and PS-12 the release (1.32). The reference gives
+four rules, and each of them is a law the suite holds now rather than a shape
+the keys happen to make.
+
+**The trunk leans back as early as the fall (PS-1).** The lean-back opens on the
+fall's own first frame — the very moment the torso starts falling forward —
+rather than being saved for the back leg's fire: the bow's own window starts at
+the fold's arrival (`FOLD_ARRIVE`, with `BACK_TILT_START` in the unit suite
+standing a twentieth of a second before it), where the old authoring held the
+trunk forward until the stride. Measured on the realised skeleton, the chest
+tips back from the fall's first frame and bows 29.8° over the drive foot at the
+plant (1.19-1.20 s) before the drive brings it forward over the foot to 32° at
+the release, and the fold is spent over the foot across the whole of the whip
+rather than between the plant and the cock.
+
+**The forearm is drawn backwards as the arm raises (PS-2).** The hand comes up
+the *back* of the body's own arc — off the hip, past the ribs with the arm's
+underside turned to the camera, and up behind the shoulder by the cock — so the
+cock is the last key of one path rather than the first of its own, and the
+palm/forearm joint rides its own 180° the whole way: the hand's line is the
+*forearm's* (see `forearmOf`, the pose's own model of the driver's ring solve),
+measured within 1-3° of the realised forearm from the break through the raise.
+
+**The ball is turned to first base as the hand leaves the mitt (PS-1).**
+The clasp shows the hitter the ball, so the hand comes out of the glove on the
+plate's own bearing — and *from that frame on the forearm rolls*: the palm comes
+round as the arm falls, and by the time the arm is at the pitcher's side it is
+square to **first base**, the back he is turned to, and stays there while the arm
+hangs. The mitt parts at the gather (0.80 s), the frame the kick tops out on, and the
+hand is at the side on the balance (1.00 s): measured on the realised skeleton, the
+palm is **within 5° of the base from 0.97 s to 1.02 s** — 90° off it as it leaves the
+mitt, 20° at 0.948, 2° at 0.973 and nought on the balance's own frame — and no frame
+of a hundred-and-twentieth turns it more than **26°**, which is the whip's own
+hand-over at 1.208 s — the fall's own frames are under 18°. It is 22° off the base by
+1.048 s and 73° by 1.073, which is the forearm rolling on up the back.
+
+**The frame it is written in is the trap, and it took two passes.** The pose authors
+its facings in the **rig frame, which is the world turned a half turn about its up
+axis** (the driver's `toRigVector` negates x and z — that is what stands the plate
+at -Z in the rig while it stands at +Z out on the field). First base is 63.4 ft down
+the line and 2.9 ft beyond the rubber's own line, so from the mound it is nearly
+square to the pitch: **(0.999, 0, -0.046) in the world and (-0.999, 0, 0.046) in
+the rig.** Written the way it reads in the world the ask came out on *third* base —
+a palm a half turn round from the one the delivery means, which is exactly the hand
+a pitcher at his side then shows. Mirrored by ``s``, a lefty's palm comes round to
+third base the same way (read on the realised skeleton: within 10° of that bearing from
+1.11 s to 1.15 s).
+
+**What the turn is held as** is a *joint*, not a facing named in the rig's frame
+(see `PALM_HOLD` and `HOLD_ROLL`), and the frames between are why: the hand's own
+line turns end over end for a third of the fall, so a direction in the world is one
+no roll can answer there. At 1.08 s the ask stood **0.90 of the way down the hand's
+line**, the driver squared it up to whatever was left, and the hand sat 64° off the
+ask on that frame and **snapped 77° in the next**. A held angle has no such frame.
+Its break values (1.12-1.16 s) are the ones that stand the palm on the bearing with
+the arm where it actually is on each of those frames — the arm's own roll carries
+the facing several degrees a frame once it starts up the back, so one angle does not
+serve two.
+
+**The upper arm comes up out of the windup with the hand, hesitates level, and turns off
+that hesitation (PS-2 to PS-12).** From the hands parting, the arm's side is authored as
+a *turn* rather than as a place (`swivelAt`): its bearing about the socket and its rise
+below the shoulder line, written out as one point on the socket's own sphere each
+frame. Both ends of it are the track's own arms — the hang the drop leaves on the
+balance (1.00 s), the frame the hand reaches the pitcher's side, and the cock's own at
+1.26 s — read off the socket the frame carries, so the frames either side of the
+window, and every reading the suite takes on them, are the ones they always were. Only
+the pacing between them is new.
+
+It is three spans in that window. The **lift** is the arm drawn up off the windup's own
+arm from 1.00 to 1.175 s, onto a hold that is **parallel to the ground** — and it starts
+on the *balance*, the frame the drop puts the hand at the pitcher's side, rather than
+half a windup later: the forearm is already rising by 1.09 s, and the windup's own swing
+is the two of them as one motion, the upper arm opening back and up under the elbow while
+the hand draws up behind it. That is what the clasp's own retime bought: with the mitt
+held until the balance, the arm had four frames to come level in and did it in one
+flick; let go at the gather, it has the whole ten.
+
+The lift **ends higher than it used to**, and that is what moved the level earlier. An
+upper arm can only lie level while the wrist it carries is within a forearm's length of
+the socket's own height — 0.286 of a rig unit, the two bones' reach whatever the fold —
+and the hand crossed that line at 1.18 s. Asking it up beside the ear a key sooner (with
+the elbow's own pole a hand's width up to lead it) brings the crossing forward: the
+level's first frame is **1.175 s** where it was 1.183, and the hold it opens onto runs
+a frame and a half longer. The cost is the reach, not the shape — the shoulder is asked
+for a wrist a couple of centimetres past its span on the two frames at 1.13 s and
+answers by leaving the elbow where the pole put it (8 cm of the ask unrealised there
+against 5 either side), so the arm's line runs on unbroken through it.
+
+The **hesitation** is four frames stood on
+that arm at 1.175-1.213 s, from the 120 Hz clip's own clock: measured on
+the realised skeleton the upper arm is **within three degrees of the level across the whole
+hold** (1.9° where it opens, 0.8° and 2.8° at its highest), with the elbow out toward
+first base, which is the frame a hitter reads the arm's side out of. The **turn** is one
+cubic off that stillness — a rate that leaves at nothing
+(`SWIVEL_LEAVE = 0`) and climbs to the trunk's own pace by the cock
+(`SWIVEL_ARRIVE = 0.6`, a turn still turning at the cock) — carrying the elbow *down* away from the hold
+and round under the arm, and lifting it back into the plane the shoulders draw as the
+chest turns out from under it, arriving on the cock's own arm at 1.26 s. The *drop* is
+not authored on that clock beside the turn: it is a path through the rise walked on the
+turn's own travel (`SWIVEL_RISE_PATH`), so the two joints share one pace and the descent
+is part of the turn instead of a movement laid inside it.
+
+That is what makes it start slowly. Walked on its own clock — its keys eased out of rest
+and into it, which is what this window used to do — the descent **snapped the upper arm
+7,355°/s on the frame after the hold**, then crawled at 1,000-1,600°/s through the
+come-through while it waited to be started again, **stalled at 149°/s** on the cock's own
+frame, and only then found the whip. On the turn's travel the realised upper arm reads
+**350°/s where the hold ends, 582 and 979 as the arm comes off it, 2,439, 4,174 and
+4,774 at its fastest frame (1.2242)**, 3,583, 2,161 and 1,493 at the bottom of the drop
+(1.2367), 2,018, 2,412 and 2,467 as it comes round, and 2,147, 1,642, **699** into the
+cock — an acceleration out of the hold, a fall away under the elbow's own drop, and not
+one frame of the 7,355°/s snap.
+
+Read off the socket-to-elbow line on the realised skeleton: 62° down at 1.08 s, **56° at
+1.117, 47° at 1.133, 27° at 1.15, 9° at 1.167, 2° at 1.175** and 0° at 1.20, then 3° at
+1.2125, 8° at 1.221, **20° at 1.225 and 49° at 1.2333**, 47.6° through the come-through
+and 17° at the cock. The rise
+from the hang to the level is **ten frames** where the delivery before the clasp's retime
+took it in four (60°, 32°, 14° and level at 1.13, 1.15, 1.17 and 1.19 s), and the worst of
+those frames turns the upper arm **15.5°** against the 47° of the flick, with the elbow's
+own travel peaking at **12.3 cm a frame** against 21.4.
+
+The hesitating arm is held *still*, and that is not free: an arm written motionless in
+the rig is carried round and down by the trunk turning out from under it at some 350°/s.
+Written flat, the hold read a rise of 0.9°, 1.1°, 3.2° and 6.9° across its frames — a slow
+collapse where the pause should be — so the rise track carries a small counter-drift
+(`SWIVEL_HOLD_DRIFT_RISE`, -6° across the hold) and the same frames read 0.9°, -0.7°,
+-0.9°, -0.3°. Only the rise can be held this way: the elbow's *bearing* through the hold
+is the driver's own answer (the ring about the shoulder-to-hand chord, kept clear of the
+trunk), and a counter-turn written into the pole — 5.6°, then 20°, then the arm asked
+straight back along the body — did not move it at all. The 6° the bearing does travel
+(-35.7° to -41.7°) is the body's own turn, and taking it back would mean stopping the
+delivery. What moved: the reading that hangs the elbow under the arm from 1.20 s to
+**1.2325 s**, the frame the path's own drop bottoms on (`the torso pulls the throwing
+arm...`), and the plane cap from
+0.04 to **0.11** of a rig unit, because a level arm held level while the shoulders turn
+stands above the plane the sockets draw — 0.097 on the 3/4 pitch and 0.105 on the
+submarine slot — and the retimed lift carries the hold into the *deepest* of the
+layback rather than the top of it (it read 0.080 when the level arrived at 1.183 s and
+the trunk took the arm over two frames later).
+
+The lift's two angles travel **together** — one smoothstep each, which is the shape being
+asked for: one arm swinging back and up rather than an elbow turning while the arm stays
+low. What that needs is the wrist's own track brought with it: with the arm opening from
+the break, the angle that stands the palm square to first base goes *down* the hand's line
+rather than up (1.10 at 1.14 s, nought at 1.16 s), so `HOLD_ROLL`'s keys from 1.14 s on are
+read off the arm each frame now has, and the track ends on the layback's own -92.9° instead
+of on its wound-on branch. Measured on the realised skeleton the palm holds first base to
+within **8° through 1.15 s** (9.3° at the break itself) and is **21° off it at 1.16** as
+the hand comes up the back, and no frame of a hundred-and-twentieth turns it more than
+**26°** — the whip's own hand-over, where the hold is let go.
+
+Where it starts is not free either. While the arm is at the side it is *straight*, so the
+wrist has no roll of its own to hold (see `HOLD_ROLL`) and the palm's facing is the
+elbow's to carry: a lift begun a frame earlier, at 1.11 s while the hand is still at the
+bottom, leaves the palm **21° off the base at 1.14 s and 24° at 1.15** where this one
+reads 5° and 8°, and a lift left where it was — 1.16 s — is the 47°-a-frame flick this
+window exists to replace. The break is the earliest frame the hand's own turn leaves room
+for, which is why the hesitation stands at 1.175 s.
+
+From the cock on, the whip owns the arm, and it is now one turn and no roll
+(`whipPole`): the shortest turn from the arm the swivel hands over on to the direction
+the release key draws, walked over the sixty milliseconds at the pace the turn handed
+over — it starts at that rate and accelerates from it, so the arm's own rate runs on
+through the hand-over instead of being restarted by it (see below). What the keys cannot
+do is draw that turn as a *place*: the line between two of them cuts across the chord
+as the socket drives out from under it, so the pole walks down the chord's own line —
+the one place the ring has no side to be read on — and the side the ring is read on
+flips. Read as a turn between two unit triples there is no line to cut. The forty-degree roll the
+whip used to carry about the chord at the come-through is gone with it: it was there to
+keep the elbow's lean off a line the places were drawing across the socket, and a turn
+between two arms does not draw that line.
+
+The whip's own travel is the span the two arms make, and it is honestly small: **45°
+on the socket's own sphere** (measured off the realised skeleton at 1.26 and 1.32 s) (the release's own arm is the cock's carried up and round
+by the chest's turn), so its mean rate is that span over its window — about **750°/s**.
+That is why the swivel arrives on the cock at the trunk's pace rather than at speed: an
+arm still accelerating at 4,800°/s would have spent the whole of this span before 1.27 s
+and then stood still through the ball, and one that arrived at a crawl would have had to
+be started twice. Measured on the realised skeleton, the hand-over runs **699°/s into
+320°/s** — a soft corner rather than the 1,632 into 149 it was — and the whip then
+accelerates without a break: **500, 707, 901, 1,138, 1,321, 1,492, 1,612, 1,638, 1,904
+and 2,653°/s at its fastest frame (1.3075, a hundredth of a second before the ball)**,
+then 2,619, 2,079 and down. The *forearm* about the elbow — which is what swivels once
+the upper arm has handed over — runs 186°/s on the cock's own frame, 1,398 at 1.27,
+2,191 at 1.2825, 586 at 1.2992 and then **4,196°/s at 1.3158**, a frame and a half before
+the release, before falling to 1,701 on the release's own frame: its maximum rate is the
+last thing before the ball. Read frame by
+frame off the pose, the elbow's lean off its own chord stays positive across the whole
+of the whip and the unit suite's `the whip turns the upper arm about its own chord, and
+never crosses it` holds both hand-overs, the drawn ball's own step inside the pitch's
+speed throughout.
+
+**The whip is the arm coming open, not the ring coming back.** The reach the ask is
+drawn at holds **0.69-0.70 of the arm's span** from the layback through the
+come-through and then spends itself to **1.00** in the two hundredths before the
+ball — 0.22 of a span in its fastest frame, which is the delivery's fastest shape
+(the unit suite's `the upper arm screws one way round its own chord through the cock,
+and the fold is what unwinds`).
+
+**The come-through is where the arm comes over, and the turn about the chord is what
+says so.** Forty degrees further round from the layback, so the elbow swings up and
+round the chord while the chest turns out from under it and the folded forearm
+stands up over the shoulder — the reference's PS-9 and PS-10, the elbow at the
+shoulder and the hand above it — where the place that used to be authored beside
+that key drew a level sweep round the chest instead. The turn is spent again by the
+release's own frame, because the arm the frames after the ball go are drawn from is
+the release key's own: the ring is nearly closed by then (the fold's 90° has opened
+to 175°), so where round it the elbow stands is worth a couple of millimetres of
+wrist, and the hand-over has to be the track's arm rather than a third reading.
+
+**The release's own frame is a place, not a line.** The window's asks are written off
+a socket the pose *estimates*, and the driver is told to carry the wrist out along
+them to the frame's chord (see `sweep`) — which is right through the raise, where
+the ask is a line and the arm's own length is the answer, and wrong on the one frame
+the ball's place is the pitch's: a wrist carried out to the chord carries the ball
+out with it, and the estimate's own residue goes into the ball instead of into the
+elbow. So the two hand-overs at the release are one: the `sweep` gives way exactly
+as far as the body gives the arm (`graze`), and on that frame the pose is read as
+the place it is authored as. Measured on the harness pitch for a left-hander —
+whose release stands 0.53 m across his body from his own socket, the widest
+cross-body ask the suite throws — the ball stood **10.5 mm** past the release point
+off the carried wrist; with the line giving way it stands **0.17 mm** (the
+right-hander on that same pitch reads 0.56). What the arm pays is the bend the ask
+really has: the estimate is 11 mm inside the chord there, and the realised elbow
+reads **158°** on that frame against the 174.9° a straight ask gives — the arm
+following the ball rather than the ball following the arm, which is the way round a
+release is read.
+On the centred pitch neither hand moves (0.6 mm, 174.9° on both), the harness's own
+pitch (a right-hander's own side) is untouched, and the browser suite's
+`a left-handed delivery mirrors the right-handed one` passes whole.
+
+What is *not* fixed by it is the same estimate seen from the other end: the pose is
+not a pure function of its clock yet — posed twice on one frame it answers with a
+value a millionth of a rig unit apart, and at the hands-parting frame (1.12 s) the
+left and right asks sit either side of a branch in `forearmOf`'s ring, which is
+worth **1e-3** on the hand's own line. The unit suite's own mirror test reads that
+at 1e-9 and still fails on it.
+
+**The arm is behind the torso until the ball goes.** The reading is the ball's own
+place against the socket it hangs from: **0.46 of a rig unit behind it at the plant,
+0.58 at the cock, still 0.43 at 1.28 s**, crossing only at 1.296 — the frames the
+ball goes — and **0.36 out past it at the release** (the suite's `the torso pulls the
+throwing arm through the throw`). The chest's own plane is *not* the reading for
+this: through the layback the chest is closed over the hips it rides, facing out at
+third base, so an elbow swung out on that side stands a quarter of a rig unit "ahead"
+of a plane that has turned with the coil, without the arm being anywhere near the
+front of the body. The plane is kept for the one thing it still says: the arm is past
+it by 1.34 s and stays past it over the wash.
+
+The shoulder-plane rule hands the arm back to its own pole across those 0.04 s
+(`SHOULDER_PLANE_OUT` to `SHOULDER_PLANE_END`) rather than in the one frame before
+the come-through: handed over that late, the rule was still folding the elbow under
+the plane while the pole beside it had already carried the arm up and back, and the
+upper arm turned **60° one way and 60° back** across the frames either side of PS-8.
+
+**The elbow folds monotonically to its right angle and holds it (PS-3 to PS-9).**
+Up to the frame the trunk stands perpendicular to the ground, the forearm/upper
+arm joint decreases monotonically from 180° to 90°; from there it holds 90°
+until the upper arm is parallel to the plane of the strike zone. The straightness
+schedule is exactly that (see `STRAIGHT_TRACK`): 172° at the break, 100° at the
+plant, 90° from the high cock on — measured on the realised skeleton the bend
+climbs 8° at the break (1.12 s) to its 90° by 1.25 s and *holds* 90.0° through
+the come-through (1.30 s), the reference's own layback lock, before the whip's
+two frames unwind it (45° at 1.31 and 5.1° — the release's own chord, the angle
+`RELEASE_ELBOW` is read at — at the ball's going). What paces the fold is the cap
+rather than the ball's own place: the sweep carries the raise's asks out to the
+arm's own length (see `SWEEP_WINDOW_IN`), so the chord the wrist stands at is the
+bend's, and the fold is one movement — 172° → 100° → 90°, read on the realised
+skeleton with no dip and no step.
+
+**The wrist is relaxed until the rebounce is half spent, then cocks and fires
+(PS-6).** The palm/forearm joint holds its 180° through the whole of the raise —
+measured within a couple of degrees of it from the break to the plant, and a few
+degrees past it at the cock (183.7° at 1.24 s) — then cocks to a fifth of a right
+angle past straight across the come-through as the torso's forward rebounce runs
+out, and is fired off it into the release: the hand snaps through straight in the
+two frames the ball goes on (`WRIST_COCK`, the schedule's own 0 → 20° → 0 across
+1.26-1.32 s).
+
+**The release folds deeper (PS-12).** The trunk is bent further forward at the
+end of the release than the old authoring carried — the reference height's own
+lean is 0.92 of a radian against 0.57 (see the release key's ``lean`` and
+`AUTHORED_RELEASE_HEIGHT`) — and the release key stands at the window's own last
+clock (1.32 s, `AUTHORED_RELEASE_TIME`).
+
+**The trunk keeps coming over after the ball, and its rate decays.** The lean is a
+*place* the release window pins (the pitch's own fold, see `SLOT_TRACK`), and for a long
+time it was pinned like one: the follow-through's own extra was a keyed ramp whose first
+key was the release, so it took its first step from rest. Measured on the realised
+skeleton, the trunk stood at **32.04° on five frames running** across the ball
+(1.3017-1.3183 s, 0°/s on every one of them) and then picked the fall back up at
+111°/s — a body stopping at the release and leaning a second time. That stillness is
+history twice over now: the tilt below stopped being a step, and the fold's own clock is
+started before the ball as well (see `FINISH_RIP_LEAD`, and the section on the finish
+lower down), so those frames gather and rip rather than hold. What the finish
+spends now is carried (`finishTiltAt`) and it is spent in **one shape for both of the
+finish's clocks**: a **snap** on the ball's own frame, a **carry** under it through the middle
+of the follow-through, and the **brake** in the last of it. The shape is written as the sum of
+two powers of the fraction of the clock that is left (`FINISH_SNAP_POWER`,
+`FINISH_SPEND_CARRY` and the `FINISH_SPEND_WEIGHT` that trades the two asks — faster at the
+release, later to stop — against each other; the module's own note carries the arithmetic).
+Read on the harness's own pitch (the three-quarter slot the suite reads by default), frame by
+frame at sixty a second: **32.0° at 1.30, 41.9 at 1.3333, 48.8 at 1.35, 52.9, 55.5, 57.1,
+58.2, 59.0, 59.4 at 1.45, 59.8, 60.0, 60.1 at 1.50**, with the rate 664, 416, 243, 153, 100,
+66, 44, 29, 19, 12, 7, 4 °/s — the fastest frame of the movement is the ball's own (read on
+the suite's 5 ms grid: **875°/s at the first sample past the release, against the 692** the
+shape this replaces recorded there, with a tenth of it left by 1.40), and no frame of it
+brakes before the last third of the follow-through. Read on the *authored* pose, this shape
+against the cubic and the `1 - (1 - u)^3.05` power it replaces: **984°/s on the release's own
+frame against 834, 1160 on the one after it against 913**, 93 against 92 by 1.43, then **63 at
+1.45 against 58, 32 at 1.48 against 25 and 17 at 1.50 against 11** — and the price is the
+middle, which is measured too: 194°/s there at 1.39 against 222 and 161 at 1.40 against 179,
+while the fold's *value* never leaves the cubic's by more than two fifths of a degree (52.7°
+against 53.1°) and the two shapes read the same 60.2° at the top. The extra fold is 0.36 of a
+radian rather than 0.26, so the finish stands deeper than it did when that list was written.
+The two frames the trunk still stands on between the come-through and the ball are the
+release window's own (the fold is the pitch's posture there) and are not the follow-through's
+to spend.
+
+**The pelvis's travel is carried past the plant too, and stops on the frame the foot
+lands in** (and, since the plant itself was lengthened, not quite there: it now goes on
+over the foot through the follow-through — see *the plant is a stride further out* below).
+The hips used to reach their own place while the drive foot was still a
+hand's breadth off the ground and spend the rest of the swing shifting the last three
+centimetres — measured on the realised spine root, **1.02 rig/s at 1.52 s** where the
+suite's own bound is 1.4, with the sockets stepping 4 mm *backwards* between 1.60 and
+1.65 as the trunk stood up over them. The keys from 1.54 on carry what is left at a rate
+that only falls — **1.2 rig/s at 1.52 s, 1.5 at 1.54, 1.3 at 1.56, 1.1 at 1.58, 0.8 at
+1.60, 0.6 at 1.62, 0.5 at 1.64, 0.35 at 1.66 and nought on the landing frame** — and the
+frame it stops on is **0.046 of a rig unit further toward the plate** than the schedule
+before it had it, which is what gives the decay room to be one: **0.13 of a unit of travel
+after 1.52 s against 0.075**. The single place it is not monotone is 1.54 (1.5 against 1.2
+and 1.3 either side), where the pose's own keys step the carry on a little faster than the
+decay wanted: a fifth of a rig unit per second of re-acceleration, not a stall. The pivot
+foot's own keys and the throwing arm's places stand the same 0.046 further on at each of
+those keys, so the leg's span and the arm's own chord are unchanged and the pelvis is the
+only thing that arrives later. It is the *arrival* that the lengthened plant changed and
+nothing before it: from the landing's own frame the drive's keys go on falling instead of
+stopping dead (see below).
+
+The landing's own promises move by exactly what that costs. The drive foot lands **0.61
+rig units ahead of the plant** (0.515 before), the drive leg still **99.90 per cent** of its
+own length with 5.1° of knee, and the lead leg **97.11 per cent and 27.6° of knee** where it
+read 93.80 and 40.6 — the hips stop nearer the lead foot, so that leg has less of the mound's
+fall between the two plants to carry, and the plants themselves are 0.046 of a unit closer
+together. What has *not* come with the carry is the drive suite's 1.4 rig/s bound at 1.52 s
+— the delivery reads 1.2 — and that is a wall rather than an oversight: past about 0.06 of a
+unit of extra carry the lead knee is straightened by the solve on the landing frame against
+the bend its own key asks for, 40° to 29° between two frames. The way on from there was the
+*stride's* own plant rather than more carry, and it has since been made: the front shoe is
+authored **0.12 of a rig unit further down the mound** and the pelvis spends the room it
+buys over the follow-through instead of stopping on the landing (see the section below,
+which is where the hold's own promises are read now).
+
+**The lead shoe turns with the body, and turns about its own ankle.** The stride foot is put
+down pointing at the plate, and from the plant out the dirt owns its angle: what it comes round
+with is the body standing over it, and that body is the trunk. It used to be read against the
+pelvis — every degree the hips turned, the shoe turned — and that made the shoe inherit a turn
+that is not smooth: the hips' own keyed yaw stands at 1.0231 rad across 1.54-1.5575 s and then
+takes 0.135 rad in the next thirty-two thousandths, so the shoe turned **8.3°, 9.1°, 9.5°** on
+three frames and then **11.1°, 15.3°, 19.3°** — a hesitation and then a snap, on the one part of
+the body the ground is holding.
+
+What it is handed now is the **whole of the body's turn through the pitch**, not the share that
+falls after the plant. The chest comes round 101.9° between the release and the landing (0.04 rad
+to 1.819), and 61.0° of that is spent *before* the shoe is down (0.04 → 1.10 on the plant's own
+key), so a shoe given only the trunk's turn measured from the plant took 41.2° of the 101.9 and
+was left standing in a finish the body had come most of the way round over — the trail shoe spins
+155° over the same frames, and the lead one less than a third of that. The shoe turns **101.9°**
+now, the body's own turn from the release, in the trunk's own shape: out of rest on the plant's
+own frame (7.1°, then 15.0°) and then one decay, 13.4°, 9.7°, 9.3°, 9.3°, 8.1°, 7.1°, 6.1°,
+5.8°, 5.3°, 3.5°, 2.3° — 2.474 times the trunk's own rate over the 0.26 s it has on the dirt (`FRONT_SHOE_TURN` / `FRONT_SHOE_TURN_SHARE`, both read off the keys rather than listed).
+The leg turns with it — the knee bends about the plane the shoe points along — and the hold keeps
+all three: the shoe does not move a hundredth of a degree after the landing.
+
+Where it pivots is the **ankle**, and that is the one thing the bigger turn changed in kind. A
+planted shoe cannot skid, so the point it turns about has to be one of its own; the heel is that
+point for the trail foot, and it was this foot's too. But a heel-anchored turn carries the
+*ankle* round a circle the boot's own length behind it, and the lead leg is what pays: **0.070 of
+a rig unit** of that travel at 41.2° is the whole of its budget — it lands at 101 per cent of its
+own length and rolls the shoe onto its toe for the last millimetre — where 101.9° asks for 0.155.
+Measured on the skeleton with the heel held, that turn takes the leg to **108 per cent of its
+length**, stands the shoe **8.5 cm** up off the dirt and leaves the ankle **7.2 cm** short of the
+place it was asked for, with the realised shoe 29° off the pose's own line: a foot on its toe and
+a leg torn straight. So the pivot is the ankle instead. The leg's own base keeps the spot the
+plant gave it (1e-9, pinned in the unit suite), the shoe comes round over it, and what sweeps the
+dirt is the shoe — **0.155 of a unit of heel travel** between the plant and the landing, which is
+the chord 2r sin(Δ/2) of the turn to the decimal. That is the trade a real lead foot makes: the
+sole turns under the weight on it, and the leg it hangs from stays the length it is.
+
+The lead leg reads **99.68 per cent of its own length** at the landing where the heel-anchored
+41.2° left it at 101.00, and the realised shoe comes round **89.5°** of the 94.8° the plant's
+own frame is asked for — the last five being the roll onto the toe the ground rule still buys.
+
+One thing the reference's rules cost at the whip's own fastest fold is still
+open, and it is written down here rather than smoothed away: the pose's forearm
+model is read off a socket it *estimates*, and on the come-through's own frame the
+estimate stands where the body's own socket does not — so the ring's own side,
+and with it the hand's line, is answered off the estimate rather than the arm.
+Measured on the realised skeleton, the hand's line stands 112° off the forearm it
+hangs on at 1.30 s (the authored cock there is 20°) against 15° on the frame
+after it and 27° on the frame before. The answer is *bounded* rather than fixed:
+as the ring's margin thins the side fades to the pole's own answer read against
+the ball's chord — the one chord near the fold that never degenerates (see
+`forearmOf`) — which is what keeps the step inside the bound the suite's own jump
+law holds. The fix that is left is reading the ring off the realised shoulder
+rather than the pose's estimate.
+
+### The plant is a stride further out, and the pelvis spends the room it buys
+
+The delivery's last wall was the plant. The carry could not be lengthened past about
+0.06 of a rig unit without the lead knee being straightened against its own key, and the
+answer was never more carry: it was a longer *stride's* plant, so that the leg has
+somewhere to go when the body arrives over it. That has now been made, and the plant is
+what the follow-through is spent on.
+
+**The front shoe is authored 0.12 of a rig unit further down the mound** (z −0.940 →
+−1.060 in the keys' own frame), and the whole body's travel grew with it: the stride foot
+stands **0.9435 m** from the set's place where it stood 0.8242, and the drive reads
+**1.384 at the landing against a flat 1.338** before it — the 0.046 the arm's own places
+and the pivot foot's keys already carried, now with **0.074 of a rig unit more behind it**,
+spent over the follow-through rather than stopped on the landing frame.
+
+**The pelvis comes to rest in the hold, not on the landing.** The drive's keys from the
+landing out are one decaying run — measured on the realised spine root, **0.55 rig/s on
+the landing frame**, then 0.49, 0.41, 0.38, 0.34, 0.26, 0.22, 0.11 at 1.88 s and nought
+from 1.90 — where the previous authoring had the drive one number from 1.68 out and the
+pelvis dead on the spot. Nothing after 1.90 moves: the hold is the pose it always was,
+read on the last frame the travel arrives in rather than on the frame the foot lands in
+(the unit suite's *he lands still travelling, comes to rest in the finish* is that
+promise, and the browser suite's finish test holds the turn to 0.00° for the second that
+follows).
+
+**The arm rides it rather than being left behind by it.** The keys' arm places are places
+in the rig, written for a body that came to rest where it landed, so the whole of what the
+pelvis spends after the plant is handed to the ball's and the elbow's tracks as a shift on
+the frame's own drive (`carried`'s z term in `pitcherPose`). That is what keeps the
+throw's own shape: the upper arm's line holds its place in the *body* from 1.745 s out to
+a thousandth of a unit per axis — the unit suite's own hold test — where a frame-wise
+shift hand-written into the keys read 0.0087 of a unit of forward drift by 1.78 s, and a
+pair of tracks two keys apart is enough to make the arm lag the chest it is falling over.
+
+**The ground under the feet is re-read at their new places.** The pivot shoe comes down
+**0.052 of a rig unit further from the rubber** than it did (radius 1.841 → **1.893** of
+the mound's 2.743 m base), on a surface **0.006 m lower** (0.1290 → **0.1229**, 12.1 cm
+under the plateau's own 0.2440), and the shoe's lowest point stands **0.0 mm** over the
+dirt there, which is the driver's ground rule answering on the frame it lands in. The
+body's own step down the slope follows it: `pitcherFinish`'s two feet are what the
+placement reads its fallback depth off (−103.9 mm, unchanged, because the *pivot* foot is
+the deeper of the two), and the driver's answer on the landing frame is what the pose is
+actually handed, so a pitch placed half a hand's width off the line walks down the same
+slope by its own number.
+
+What the travel costs, and where it is read:
+
+- the **lead knee straightens 11.3°** across the follow-through — 2.9° by 1.72 s, 5.4 by
+  1.76, 7.6 by 1.80 — because a hip travelling on past the foot it stands over *lengthens*
+  the chord to it; the leg lands at 93.89 per cent of its own length and ends at 96.82,
+  where the drive leg holds 99.90 from the landing out. The
+  drive knee moves **0.00°** through the same second, which is the leg the weight is on;
+- the **pivot shoe's contact rolls 4.9 mm** across the slant by 1.90 s as the leg above it
+  turns under the travelling hip. The *foot* does not move (its ankle is the landing's to
+  a millimetre) and the sole stays on the surface; it is the shoe pivoting on its cleats
+  rather than skating;
+- the **pelvis' own height rises 4.5 mm** over the same second, on the ground rule rather
+  than the pose: both shoes are on the mound, and the lengthening lead leg grows the span
+  the body stands at. The hip's authored height is the landing key's on every frame of the
+  hold, and the second that follows does not move at all;
+- the **drive leg's own plane turns 5.4 mm** as the hip goes past its ankle, and holds
+  there.
+
+Each of those was a "nothing moves" bound in the browser suite, and each is now the
+measured number with the margin that says what may not happen: the drive knee still may
+not move a degree, the lead knee may not *fold* or turn round, the pivot foot may not
+slide, and the lead shoe may not leave the surface.
+
+The suite reads **24 of 38 passing against 23 before** the plant moved, with the fourteen
+failures the same ones the previous build failed (the pose-realisation and height tests,
+the drive-leg pair, the windup's elbows, the lead arm, the arm's fold and its turn, the
+trunk's axis, the peak speeds, the two belt screenshots, and `the whole body travels with
+the pitch…`, whose back-foot landing side was already on the throwing side of the front
+one). What the change *fixed* is `both arms come down out of the throw as one motion, and
+are stood in by the hold`: the arms now ride the body they are falling over, so the two
+of them settle together instead of the throwing arm lagging the chest by the travel.
+
+### The finish folds further over the foot, and is stood back up from the crossing
+
+The follow-through used to be a fold the landing gave back: the keys' own lean is spent by
+1.68 s, so a delivery that stops there is a body that has already stood up out of the
+throw by the frame both shoes are on the dirt. It now goes **over** the front foot and tops
+out there, and the stand is spent across the beat rather than saved for the walk back.
+
+**The trunk stands 60.2° over the hips at the plate** (`FINISH_FOLD`, 1.05 rad), and it is
+*there* on the frame the back (drive) foot sweeps across the body's line toward the plate
+on — **1.54 s**, the arc's own crossing key, read off the keys as the pivot foot's place
+furthest toward the zone. That is 21° past the deepest frame the *keys* ever reach (the
+release's own posture, 39.2°), and it is one number for every slot, like the walk.
+
+**The fold is thrown *through* the ball, not eased out of it.** The share's rise out of the
+release was a smoothstep, and a smoothstep is at rest at both ends — so the trunk's fold
+stopped dead on the release frames and started a second movement behind the ball. Measured on
+the pose, its rate fell from **626°/s at 1.278** to 44 at 1.303 and to **nought** on 1.310 and
+1.318, then picked back up at 356°/s and bled away across the whole sweep (246 at 1.40, 181 at
+1.44, 97 at 1.50) — a body already braking into the point it is supposed to be thrown past.
+The rise is a **cubic in (1 − u)** now, so the schedule leaves the release at three times its
+own mean rate and every frame after it is slower than the last: 15.45° on the release key (the
+posture's own, unchanged), 20.7° at 1.326 s (**890°/s**), 27.3 (753), 32.8 (635), 37.5 (534),
+44.6 at 1.368 (376), 53.2 at 1.40 (184), 58.5 at 1.45 (59), 59.7 at 1.48 (23) and the same
+60.16° on the crossing. So **84 per cent of the finish's fold is spent by 1.40 s against 58
+per cent before** (53.2° against 41.5°), the trunk covers 37.5° of it in the first eight
+hundredths of a second after the ball, and what is left of the sweep is a crawl onto the top —
+which is the brake: between 1.40 s and the crossing the fold moves 7°, and the deepest frame's
+rate is on the first frame after the release rather than on a smoothstep's midpoint at 1.43.
+
+**Nothing folds on the release frame.** The arm's places ride the fold's *depth* (see
+`foldRide`), and the deeper fold turns them further on the very frames the keys wrote them on,
+so the window was re-read on the realised skeleton rather than trusted: the arm's chord through
+the window is **0.972 of its span** at its worst (1.313 s) against 0.978 before, and its worst
+elbow **152.7°** against the suite's 143° bound — nothing had to be re-anchored, because that
+carriage is a *shift* the socket and the place take together. The pose's own reach went **up**
+where it was thinnest — 1.110 → **1.156** of the span at 1.40 s — and its nearest approach to
+the driver's 1.25 stretch is 1.239 at 1.44 s. The unit suite passes **427 of 427**; the
+pitcher's browser suite reads **26 of 38**, the same twelve failures the build already had.
+
+**What the peak-speed test holds now.** The browser test that reads this part of the delivery
+(`the drive and the turn peak on the ball, and the trunk rips off it`) was re-authored with the
+retime rather than against it: it sweeps the delivery on its own 20 ms grid and the release
+window again at 5 ms, and it holds four readings — the pelvis's travel is fastest on the ball
+(13.6 rig/s at 1.32 s, with the hips a hand's width behind the lead foot's line there, level
+with it by 1.40 and 0.29 past it at the finish), the turn is fastest **on the ball itself**
+(1331°/s on the release frame, where the frames either side of it read 1145 and 794) and its
+**brake** is behind it (863°/s six hundredths after the ball, better than half the peak, and
+49°/s at 1.415 — a twentieth of *that*), the trunk's fold is the posture on the ball and its
+**rip is fastest on the first frame after it** (692°/s, 615 the next, and 86 per cent of it
+spent by 1.40 s), and the fold is deepest on the crossing (60.2° at 1.54) rather than anywhere
+later.
+
+**The trunk is moving on the release's own frames now, and the place it is read on is the
+finish's own clock rather than the slot's.** The retime left one thing open here (it is the
+paragraph this one replaces): the fold was *at rest* on the ball's own frames — 32.04° from
+1.301 to 1.320, because the release posture's fold is a pin there — so the trunk stood on the
+posture and *started* its rip on the frame after the ball. What was anticipated then was to
+carry the **slot's** hand-off past its 1.30 s end and re-anchor the arm's window places across
+the frames that would lift the socket. That route was built and measured, and it is not the one
+taken: the keys' *own* trunk is already folded **39.2°** at the release (the deepest frame the
+keys ever reach), so a blend that is still handing the fold over between 1.30 and 1.32 does not
+ease up to the posture, it runs *past* it — measured on the pose, 14.6° at 1.300 (a lift, as
+expected), then **16.4° at 1.305 and 17.8° at 1.310** — four degrees *deeper* than the posture
+mid-whip — before the hand-off drags it back down onto 15.4° at 1.320. A trunk that folds past
+the release's own posture and unfolds into the ball is a hitch where the pin used to be, and no
+re-anchoring of the arm's places answers it: the body itself is wrong on those frames.
+
+What the fold *is* handed to early is the finish's own clock (see `FINISH_RIP_LEAD`, 0.02 s),
+and the shape that buys is the lift the slot route was after — a *gather off* the posture that
+lands back on it exactly as the ball goes, with the rip's own rate already on the frame. Read on
+the pose: **15.45°** (the posture's own fold, to the decimal) at 1.300, **14.52°** at 1.305,
+**13.40** at 1.310, **13.05** at 1.3125 — the trough, 2.4° under the posture, which is where
+the share turns over — **13.88** at 1.3175, **15.45° again at 1.320 with 922°/s on it**, and
+18.5° (**1160°/s**) at 1.3225, 26.0 at 1.330, 30.0 at 1.335. So the trunk's rate comes back
+through nought *inside* the release's own two frames, the value on the ball's frame is the
+posture's to the decimal, and the rip's fastest frame is still the first one after the ball:
+the fall and the rip are one movement across the ball rather than two movements with a held
+frame between them. The gather's depth is not a taste — it is what the rate is paid for (the
+share is a Hermite matched to the rip's own slope at the release, so a steeper rip deepens it
+and a gentler one shallows it: the rip now leaves the ball at 4.03 shares a second of its own
+clock where the cubic left it at 3, and the gather is 2.4° deep where that one was 1.8); the
+unit suite holds it between a degree and three, and holds the turn-over and the rate.
+
+The arm's window places did **not** have to be re-anchored across those frames, and the
+carriage is why: the places ride the fold's *depth* (`foldRide`), and the gather is a fold the
+finish's own clock carries, so the socket and the ball's place turn *together* — a rigid turn
+holds the chord by construction. That was read rather than trusted, frame for frame at 240 Hz
+on both authorings: the realised hand-to-socket reach across 1.300-1.320 is the same number on
+every frame (0.415, 0.463, 0.546, 0.594, 0.600 of the span at the same steps, to three
+decimals), the realised elbow through the ramp is the same on every frame (137.9° at 1.310, the
+same 174.9° arm through the window), the driver's own shortfall moves **1.2 mm on one frame**
+(1.9 → 3.1 mm at 1.315) and the release frame's own ask is the anchor, handed through
+bit-exact. The browser suite's release test — the miss, the stretch, the 165° elbow — passes
+unchanged, which is the promise the whole exercise is bounded by: the ball still leaves the
+release point the pitch was placed at, off the straight arm the window was authored with.
+
+The two bounds in that test which read other parts of the delivery were re-read where it
+actually is: the finish's depth is read at its top (the stand now begins on the crossing, so
+the landing frame is already a third of the way back up), and the pelvis's carry is read as
+"never stops, and covers 0.14 of a unit" rather than as one frame's rate against a 1.4 rig/s
+bound the lead leg's own reach cannot meet.
+
+**The turn has a clock of its own, and it is the same lead spent the other way round.** The
+chest's turn is the one clock of the whip the keys *cannot* hand over on the ball, and that is
+a property of the curve rather than of these keys: a monotone Hermite's rate is a quadratic on
+each span, and where it tops out is set by the two spans' mean slopes either side of the key —
+with a key at the come-through (1.30) and the release (1.32) the crest came out at **1.310**,
+a hundredth early, with the chest already braking *into* the ball and a second crest behind it as
+the next span's mean took over. Measured on the pose — the chest's own clock, five-millisecond
+windows — its rate ran 990 on the come-through's own window, **1187 at 1.310** and 1174 at
+1.315 (a monotone curve's crest sits *inside* a span), then **863 on the ball**, 910 and 706
+behind it, so the turn braked into the release and set off again behind it. Every re-fit of the
+two keys moves that crest around (a scan of them all puts it anywhere but on the ball), so the
+turn is given the fold's own treatment: over the last two hundredths the chest gathers a degree
+or two *back* off the keys' track — the coil carried closed while the pelvis runs on under it —
+and is handed over on the release's own frame, as a Hermite on the lead's own span that meets
+the track in value (nought, which is what keeps the release frame's own chest to the keys'
+decimal — the torso squared to the plate, and with it every place the window's arm was authored
+in the chest's frame, moves by nothing at all) and hands over with no step on either side of the
+ball. Its depth is set by the rate rather than chosen, like the rip's (4/27 of the lead at that
+rate): `TURN_SNAP` **1012°/s** is the rate the gather is worth on the ball, and the delivered
+rate there is the keys' own crossing (608°/s) plus it — **1619°/s** at the instant, of which
+the pose's own five-millisecond window reads **1432** on the ball's frame, and **every frame
+behind it slower**: 910 on the frame after the ball, 706 the next, 447 by 1.345 — the low of
+the carry — before the finish's own key turns it up again. The key it gathers off was re-fit
+with it (the come-through's chest 0.340 → **0.320 rad**, a 32° trail on the hips rather than
+33°), because the gather's own depth is the difference between the two shapes at their crests
+rather than a taste: the flatter the span it gathers off, the less of it the snap has to spend
+— and the last fiftieth of a radian of that depth is there for the *coarse* grid rather than
+the snap: it takes 57°/s off the window ending on the come-through and puts it on the one
+ending on the release, which is what lets the suite assert the fastest frame on both of its
+grids (see below) rather than on the fine one alone. Both ends are read by the suites — the
+browser suite holds the fastest frame **is** the release's, on the five-millisecond grid
+(**1275°/s on the window ending on the ball**, against 934 and 991 on the two frames before it
+and 779 on the one after) *and* on the coarse one now (916°/s on the release's window against
+865 on the one ending at 1.30; it read 875 against 865 the wrong way round before the key was
+deepened), the unit suite that nothing squares early (the last frame before
+the ball is still closed, with the ball still in hand) and that the release's own frame is
+square.
+
+**The stand leaves that crossing on its first frame and is spent over 0.52 s.**
+`FINISH_STAND_FROM` is the crossing key (1.54), and `FINISH_STAND` is the recovery's key
+(2.80) *paced* onto this delivery's clock — `STAND_PACE` **2.4**, so the trunk is out of the
+fold in two fifths of the time the keys' own tail takes and the keys' standing body is back
+by **2.06 s**. The pace is a choice rather than a key, and it is one number for everything the
+stand carries: the fold comes off two and a half times as fast *at every share of it* (a
+squared fall's rate is 2/T at a given remaining share, so a pace a fifth higher raises the
+whole schedule by a fifth), which is what makes the trunk read as standing rather than as
+lowering. The last fifth of it is what puts the trunk back on the keys' own standing body
+*before* the beat's pause rather than inside the recovery: at the 2 the stand was first
+authored at the keys' 2.9° was not reached until 2.17 s, with a third of the beat still to
+go at the pause.
+
+The fold turns over on the crossing and is coming up on the very next frame — a squared fall
+rather than a smoothstep, because a smoothstep leaves the top at nought rate: measured, it
+was still standing in 59.9° of fold at 1.60 s against the crossing's 60.2°, a fifth of a second of hang at the deepest frame of the delivery. Squared, the top is a corner in rate and
+nothing else — the stand leaves at 3.2 rad/s of share, **1.6° of fold on the very next frame
+at 120 fps** — and slows to nought at the far end, where the keys' own standing body takes
+the trunk back with no step. Measured on the pose: **60.2° at the crossing** (1.54),
+**33.7° at the landing** (1.68), **8.5° at 1.90 s**, **2.9° at the pause** (2.10) and the
+keys' own 2.9° from 2.06 s on. At the keys' own pace the same schedule read 48.1°, 32.1° and
+20.5° — the stand is one movement spent in two fifths of the time, so every frame of it
+carries the fold out at two and a half times the rate and the landing catches a third of a
+right angle where the keys' own pace left it over half. The crossing is read off the keys,
+so a re-drawn arc carries the fold's own top with it; the tail is paced, so a longer beat
+still stands up over a longer stretch rather than into its hold.
+
+**The hips give the fold its room.** The pelvis is the whole block the driver leans, so
+the rotation that carries the chest over the front foot carries the two hip sockets with
+it, one up and one down by the sine of the fold — and the one that *rises* is the stride
+side's, the leg already standing at its own length with the shoe rolled onto its toe. At
+0.85 rad that lift was 8.2 cm of socket and the front leg read 0.923 against a 0.9205
+budget at 1.74 s; a fifth of a radian more asks for another 1.4 cm it does not have. So
+the fold is paid out of the hips: `FINISH_SINK` **0.032 of a rig unit** (3.2 cm) at the
+full fold, eased on the fold's own schedule and nought anywhere the fold is — the knee
+giving under the trunk as it comes over, which is the trade a squat makes. The fold's top
+is on the crossing rather than the landing and the stand is paced, so the landing stands in
+33.7° of it and carries **17.2 mm of the sink** (54% of the 0.032); the rest is given back
+by 2.06 s. Both legs are inside the 0.9205 budget there, and more easily than before the
+pace changed: the fold's own socket lift is the sine of 33.7° through the sockets' half-width
+rather than of 48.1° (21 mm less), while the landing's smaller sink raises the pelvis four
+millimetres rather than twice that.
+
+The hips give that sink back as the trunk stands, and all of it inside the beat now: the
+pelvis comes **up 14.1 mm** from the landing to 1.90 s, **17.2 mm** by the pause and is
+still from 2.10 s on to the walk back — where the keys' own pace was still giving back the
+last of its 25.3 mm on the recovery's frames. Nothing of it comes before the landing, where
+the knee is still giving.
+
+**What the pace costs.** The stand's own numbers are the ones that moved: the pivot shoe's
+contact point — where the sole stands, not the ankle — rolls **23.3 mm** across the slant by
+1.90 s against 9.7 mm at the keys' pace, because the trunk has come 30° further out of the
+fold by that frame; and the realised chest stands **27.6°** off its landing's by the pause
+against **45.3°** by the recovery's own key, so the beat carries 61 per cent of the stand and
+the socket line it drags is still to two degrees after it — a slack in the reading of the
+head's hand-off, not a turn in what was handed over (the written turn moves 0.0°). Both are
+read with the number they moved to, in the browser suite. The unit suite passes **43 of 43**;
+the pitcher's browser suite reads **26 of 38**, with the twelve failures the build already
+had (the height and pose-realisation reads, the drive-leg trio, the lead arm, the finish, the
+arm's crossing, the trunk's axis, the whole-body travel and the two belt baselines) — the same
+twelve tests, none of them new.
+
+**The arm rides the socket, and the trunk that stands under it.** The keys' arm places
+are places in the rig, and what the finish does that they do not know about is a rotation
+*and* a translation: the socket the arm hangs from comes down by the fold's own arc and by
+the hip's sink. Two carriages pay for the two. `foldRide` in `pitcherPose` is the
+translation, and it holds the upper arm's reach from its own socket to 0.0002 of a unit.
+
+The rotation is `standShare`, and it is read off the *stand's* top rather than the keys'
+body: the trunk the ride turns *from* is the one on the frame the stand begins, the
+crossing's own top (`FINISH_FOLD` at `FINISH_STAND_FROM`, 1.54 s). On that frame the two
+trunks are one, so the ride is the identity there and hands nothing over — the throw's own
+sweep, the crossing at 1.52 s and the whole of the whip are the keys' to the millimetre —
+and what it turns is the arm as the body leaves the top of its fold, which is the one thing
+the keys never wrote. Read against the *keys'* trunk instead (the glove's own `rideShape`)
+it would carry that sweep off the frames it was authored on: measured, the arm goes from
+0.29 to 0.68 of its own travel between two frames of that hand-over, and the crossing moves
+32 mm off the plate's line.
+
+The ball, the elbow and the hand's line ride *together*, one turn about the socket and
+nought else, so the arm's shape — its reach, the elbow's place on its ring, the hand's line
+off the forearm — is the keys' while its direction comes round with the chest. Being one
+arm, the ride cannot be paid at the source: the ball is the chord the fold's ring is
+composed about and the wrist the sweep's own angle is read from, and turning those under
+the read turns the ring with them (measured, with the ride taken where the places are
+read: the arm's own travel stepping **2.78× its neighbours'** on the frame at 1.678 s and a
+14 mm hop at 2.00 s). So it is taken at the hand-over, after the fold has composed its
+ring and the upper arm's rule has had its say.
+
+Across the beat the chest stands **30.8°** (33.7° at the landing to 2.9° at the pause) and
+the arm goes with it: in the rig its own line moves **0.189** of a unit and the forearm
+**0.191** between the rest and the pause — 0.308 and 0.378 from the landing, which is the
+whole of the stand — all of it the stand, while on the body the same lines hold to under
+**0.018**: the hold's stillness is read on the body the arm rides rather than in the rig it
+used to stand in, and the 17.5 mm it now reads by the pause is the fold coming off under a
+ride that is still whole (0.007 at 1.78 s, growing with the stand).
+
+The ride's own clock is the *depth's*, not the pace's (`FINISH_RIDE`, the keys' standing key
+at 2.80): the arm is held against the folded chest the keys drew the places for, so it is
+held through the pause and given back over the recovery, and the stand's new pace does not
+hand it back early. Handed back on the paced clock instead, the whole turn came off the arm
+by 2.17 s — measured, the hand came up to chest height while the trunk was still settling and
+the driver's clearance rule folded the arm for three frames at 2.15 s (a 20 mm shortfall and
+a 7° fold), which is a twitch on the very arm the eye is on. The world's own hang moves
+**0.236** by the pause, which is the stand's own carry — the chest is a further 21.3° stood
+there than at the keys' pace. The rest is drawn at a forearm **52.6° under the world's
+horizontal**, the keys' level read in the body's frame with the trunk 8.5° folded at 1.9 s
+and the standing body's 2.9° at the pause, the hand **0.222 of a unit** under the joint it
+hangs from: the arm at his side rather than held out level over a folded trunk (‑6.9° and
+0.005 on the slower stand, when the trunk had a third of the beat still to go at the pause).It is given back over the walk-back — the
+recovery's keys are drawn for a body standing up —
+so by the keys' own standing frame the ride is nought and the arm is the keys' again, to the
+millimetre.
+
+**The throwing arm's own travel through the follow-through ends at his side and stays
+there.** The upper arm's line is eased to its spot rather than arriving in a key: read as the
+share of its own travel spent, **0.45 of it by 1.68 s, 0.80 by 1.71 and the whole of it by
+1.745**, each step smaller than the one before it — and it closes on the spot at every step,
+with the line backing away from it on no frame at all. From 1.745 it is *held*: on the body no
+axis of it moves more than **0.02 of a rig unit** out to the pause, which is the stop the
+request asks for, and what the rig sees move after that is the stand carrying it — 0.189 of
+the upper arm's own line from the rest to the pause, against the chest's own 21.3° — so the arm
+arrives at the finish's hang and the *body* finishes the movement under it. The hang it
+arrives at is the keys' own: **0.857 of its unit under the socket** and a hand's width out from
+it at 1.745 s, with the hand 0.222 of one under the joint by the pause (see the ride's own
+note below for what the stand does with it).
+
+**The arm hangs off the hold rather than folding up to the hip.** The keys' hold used to
+carry the hand *above* the elbow it was written off — 0.20 of a unit over it, the forearm
+standing up over the joint and turned up the body's own line (`aim` 0.60 of its unit
+vertical) — and the ride then carried that shape up with the trunk as it stood: on the
+realised skeleton the upper arm climbed from **61° below the horizon** on the frame the hand
+came down past the thigh to **39.5° at the pause**, with the forearm at 27°, so the finish
+read as an arm the body was still holding out rather than one a throw had emptied.
+
+What decides it is the *chord*, not the pole. The driver solves the elbow on the chord the
+hand draws, so with the hand at the hip the ring is small and the upper arm simply lies
+along that chord whatever the pole asks for — measured, 103.8° of elbow and an upper arm at
+−55.8° while the pose's own pole pointed plumb (‑89.9°). Re-aiming the arm at the socket
+(the pole swung to vertical, or the arm turned about it) is what the driver answers with a
+ring flip: the realised upper arm stepped 13.5° on one frame of the hold, and a chord redrawn
+long enough to hang off snapped the same way. So the places themselves were re-authored —
+the hand put *under* the socket, the elbow's pole with it, the hand's line turned down — and
+the arm now reads **−62.6° of upper arm and −80.0° of forearm at 1.86 s, holding −57.9° and
+−75.5° at the pause**: plumb to within a third of a right angle, the hand **0.54 of a unit
+under its own socket** (it was 0.38 and 0.28 across the two beats before), and nothing above
+−53° anywhere between the hand-over and the landing — the worst of it is −53.6° at 1.79 s,
+where the trunk is still coming up under the arm. The fall into it is monotone on the pose's
+own clock (no 2.5 ms step of the forearm's elevation climbs), and the elbow's own realised
+travel steps no more than 1.72× its neighbours'; the driver's own settle still has a
+centimetre or so to answer for over the hundredth either side of the hold, which the browser
+suite reads (0.70 rig units a second of the arm's own shape at 1.90 s against 0.30 at 1.98).
+
+The two suites follow the new contract. The unit test that owns this arm — *the throwing arm
+lets the throw go straight, folds about the elbow it holds, and pauses there* — now reads the
+hang rather than the fold: the upper arm's line is held from the frame it arrives on (1.86 s)
+and moves under 0.02 of a rig unit on the body out to the pause, the hand's own drop below its
+socket grows from the hand-over into the hold (with a 0.03 allowance for the hand-over's own
+hand-back), no frame of the fall climbs more than 2°, and the forearm reads below −60° at the
+pause with the hand more than 0.3 of a unit under the joint. The browser suite's settle test
+(*both arms come down out of the throw as one motion*) reads the throwing arm's own shape a
+frame into the beat rather than on the hold's own key, where the driver is still solving the
+ring; the frame-by-frame step test there holds too (worst step 1.72× its neighbours', against
+the 2× bound).
+
+Read in the world, which is where the eye is, the same arm is one fall into a rest: the
+humerus turns **10.3° in the frame at 1.529 s** at the whip's own peak, 3.9° in the one at
+1.521, **2.5° by 1.55 s** and **under half a degree by 1.59**, and it reads nought from
+**2.06 s** — the frame the stand is spent on, where the keys' own body has it. Two hesitations
+sit inside that fall, and they are the fold's rather than the arm's: the elbow's ring is
+authored as a *place* on the fold's keys (see their own notes), and a place carried corner to
+corner between two keys turns the line it names more slowly in the middle of the span than at
+its ends, so the upper arm's own turn reads **0.2°** in the frame at 1.600 s between turns of
+2.1 and 4.0, and **0.5°** at 1.653 between 1.4 and 2.1. It is a hesitation in the *pose's* line
+rather than a step: the driver's own frame-by-frame reading of the realised arm peaks at
+2.8° and steps **1.58×** its neighbours at worst, against the suite's bound of two (see its
+own test), and the hold, the rest and the shape of the forearm's swing are the keys' on every
+frame of it.
+
+**Both arms ride the chest; the glove's pole rides it against the keys' turn.** A place
+handed over as a *shift* goes wherever the socket went and keeps pointing where it pointed,
+so the arm stands in the world while the chest turns under it — and at 1.95-1.96 s the trunk
+swept through the mitt, **16.8 mm inside it against the driver's 12 mm bound**, with the
+ring's clearance rule spent answering it (the elbow stepped 4 cm there and held, the wrist
+did not). What the pose hands over of the glove now is a *direction on the body the keys
+drew*, turned from the turn that body stands at to the turn this frame's does
+(`rideShape`, read against `keyedTurn`), so the mitt's arm swings with the chest as it
+stands.
+
+The turn alone is not enough: one frame of the pair stayed inside (the ring's own answer,
+16.0 mm at 1.95 s — the whole circle of possible elbows ran out of clear arc). The arm
+also needs a **hand's width of swing out of the chest** (`GLOVE_SWING`, 27 mm at the fold's
+top, spent as a turn about the chest's own forward axis so the arm keeps its reach — a
+nudge out along the lateral is a *longer* ask, and the driver answers that by folding the
+elbow and pulling the wrist 28 mm off the pose at 1.66 s). With both, the whole stand reads
+clear: **48 mm at 1.95 s and 51 at 1.96**, against 16.8 inside before — and no less clear
+since the stand was paced, because the swing's clock is the keys' (it holds whole through the
+pause, see `FINISH_RIDE`) and the trunk those frames are 4.3° further out of the fold. The thinnest frames
+of the hold are **7.1 mm inside** the surface at 1.72-1.74 s — the driver's ring rule
+answering for the arm there, and inside its 12 mm bound rather than over it (a wider swing
+only walks the same graze two frames along; at 22 mm it sits at 1.74-1.76, and it costs a
+frame at 1.90 s the driver's own 13% fold to answer for it).
+
+The *throwing* arm's places are not free to take that turn, and this is the measurement
+that says so: they are the world places the fold's own travel keys are written on (the
+swing at 1.68—1.745 is three keys of the upper arm's own up), and turning them with the
+chest carries that travel off the frames it was authored on — the arm reads **0.29 and
+then 0.68 of its own travel** across two frames of that hand-over. Its hand is worse: a
+place turned with the chest about the pose's own socket asks for a wrist the driver's socket
+cannot reach, **41 mm short** at 1.66 s. So the throwing arm takes the ride on the
+*stand's* own clock instead (see `standShare`): from the crossing out, where the keys have
+finished with the arm, by the trunk that stands up under it, and given back over the
+walk-back. The shape the keys gave it through the fall is untouched, and what it rides by
+is the body's own movement rather than a re-drawn key.
+
+**The ring is re-solved for the deeper fold.** The fold's angle about the socket-to-wrist
+chord is what places the held elbow, and the deeper fold carries the socket further down
+and forward on every frame of the finish, so the angle that composed the swing's third key
+put the elbow short of the place the keys hold. It is read against the ring the fold
+draws, which lands the elbow on the key's own place to 0.0002 of a unit, and the hand-over
+from the ring to that place is **0.02 s** of blending (`SWEEP_POLE_HANDOVER`) rather than a
+switch, because the two are the same promise drawn two ways and a step in the pose is the
+one thing the fold cannot have.
+
+The fold's own top moved off the landing, so what it costs the legs moved with it: the
+drive leg lands **81.8 per cent of its own length** at 1.68 s where the held finish left
+it at 77.4, because the fold it is standing in there is 58.2° rather than 60.2, and the
+hips are already being paid their sink back by 1.92 s. The front shoe's sole still rolls
+under the stand as the shin's angle changes over it (the ankle above it does not move, to
+two millimetres), and the back shoe's contact still re-solves on the mound's slant as the
+body comes up.
+
+The unit suite reads **43 of 43**. The two that were failing by ≈5e-9 — the left-hander's
+mirror and the release clock, both in the ball's x at 1.12 s — were not the mirror's own:
+`forearmOf` carries the ring's side from one call to the next, and the pose never cleared
+it, so the second pass of one frame was seeded by the second pass of the frame before. It
+is cleared at the top of `pitcherPose` now (see the note there), which is what the pose
+has to be for a mirror and a repeat call to agree: the whole delivery is a function of its
+own clock and hand again, to the bit.
+
+The browser suite reads **24 of 38**. Six of its own readings moved with the trunk and are
+rewritten here: the finish's turn is read off the pose's own facing (the realised chest
+carries a couple of degrees of the stand), the socket line's stand is read across the beat
+rather than after it, the pelvis' beat is the sink being given back, the shoulders and the
+arms' settling are read where the body is still standing, and the lean's rate is read on
+both sides of its new top — still folding at 1.5 s, coming back up at 1.6. Two more of the
+suite's own bounds moved with the fold's top: the swing's first frames are allowed the ride
+the still-deep fold gives them (0.79 to 0.83 of the chest's lateral before the fall takes
+the forearm across), and the landing is the fold's 58.2° rather than its deepest 60.2, so
+the finish's depth at 1.68 s is read against the crossing rather than held to the peak.
+
+Nought of the browser suite's fourteen failures come from this change: they are the
+twelve the plant's own change left — the height and pose-realisation tests, the drive-leg trio, the windup's elbows, the lead arm, the arm's
+fold and its turn, the trunk's axis, the peak speeds, `the whole body travels with the
+pitch…` (whose back-foot landing side was already on the throwing side of the front one),
+and the pair of baselined belt screenshots. `neither arm is carried through the body…`
+passes now: the glove arm reads **48 mm clear at 1.95 s and 51 at 1.96**, where the arm
+carried beside the chest read 16.8 mm inside it, and the thinnest frame of the delivery is
+7.1 mm inside the surface — inside the bound rather than over it (see the swing above).
+
+## The field: the cast and the play
+
+The field used to be stood on by placeholders: one capsule body and one sphere
+head per defensive position (`Fielder` in `BattedBall.jsx`), nine of them, plus a
+moving copy for whichever one chased the ball. They are gone. Every body on the
+field during a play is now the same `player.glb` the batter and pitcher wear —
+seven fielders and however many runners the feed moved — driven by the asset's
+own baked clips.
+
+**Who does what is in `util/playPlan.js`; where they go is in
+`util/playCast.js`.** Both are pure, so the whole choreography is pinned in the
+unit suite (`test/playPlan.test.js`, `test/playCast.test.js`) rather than by
+watching a browser. `playPlan.buildPlan` was lifted out of `BattedBall.jsx`
+unchanged and extended; `BattedBall.jsx` still plays the ball half of the plan,
+and `components/FieldCast.jsx` plays the bodies half.
+
+### The bodies
+
+The nine positions are not nine copies of the reference's character. Three of
+them are already somebody else's: the pitcher is `Pitcher.jsx`'s procedural
+delivery, the catcher is `Catcher.jsx` — a body of his own, on the asset's own
+`CatcherIdle` clip, standing where he stands for the whole game rather than being
+one of the men a play moves — and the batter is `Batter.jsx`, whose own body *is*
+the batter-runner (see below). Owning the body is not the same as being out of the
+play: the pitcher's own half of a play is still read here and handed to his
+component along with the play's clock — a comebacker he fields, the bag he covers,
+the throw he makes or takes — so the man on the mound is the one who goes and gets
+it (see **The pitcher's own half of a play** below). The catcher's is the one half
+with no body of ours in it: a ball the man behind the plate fields still flies,
+rolls and is thrown along the plan, and simply has nobody there to move. The other
+seven stand in the cast's pool — built once, **ten**
+bodies in all (`1B`, `2B`, `3B`, `SS`, `LF`, `CF`, `RF`, and the three bags the
+offense can be standing on). A plan decides which of them are on the field and
+what they are doing, never how many bodies exist, so a play costs no clones. Each
+body carries the name of the spot it owns (`cast:defense:SS`), which is what a
+probe reads it by.
+
+The batter's own body is dressed by the same `playerBody` and wears the same
+helmet-and-no-gloves kit the cast gives its offense; what it does *not* use is
+`playerBody`'s rig driver once the play starts. The handoff is the batter's own
+(see **The batter is the batter-runner** below).
+
+**The pool is drawn a person's size, not the doll's.** `player.glb` is a doll:
+its own box stands 2.00 m with the cap and the cleats on (see
+`measurePlayerRig`'s `modelHeight`), and the reference stands every body on the
+field at that size. This app's batter is not drawn that way — he is drawn at
+`BATTER_VISUAL_SCALE` of his *listed* height, so a 6'0" batter's frame stands
+1.55 m and the body under it measures 1.50 m to the crown (1.54 m to his
+helmet's top) — and the cast shares the frame with him: a fielder on the bag the
+batter-runner is arriving at, a runner on the base a man is being doubled off of.
+Two metres against a metre and a half read as a third taller than the body beside
+them, measured live at 1.99 m against 1.54 m. So every body in
+the pool is stood at `CAST_BODY_HEIGHT_M` (1.80 m) instead — one scale for the
+whole pool, derived from the model rather than written as a factor
+(`CAST_BODY_HEIGHT_M / metrics.modelHeight`, so a re-exported asset of another
+size still lands the same body on the field), and applied to the *model* rather
+than to the group the schedule positions, so a body's own root transform stays
+the placement it is: feet at x/z, yawed at its look target, in metres. The
+fielders measure 1.79 m afterwards, still a head over the batter and a shade
+under the pitcher, who is nobody's pool — his own listed stature stands his rig
+at itself (a shade under 1.9 m, see `pitcherProfile`). The catcher is a body of
+his own too, and unchanged: he is crouched, and reads 1.28 m in his own clip.
+
+The dressing is `util/playerBody.js`'s — the same `SkeletonUtils.clone`, the same
+hidden meshes (`CAP`/`GloveL`/`GloveR` off for the offense, `Helmet` off for the
+defense) — and the kit is `util/playerKit.js`'s: one material worked out of the
+atlas, with the glove's leather and the helmet's own flat colour left as the
+pieces the atlas does not paint, the fielding side in one kit and the offense in
+the other.
+The catcher wears the fielding side's, off the same answer for which side is in
+the field (`defenseKitForInning`), so a fielder and the man behind the plate
+cannot come out two colours of the same team. The *movement* is not
+`playerBody`'s: the batter and pitcher author a pose every frame from tuning, and
+these are played back from the asset's clips through an `AnimationMixer`, exactly
+as the reference drives them — and so is the batter's own body, for the part of
+the play where it is the batter-runner.
+
+**Two clubs, one body — and the visitors in blue.** The asset ships an atlas per
+club, and both paint the *body* the same: the pale jersey, the pinstripes, the
+face. The only thing that tells the sides apart is a team colour laid over the
+cap, the sleeves and the shoes — and the two shipped atlases painted it almost
+the same colour: the home one a bright red, the visitors' a dark plum that under
+this park's light read as the same red a shade darker. Two sides on the field
+that looked like one team. `util/playerKit.js`'s `blueKit` fixes that at load: it reads the visitors'
+atlas off its own pixels, moves the *hue* of every team-coloured pixel to 214°,
+keeps its lightness (so every crease and shadow the artist put in the cloth stays
+where it is), lifts the saturation a little so a plum that is nearly grey reads
+as a blue at fifty metres — and leaves everything that is not team colour (the
+tan of the face and the arms, the jersey, the pinstripes) exactly the pixels it
+shipped with. The rule is exported as `blueTeamColour` and tested on both atlases'
+own colours; the recolour itself is built once per atlas and shared by every body
+that wears it, so eleven bodies cost one pass over a megapixel.
+
+The helmet is the one piece of a kit the atlas cannot paint: the asset's own
+`HomeHelmet` material has no texture at all, only a flat red (0.42, 0.05, 0.02),
+so a dress pass that handed it the atlas drew a black hat. It keeps a material of
+its own instead — a copy of the asset's, so the shared one is never written to —
+and `dressBody` takes the club's colour for it: nothing means the asset's own red
+(the home club), and `AWAY_HELMET_COLOUR` is the visitors' colour at the
+lightness the red shipped in, so a visiting batter's helmet is a dark navy hat
+rather than a glowing one. The batter and the cast's runners (the only bodies
+whose hat is showing; the defense hides `Helmet` for the cap) pass it, off the
+same half-inning answer as everything else.
+
+Which kit a body wears is one function's answer. `defenseKitForInning` reads
+`is_top_inning`: the visitors bat in the top, so the home side is the one in the
+field then, and the visitors are in the bottom. The pitcher, the catcher, the
+cast's seven fielders and the batter all ask it (the batter and the cast's
+runners take the other answer), so the half inning turns the whole field over at
+once — mound, plate, infield and the men on the bases together — rather than one
+body at a time. A pitch with no inning on it reads as the home side, which is
+what a fixture and a feed still filling in its first at-bat get.
+
+### The clips and their states
+
+`player.glb` ships the reference's own fourteen clips; the cast uses eight of
+them, with the reference's rules (`util/playerClips.js` is the binding and the
+cross-fade every clip-driven body plays them through — the cast's, the
+batter-runner's, and the pitcher's own body once a play is his to field):
+
+| state | when | notes |
+| --- | --- | --- |
+| `Running` | a live leg of a run, or the sprint to the ball | played at 4× — the baked clip is a jog |
+| `SlideStop` | the last 0.5 s of a runner's final leg | one-shot, held |
+| `RunnerAtBaseIdle` | a runner who is standing on a base | loops |
+| `StandingNeutral` | a fielder who is not moving | one-shot, held |
+| `CatchHI` / `CatchGround` | the chaser, from the instant he arrives | `CatchHI` for a ball caught in the air, `CatchGround` for one fielded |
+| `AssistThrow` | the thrower, through his wind-up | one-shot, held |
+| `CatchMid` | the receiver, while the throw is in the air | one-shot, held |
+
+State changes cross-fade (0.2 s), and the throw outranks the catch: a fielder who
+gloves the ball and throws it never stands up in between. A fielder looks at the
+plate while the pitch is coming, **down the leg he is on while he is running it** —
+the fielding point for a chaser, the bag for a man covering it, because a body that
+ran to a place while watching the plate would be running backwards — at the bag he
+is throwing to from his wind-up on, and at the man throwing to him while the ball is
+on its way. Never at a base he will not throw to for another three seconds, and
+never at the plate once a leg of his own has started.
+
+The catcher is not in this cast, but he is on a clip too: `CatcherIdle`, through
+the same binding and the same cross-fade, in a body of his own (`Catcher.jsx`) that
+stands where he stands all game.
+
+Two things about the asset's clips are worth knowing before reading either of them.
+The first is **which of them actually move** (measured off the file: keys per
+channel, and channels whose values ever change). The running, the throwing and the
+swing are real animation — `Running` (40 keys, 27 channels moving), `AssistThrow`,
+`AssistThrow3`, `LeftHandPitch`, `RightHandPitch`, `SlideStop`, `SwingMid`, and
+`BattingIdle` — so a man running the bases is *running*, not sliding in a pose. The
+idles are not: `CatcherIdle`, `StandingNeutral`, `RunnerAtBaseIdle` and the three
+catch poses are two keys with the same values on all 132 channels, so a body
+waiting in one is posed rather than animated, and what moves him is the schedule
+(the mixer's per-frame update is what applies that pose; the catcher's crouch *is*
+that pose, and it does not breathe).
+
+The second is which way the body faces: the asset's own rest frame faces **+Z** —
+`util/batterLook.js` paints the face on that side of it — which is the frame
+`facingYaw` aims at a look target, so the cast and the catcher are yawed straight
+by a look target and carry no half turn of their own. Two bodies are not drawn in
+that frame, and both are turned half round rather than straight: the batter's (the
+whole swing is authored facing the pitcher, `util/batterRunner.js`) and the
+pitcher's (the whole delivery is, `pitcherPlacement`) — so on those two the half
+turn goes back on before the aim is written. A body handed a look target without it
+stands facing exactly *away* from what the play is looking at.
+
+### The schedule
+
+Ported from the reference's `animateBaserun` and its assist chain:
+
+* every runner walks `BASE_ORDER` from where the feed says he started (`null` is
+the batter's slot, so the batter-runner starts at the plate) to where it says he
+finished — his `end`, or his `outBase` when he was put out — one leg per base gap;
+* a leg takes the reference's own 2,900 ms, with its ±200 ms of jitter — but the
+jitter is *keyed to the runner* rather than drawn at random, because this play
+loops and every cycle has to replay the same choreography. The batter-runner
+waits out his own swing before his first leg — the reference's 300 ms bat drop is
+the floor, and the follow-through, the hold and the way home are what a body that
+has to finish a swing actually costs (`playPlan.batterTakeoffSeconds`, read off
+the swing's own tuning so the pose and the schedule cannot disagree);
+* each throw is preceded by a 750 ms wind-up, and each catch by a 0.4 s hold,
+with the ball in the thrower's hand for both (the reference attaches the ball to
+the palm socket for exactly those windows; here the cast publishes the hand's
+world position each frame and `BattedBall` puts the ball in it — see
+`getCastHandPosition`);
+* the play is not over until the last body stops moving, so a home-run trot is
+four legs of it and the play lasts as long as the trot — plus the half-second
+settle the reference also holds (`PLAY_SETTLE_SECONDS`), which is what lets the
+last thing that happens on the field be *seen* to happen;
+* the hit is named at the end of it, by the base the batter-runner reached:
+`SINGLE`, `DOUBLE`, `TRIPLE`, or `HOME RUN` — the reference's own rule (no outs
+recorded), and the same channel that already carries `OUT` / `DOUBLE PLAY` /
+`TRIPLE PLAY`.
+
+Measured, on the classic 6-4-3 (a grounder to short with a man on first, both
+out): the shortstop's sprint ends at 1.05 s and the ball is gloved at 1.10 s; the
+throw to second leaves his hand at 2.25 s (catch at 1.10, the catch pose to 1.50,
+the wind-up to 2.25), the ball lands on the bag at 2.69 s — the out — and the
+second baseman's throw to first leaves at 3.44 s and lands at 4.22 s; the man on
+first arrives at second at 3.00 s, the batter-runner leaves the box at 0.97 s and
+arrives at first at 3.77 s, and the play ends at 4.72 s (the throw, not the run:
+the last body to stop moving is not always the runner). The ball is in a
+fielder's hand for the whole of every one of those holds, not hanging in the air
+over the spot he caught it.
+
+### The pitcher's own half of a play
+
+The pitcher is one of the nine, and a plan choreographs him like the rest: the
+feed's own hit-location table sends a ball hit back up the middle to `"1"`, which
+is how he ends up the man a ball was hit to; a grounder to the right side he covers
+first on arrives as an `f_putout` credited to him; and his arm is a link in the
+assist chain (`throws` names him from or to). None of that is his component's —
+`util/playCast.js` reads it off the same plan every other actor's play comes from,
+with two functions:
+
+* `pitcherIsInvolved(plan)` — whether this plan hands him anything at all (he is
+  the chaser, he has a putout to make, he throws or takes a throw). It is a
+  property of the *plan* and not of a second of one, so a body handed over at the
+  launch stays handed over until the play is over, and a plan that never names him
+  leaves him entirely to his delivery;
+* `pitcherFrameAt(plan, t)` — his frame at `t` of the play, in the very shape
+  `evaluateCast` answers the cast's bodies with: where he stands (his own spot on
+  the mound when the plan only asks him to stand there), which clip he is playing,
+  whether the ball is in his hand, and what he is looking at. It is the same
+  `defenseActorAt` the cast's own bodies are evaluated by — it reads a *plan*, not
+  a lineup — so the reference's pool is ported one body at a time rather than
+  reimplemented.
+
+`BattedBall` publishes the plan when it is really his to field (`setPitcherFielding`,
+the same way it publishes the batter's run), and **`Pitcher.jsx` hands its own body
+over on the same terms the batter's handoff runs on** — one authored body, handed to
+the asset's clips without a cut:
+
+* the frame the play takes him over, the pose he is standing in (the follow-through,
+  or the set stance if the ball was hit before he let it go) is snapshotted, and the
+  clip is eased in over 0.45 s by the same `poseSnapshot` / `blendSnapshot` pair the
+  batter-runner uses — a pair that now lives with the clip binding every actor shares
+  (`util/playerClips.js`), because there are two hands to cook it for;
+* he leaves from **where he stood**, not from the spot the schedule starts him at:
+  the placement slides a few tenths of a metre around the rubber from pitch to
+  pitch, so the offset between the two is carried and walked off over the same
+  window;
+* the procedural pose never runs while the play has him (the mixer drives the same
+  bones the delivery was authored onto), and his feet stand on the ground he is
+  really on: `moundSurfaceY` under wherever the schedule has him, which is the mound's
+  plateau, its slant, and the field beyond it;
+* he is **turned by the play's own look target**, on the rule every cast body is
+  turned by (see **The clips and their states**): the ball while he is running it
+  down, the bag or the man he is throwing to from his wind-up on. One aim, two
+  frames — his own frame is the delivery's, which faces the plate, so the half turn
+  is added back before the yaw is written (`PITCHER_FRAME_TURN` in `Pitcher.jsx`,
+  the batter-runner's own problem and its own answer in `util/batterRunner.js`).
+  Without it the follow-through's yaw is kept for the whole play: a body running to
+  the ball and throwing to first with its chest still squared to the plate;
+* the ball rides **his** hand, through the catch and the wind-up, out of the same
+  palm socket the reference sockets it into (`PALM_HANDLES`, on whichever arm the
+  pitch throws with). The publication is shared with the cast and only ever 
+  written by the component that draws the body holding it: the cast writes every
+  carrier it draws (and the empty answer for a ball charged to a spot neither
+  component draws — the catcher's), and `Pitcher.jsx` writes the pitcher's;
+* when the play's clock goes null — the instant the cast resets — he is back on the
+  mound and back in his delivery on that same frame, and the mixer is given up with
+  it, so the next play's first state fades in from nothing rather than being
+  swallowed as "already playing".
+
+Measured through the harness (`scripts/probe-fielding.mjs`): off the mound to the
+ball in `Running`, the catch pose with the ball in his hand (`0.000 m` between the
+drawn ball and his palm at every carried frame), the throw leaving on `AssistThrow`,
+and the reset back on his own spot at the cycle's end.
+
+The **turn** is measured off the realised body rather than off the schedule
+(`e2e/pitcher.visual.spec.js`, *the body is turned to what the play has him
+looking at*, which reads his group's own yaw — the group the body is really yawed
+by, off the scene, rather than what the component meant to write — through the cast
+harness): **0.03°** between the body's front and the look target at the worst of
+~1,350 frames of the play — the plate while he is a pitcher in his delivery, the
+ball while he runs it down, first base from the wind-up on — and **1.6°** between
+his front and the line he actually ran, over the `1.65 m` he walked to the ball.
+The frame count is the rasterizer's, not the test's (`1,321`–`1,367` over three
+runs at a 0.08 time scale), so the two readings move by hundredths run to run; the
+test asserts the bands those readings sit inside, `2°` on the aim and `5°` on the
+run line, each an order past the arm's own arithmetic. The claims the two readings
+have to survive are worth knowing before reading them: a body whose aim is merely
+the plate passes neither (it is a quarter turn out of the run and most of a turn
+out of the throw), and the run's own line is read from the frames he is still *a
+stride short* of the ball in, because a bearing to something a hand's width away
+points wherever it likes.
+
+### The batter is the batter-runner
+
+There is one body at the plate, and it is the one swinging. The batter's own
+component owns the runner's legs as well: at the plan's takeoff the frame loop
+stops authoring the swing pose, starts the asset's own `Running` clip on the very
+bones the swing was written onto (`util/playerClips.js` — the cast's own binding
+and cross-fade), and walks its own group along the leg. `util/batterRunner.js`
+is the whole of what that body needs beyond the cast's walk (`playCast.runFrame`,
+shared by both), and it is unit-tested on its own:
+
+* **it leaves the box, not the plate.** The leg's path starts at home plate's
+  centre; the batter stands a stride off it. His own takeoff carries the leg by
+  the offset between the two and walks that offset off over 0.45 s, so his first
+  running frame is exactly where the swing left him and his last ones are exactly
+  on the schedule the fielders and the ball are drawn from. That anchor is the
+  *frame he left on*, not the schedule's own takeoff, so a plan that arrives late
+  (a live hit's runners can land a poll behind the contact) still starts where he
+  stood rather than teleporting him into the basepath;
+* **the pose is blended, not cut.** The stance the way home ended on and the
+  run's first stride are two different bodies: the skeleton as the swing's driver
+  left it is snapshotted on the handoff frame and eased out over the same window,
+  the clip written over it frame by frame (`poseSnapshot` / `blendPose`). Rotations
+  go on their shortest arc — the hips turn most of the way round — and the group's
+  own yaw rides the same weight, so the turn is the body's and not a rotation of a
+  frozen pose;
+* **the bat is let go of, not just hidden.** A second copy of the bat, drawn
+  outside every group the swing and the run move, is set down on the handoff frame
+  from the live in-hand bat's own frame and stays there for the rest of the play
+  (`util/droppedBat.js`): it keeps the lean it was let go with, flattened onto the
+  ground, and falls to the batter's own side of the plate when it was standing in
+  his hands (within about 11 degrees of straight up there is no lean to read); it
+  is set down by its own barrel's radius — 46 mm on this asset — so the barrel
+  rests on the dirt and the handle lies just above it. The in-hand copy is hidden
+  on that same frame, so the two are never both drawn, and both come back with the
+  reset: the next cycle opens with the one bat, in his hands;
+* **the play's own clock drives it** (`playClock`, published by `BattedBall`,
+  which is where the plan and the flight clock live). It goes null when the
+  choreography finishes, which is the instant the cast resets to its own spots — so
+  the batter's body goes back in the box then too, at the plate, in the stance, bat
+  in hand, ready for the next pitch.
+
+Nothing of the swing is touched by any of it: the whole branch is only reached
+once the play's clock is past the takeoff, which is the second the swing's own
+way home ends.
+
+### The reset, and the replay
+
+Every play ends where it began. `playCast.resetFrames` is the alignment each body
+returns to — its own spot, its own idle clip, nobody holding the ball — and
+`FieldCast` falls back to it the moment the play is not running (before the
+launch, and once the choreography has finished), so the next cycle replays the
+same play from the top with the cast back on its marks. A body keeps no position,
+no pose and no ball across plays — and the bat the batter left on the dirt goes
+with them: the next cycle opens with the one bat, in his hands. The two bodies that
+are nobody's cast go back on the same frame, off the same clock: the batter into his
+box and his stance, and the pitcher onto his mound and into his delivery, both of
+them reading the play's clock going null as the reset.
+
+### The body the camera is standing in
+
+Every body on the field is drawn at its own distance from the camera, on the
+reference's own rule for it (solomon-gumball's `Players.tsx` fades the man behind the
+plate once the view is inside three metres of him): nothing within
+`camera.playerFadeNear`, everything past `camera.playerFadeFar`, the line between
+them (`playerFadeOpacity` in `util/playerKit.js`). Each body wears a material of its
+own to make that possible — a body that is faded must not be sharing one with a body
+that is not — and the opacity is only written when it really moves, because
+`transparent` and `depthWrite` are shader state rather than numbers.
+
+What that is *for* is the fielder cam, whose position is a fielder's own head: the
+distance from that camera to the feet it is standing over is the fielder head height
+and no more, so the one body the band takes out is the body the camera is inside,
+while the seven others — and the man the ball is being thrown to — are drawn whole.
+The pitcher's own body fades by the same rule **while a play has him** (the fielder
+cam can be following a comebacker he is fielding), and is drawn whole the rest of the
+time: the delivery is a body the camera is *looking at*, and his harness and the
+visual baselines are read from inside his own frame.
+It used to be a single switch for the whole cast, flipped on the moment a replay
+began, which emptied the field of every body at once. The band is tuned for exactly
+that (2 m to 4.5 m), which is tighter than the catcher's own fade: his is the
+reference's `clamp((distance - 3) / 8, 0, 1)`, read to keep a jersey off the strike
+zone, where a fielder the replay is following is the subject rather than an
+obstruction.
+
+### Reading it back
+
+`scripts/probe-cast.mjs` mounts the real `BattedBall` **and the real `Batter`**
+over the batter harness's swing pitch (`e2e/harness/cast.html`) with a chosen
+play, and prints where every body and the ball are, frame by frame, plus what the
+reset left behind. The batter's own group is read alongside the cast's — where he
+is, whether he is carrying the bat, a bone of him — and every frame is logged, so
+a handoff that came undone between two samples cannot hide (see the note on
+editing a component while a probe is running: the dev server's hot reload remounts
+it, which resets the run and looks exactly like a bug):
+
+```
+node scripts/probe-cast.mjs double      # or single, fly
+node scripts/probe-cast.mjs double 0.05 200
+```
+
+The same harness mounts the real `Pitcher` too, so the half of a play that is
+*nobody's cast* can be watched with it: `?play=comeback` is a ball hit back at the
+mound, and `scripts/probe-fielding.mjs` reads the pitcher's own body through it (off
+the mound, at the ball, the ball in his hand, the throw, the reset) and then stands
+the camera inside each body in turn to read what every body is drawn at — the two
+things the unit suite cannot answer, and the two the fielder cam depends on.
+
+```
+node scripts/probe-fielding.mjs comeback
+node scripts/probe-fielding.mjs comeback 0.05 150
+```
+
+The time scale is the third argument for a reason worth knowing: the shared clock
+advances by the frame's own wall-clock delta, so on a loaded machine (a
+software-rendered frame can take seconds) a play can be stepped clean over
+between two frames. The probe therefore runs at the slider's own floor, 0.05, so
+every rendered frame is a ~0.15 s slice of the play.
+
+The summary reads the bat on the dirt as well as the one in his hands — the frame
+it appears on, where it lies, how flat and how far off the ground, whether it
+stayed put while he ran, and that the reset cleared it away — so "he dropped it"
+and "he is carrying it" cannot be read as each other.
+
+The catcher has his own scratch harness beside it (`e2e/harness/catcher.html`,
+with `scripts/probe-catcher.mjs` to read it). It mounts the real `Catcher` next to
+the real `Batter`, and the batter is there on purpose: his facing is what the
+app's own visual baselines pin, so a read of the catcher's feet is read against
+the one body whose facing is already known, not against an opinion. The harness
+answers with the crouch itself — his head bone, and the box his *posed* body
+really occupies, 0.92 m and 1.28 m against the 1.65 m and 1.93 m the same body
+stands at — plus which meshes he wears, the kit on them, and the opacity a camera
+at any distance gets. Measured: 0.044 at 3.4 m, 0.278 at 5.2 m, 0.889 at 10.1 m,
+which is the reference's own `clamp((distance - 3) / 8, 0, 1)` exactly. `?kit=away`
+dresses him in the visitors' blue and stands the batter beside him in the home kit
+(`?kit=home`, the default, is the other way round); `?field=0` drops the ballpark so
+the page comes up in a second.
+
+The kit itself is pinned by `e2e/kit.spec.js`, which reads the atlas each body is
+actually wearing — the pixels, by hue, not a screenshot of a body twenty metres
+out — and asserts the fielding side and the man at bat are in opposite clubs, that
+the catcher is with the fielders, and that all of it turns over with the half
+inning (`?half=top|bottom` on the cast harness, `?kit=` on the catcher's).
+
+## The park's big screen: the jumbotron
+
+The board over the center-field bleachers is the solomon-gumball reference's
+jumbotron, ported rather than imitated: its layout is
+`components/Scoreboard.tsx`'s `ScoreboardHTML`, its picture is
+`components/FilteredPhoto.tsx`'s quantization, and its data is the same data the
+reference draws. `src/util/billboard.js` writes every line of the board onto one
+canvas, `src/components/DynamicBillboard.jsx` owns only the texture, the meshes
+and the headshot download, and the backend carries the board's state on each
+pitch's snapshot (`_game_state_snapshot` in `backend/main.py`, with
+`_linescore_through_plays` deriving the linescore as of that pitch) so a
+replayed pitch shows the board the game carried at that moment.
+
+### The board is the reference's, on its own 1060 px surface
+
+The design surface is the reference's own: 1060 px wide, `1060 / (194 / 80)` =
+437 px tall, a 24 px type base in Rubik bold (black for the grid's `bolder`
+cells), the `#4A3448` top-half theme and the `#AD4126` bottom, and the same
+three panels — the 32% at-bat column, the batter card, the 17-column scoring
+grid (a 150%-wide team column, innings 1-9, R H E LOB, B S O).
+
+Laid out from the reference's own rule, the at-bat column measures 46, 36, 85,
+36, 38, 38 and 34 px down — `TEAM - X` (7 px of padding, a 4 px rule), a white
+`SEASON STATS` header (4 px of padding), the OBP/SLG/OPS row (a 1.4 em value
+under each 1 em label), the `BATTING ORDER` header, then up to three names with
+a 4 px rule under the first two. Those numbers come from CSS line-height
+`normal`, which for Rubik at 24 px is **28 px** — a 1.1667 ratio, not the 1.2 a
+browser's `normal` is often assumed to be. At 1.2 the season box measures 80 px
+against the reference's 85 and every row below it rides high by that much, so
+the ratio is taken as measured. The batter card follows the same source: the
+number badge is 20 + 28 + 16 px of padding at 2.16 em with a 40 px round on its
+right end, the first name sits 1.42 em beside it bottom-aligned, the last name
+3.3 em under that, and the AVG/HR/RBI tags are 4 px + 1.1 em + 4 px pills on a
+half-black ground with a 100 px radius, nudged 4 px up.
+
+The current inning's column carries the reference's own marks: its header band
+turns white and its number takes the theme colour, and the column is boxed in a
+4 px white inset. A half that has not started bats yet leaves its cell blank; a
+played half with no runs reads 0. The headshot is 300×300 in the card's
+bottom-right corner, quantized in 4 px blocks against the reference's own
+16-colour palette (the palette's numbers, its averages, its Euclidean distance
+and its alpha handling are the reference's, block for block).
+
+### The corner radii are a list, not named corners
+
+Canvas's `roundRect` reads `radii` as a point list. A `{ topRight: 40,
+bottomRight: 40 }` object is parsed as a single `DOMPointInit` (x, y, z, w all
+defaulting to 0), so every corner rounds by nothing — and nothing throws. The
+first render had square badge ends and square stat pills for exactly that
+reason. Measured in Chromium: the corner pixel's alpha is 255 with the named
+object and 0 with `[0, 40, 40, 0]`. The board passes the array in the canvas
+order (top-left, top-right, bottom-right, bottom-left) and the suite fails if a
+named object ever reaches the canvas again.
+
+### What the port fixes, and why
+
+Three of the reference's own accidents are not carried over, each because it is
+a defect rather than a look:
+
+- Its `StatValue` prints `parseFloat(val).toFixed(3).slice(1)`, which eats the
+  leading digit of any rate over 1.000 — an OPS of 1.113 reads `.113`. The
+  board keeps the `.406` style but trims only an actual leading zero, and a
+  missing stat prints blank rather than the `"AN"` that parse gives a
+  placeholder.
+- Its `BATTING ORDER` reads the **away** boxscore's order even when the home
+  side is batting. The board reads the batting side's own order, the next three
+  hitters after the man at the plate, wrapping past the ninth.
+- It lets `TEAM - …` wrap onto a second line. With "NEW YORK YANKEES" the left
+  column grows the top row from 321 px to 341 and pushes the grid 20 px past
+the board's own 437 px (measured: `scrollHeight` 457). The screen here has one
+fixed height, so the line is fitted to its panel instead.
+
+### Animations
+
+The reference has none on the board itself: it rasterizes the DOM to a JPEG
+texture whenever the current event (play, event, completion) or the loaded photo
+changes, and shows that screen by cutting the camera to its `Scoreboard` view.
+The board here is a live object in the park rather than a camera cut, so the
+texture is repainted on exactly the same cadence — `boardKey` changes with any
+visible change to the state, the quantization of a newly landed headshot, or
+Rubik finishing its load — and it never animates a number between states, as the
+reference never does. Two board states a batter apart are two boards, not one
+board sliding.
+
+### Reading it back
+
+`test/billboard.test.js` draws the board through a recording 2D context and
+pins the content: the panel's rows and names, the batter card's number, names
+and raw stats, every grid label, each cell's value at its own column and row
+(the test speaks in the board's geometry — 17.5 grid units across 1060 px, the
+score rows under a 36 px header), the count at 48 px, the packed `.425` stats
+and the kept digit past 1.000, the blank halves, the white-boxed current inning,
+the theme flip by half, the corner radii, the 300×300 headshot at (756, 21), the
+deterministic stand-in face, the quantizer's palette and alpha, and `boardKey`'s
+sensitivity. `backend/test_live_feed_fixture.py` pins the other end: the
+linescore as of a pitch (runs by inning, H/E/LOB, the away defense committing
+an error on the home line, the ghost runner) and the snapshot fields the board
+reads.
+
+## The crowd's little shows
+
+`CrowdShow` gives the stands their own intermittent business: a row of fans
+stands up out of its seats, steps out in front of them and pumps a long pixel
+banner held along the whole row, while cartoon shout marks flick out of its two
+top corners; another row
+stands to play cut-out trumpets and drums held in its own hands, the bells
+blown at the field, with musical notes climbing off the instruments. Between
+acts every row sits back down with its hands empty at its sides. Everything the
+props do — where they sit, how they rise, how the cloth rides the hands — is
+read off the sprites, not placed "near" them.
+
+### The grips are the sprite's own texels
+
+`util/fanSprites.js` names the two texels each cheer pose draws its hands on
+(`raise`: columns 5-6 and 25-26 at the top row; `play`: columns 10-11 and 21-22
+at the mouth; `drum`: columns 8-9 and 23-24 at the waist). A hand is a
+three-texel block centred on that texel, so the grip a prop is laid out from is
+the centre of the drawn hand: `texelToPlane` puts a texel on the 0.55 × 0.72 m
+sprite, then `fanHand` puts the sprite on the seat. The banner's bottom corners
+are exactly the two end fans' grips (`bannerHold`, over `bannerFrame`), and each
+instrument is laid out from its own player's (`drumHold`, `hornCutout`): a drum
+whose card's top corners are exactly the two `drum` grips, dropped 2 cm under
+the palms so the hands show above its edge, and a horn held at the brace
+between the `play` palms, 0.09 m back from its bell rim.
+
+A music row wears one pose per instrument, not one pose for the whole row:
+`musicInstrument(i)` alternates horns and drums down the row and `musicPose(i)`
+returns the pose that goes with it (`play` for a horn, `drum` for a drum).
+Ballpark draws the sprites from the first function and `CrowdShow` lays the
+props out from the second, so a fan in the drum pose is always the one handed a
+drum. The two poses reach **forward** — hands brought in to the mouthpiece, or
+out at the waist — instead of up beside the head, which is what made a row of
+musicians read as a row of cheerleaders holding instruments.
+
+### The lean is `Rx · Ry`, and getting it backwards buries the props
+
+A fan is drawn with `rotation.set(-0.08, yaw, 0)`, and three's Euler order
+`XYZ` is `Rx(lean) · Ry(yaw)`: the lean is taken about the **park's** x axis,
+after the yaw. Laid out as `Ry · Rx` instead — the natural reading of "lean the
+sprite, then turn it" — the grip lands up to 6 cm off the plane the sprite is
+actually drawn on. That is enough for a trumpet to sit *inside* the fan's
+chest, where the opaque sprite wins the depth test and the prop simply never
+appears (it took a `depthTest: false` probe to see the quad at all). `fanHand`
+now multiplies the two the way three does, and the suite pins each grip against
+`Matrix4().makeRotationFromEuler(Euler(lean, yaw, 0, 'XYZ'))` at four yaws and
+both poses, so the two can never drift apart again.
+
+### A show row keeps its own seats
+
+A show is seated, not re-seated. Every fan in it keeps the chair the crowd fill
+gave it — its own x, z and yaw — so a row sits on the cushions it looks like it
+is sitting on, and a standing fan steps out from directly in front of its own
+chair. (A sprite's own scale is replaced by the row's median, because a taller
+fan's raised hand would otherwise stand above a shorter one's and lift off the
+banner's straight bottom edge; the scale is anchored at the feet, so it does not
+move anyone.) The only thing laid over the row is `s`, its coordinate along the
+row: 0 at the left-hand fan, 1 at the right-hand one, measured on the row's own
+right axis. Ballpark numbers the spectators with it (`seatRow`) and CrowdShow
+numbers the cloth's columns with the same projection.
+
+That leaves the seats' arc in the row, and the cloth is still the straight chord
+between the two holders' hands: the middle grips may stand up to a hand's width
+behind the cloth in depth, while every grip still shares its bottom edge (the
+seats in a row are level). The crowd fill keeps a show window's seats full
+(`seatFillRun`'s `keep`), so the cloth is held along an unbroken run of
+neighbours: the window is a block of people who came together, and the row runs
+a little fuller there than its block's share. The notes still rise off the row's
+own line, and the wave still moves each fan by the same `s` it gives the patch
+of cloth that fan holds. An earlier version straightened the row onto the chord — even
+spacing, mean yaw, median scale — which kept every grip in one plane but slid
+middle fans up to a seat's width off their chairs, and left them standing in
+front of the wrong chair when the act began. `e2e/crowd.spec.js` now pins the
+rule from the outside: every show fan's x, y, z and yaw is exactly the seat the
+crowd fill gave it, and its window is unbroken — every seat from `from` to `to`
+occupied, adjacent all the way along the row. `test/fanSprites.test.js` bows a ten-seat row as the stands
+do, and still requires every raised hand to touch the cloth's bottom edge.
+
+### The banner spans the row, both hands of both holders
+
+The cloth runs from the **outer** hand of the left holder to the outer hand of
+the right one (plus a 0.14 m overhang), which is the only span that leaves every
+raised hand in the row on it: the outer hand is what holds the corner, the inner
+hands of both holders and both hands of everyone between them lie on the
+cloth's bottom edge. Gripping with the inner hands — the obvious reading of "the
+hands between them" — left each end fan's outer arm pumping an empty fist beside
+the banner. `bannerHold` builds the whole arrangement (grips, frame, overhang,
+and the row coordinate the cloth is numbered in), so `test/fanSprites.test.js`
+can hold a ten-seat row up and assert that all twenty hands are inside the
+cloth's span and within a hand's height of its bottom edge.
+
+The cloth is 0.42 m tall, its bottom edge lifted 0.012 m into the palms so the
+fingers show on it. Its texture is cut at one texel per cloth texel (`BANNER`
+`texelHeight` = 0.0175 m) and the slogan is repeated along it, so nine metres of
+row do not smear one word across the whole bleacher.
+
+It rises out of the hands **from its bottom edge up** and is folded back down
+into them: the cloth's quad is scaled down in y while its texture is cropped by
+the same amount (`repeat.y`), which is a roller-blind reveal rather than a
+squash. The slogan keeps its size and appears progressively from the hands
+upward, and at the end of the act the top edge comes back down to the palms.
+The material fades with it (`opacity` on a `transparent` cut-out, not
+`alphaTest`), so the rise reads as a fade and not as a hard wipe. The cloth is
+completely gone before the row lowers its arms.
+
+### One clock for the row and what it holds
+
+The spectators are drawn by `Ballpark`'s instanced meshes; the cloth, the horns
+and the drums are drawn by `CrowdShow`. Animating them separately is how hands
+come off banners, so the motion lives in `util/showMotion.js` as a pure function
+of (time, position along the row) and both components evaluate it from the same
+frame clock:
+
+- `standProgress(t)` — the row rises 0.23 m over 0.9 s at the start of its act
+  and sits back down over the last 0.75 s; a seated row is perfectly still.
+- `rowStep(t)` — the same progress, 0.24 m *toward the field*: a standing row
+  steps out of its seats, which is where a standing fan's legs actually are
+  (and where the seat it was sitting on cannot bury them).
+- `bobAt(s, time)` — a 0.05 m sine wave, two crests across the row, travelling
+  from the right-hand holder to the left one: the row is pumping the banner.
+- `rowLift(t, time, s)` — the two together, scaled by the stand's own progress,
+  so the motion arrives and leaves with the act.
+- `armProgress(t)` / `actPoseUp(t)` — whether the row has its hands up, and the
+  step at which it swaps between its acting and resting sprites. Every prop the
+  act holds is shown and hidden on the same step, so nothing is ever held in a
+  hand that has already come down.
+- `bannerReveal(t)` — how far the cloth has risen out of the hands. It starts
+  once the arms are most of the way up and finishes before they drop.
+
+`CrowdShow` cuts the cloth into 64 columns and lifts each whole by the wave at
+its own `s`, and offsets the cloth's frame by the lift at the ends, so a fan at
+`s` and the patch of cloth at `s` rise by exactly the same amount. That is what
+keeps every hand on the banner through the wave instead of only at the start.
+The wave is an integer number of crests, so both ends of the cloth (and both
+holders, who are the only two whose arms could visibly tear away) ride in step.
+
+The cloth's own row coordinate puts the holders at exactly `s = 0` and `s = 1`
+— the same numbering Ballpark gives its spectators (`seatRow`) — which the
+suite pins, because the alternative is a row that bobs half a crest out of phase
+with the banner it is holding.
+
+### Two rotation traps, both silent
+
+- Writing `rotation.z` on a group that was posed with a `quaternion` prop
+  **rebuilds** the whole rotation from the Euler triple, and a yaw past a
+  quarter turn does not decompose to a pure-yaw triple: three returns
+  `(-π, θ, -π)` for one, and overwriting the z component leaves the prop
+  rotated by θ instead of facing the field. A banner on the infield row (yaw
+  2.32 rad) hung 6 m off its own row this way while the centre-field rows (yaw
+  0.35) looked perfect. The tilt now lives on an inner group, and instrument
+  sway is composed onto the frame's quaternion rather than written into it.
+- `Quaternion.setFromEuler` is not the only way to lose a rotation: any prop
+  posed by quaternion and later nudged by a single Euler component has the same
+  failure. `setSway` in `CrowdShow` is the one place sway is applied.
+
+### Instruments
+
+Both are **flat cut-outs**, drawn in the fans' own idiom: chunky opaque texels,
+a one-texel dark contour (`outlineCutout` walks the alpha edge after the art is
+drawn), and a double-sided `alphaTest` card lit by a `MeshStandardMaterial`
+with the fans' roughness so they take the same stadium light instead of
+reading as stickers.
+
+The **drum** lies in the fan's own plane (`drumHold`): it wears the sprite's
+lean and yaw, its top corners are exactly the two `drum` grips at the waist,
+and its body hangs under them over the belt, 1.2 cm out toward the field so the
+cut-out clears the torso and a further 2 cm down (`DRUM.drop`) so the hands
+read above its top edge rather than behind it. The sticks are drawn on those
+corners, in the palms, so the hands hold the sticks rather than resting on a
+drum floating in front of them. The card is a rigid quad and only its two drawn
+frames trade places — left stick down, then right — so the sticks never leave
+the grip.
+
+The **trumpet** stands **across** that plane (`hornCutout`): local +x is the
+bell, out along the row's field-ward line swung by the horn's cant and tilted
+17° up; local +z is the card's normal; local +y is upright in the card. It is
+held at the brace on its lead pipe, between the palms, with the mouthpiece end
+reaching back at the player's chin. The `play` pose brings both hands forward
+to that brace rather than up beside the head, so the horn is held where a horn
+is played and the palms sit on either side of it. The basis is built, not
+rolled, so the valve caps sit on top of the tube at every yaw.
+
+A card aimed straight downfield is **edge-on** to a camera at the plate: the
+field saw a one-pixel line, and a row of musicians apparently holding nothing.
+So the formation cants the horns alternately down the row (`HORN.cant`, 22°,
+through `hornCant`): consecutive horns swing opposite ways, each bell still
+within 22° of the field line (`dot(aim, facing) = cos 17° · cos 22° = 0.885`),
+and a camera on either side gets open three-quarter silhouettes instead of a
+row of edges. The cant is fixed in the row — it is a formation, not a turn to
+the camera.
+
+The bell's **mouth** is a second cut-out (`createBellFaceTexture` in
+CrowdShow): a disc `HORN.bell` across, facing down the horn's own aim, carried
+out past the card's drawn rim by a short gold rim band (`BELL_RIM`, an open
+8-sided cylinder). From the plate, where the profile card is still nearly
+edge-on, the disc is what reads as an open bell — a bright rim round a dark
+throat, outlined like every other cut-out — while from the row it is edge-on
+and the profile carries the shape. The band matters as much as the disc: it
+finishes the flare past the card's transparent margin, and it stands in front
+of the card so the profile's dark outline does not cut a line across the bell's
+face from a three-quarter view (at 22° the card's last column is several
+centimetres in front of the disc's plane at its edge). Both are children of the
+horn's group, so they take the same bob and appear and vanish on the same act
+step. Neither is a billboard: the disc's normal is the horn's direction, fixed
+in the park.
+
+Both are played on a **step clock**, not a smooth one: `playStep` ticks six
+times a second, and the drum alternates its two stick frames while the horn
+nods through `HORN_BOB` — four whole poses, so the eye reads the cut-outs
+changing the way it reads the sprites, with every player off its neighbour's
+beat by its own phase.
+
+### Legs, and the pose a row wears when it has nothing to hold
+
+A spectator's sprite is drawn from the hips up and anchored on the seat cushion,
+so a row that stood to wave was a row of torsos floating over its chairs. Two
+things fix that:
+
+- Every show fan wears **two** sprites, an acting pose (`raise`/`play`) and a
+  resting one (`rest`, arms at the sides, hands empty), and the two are swapped
+  on `actPoseUp`. They are separate instanced slots of the same seat, not a
+  texture swap: the unused slot is collapsed to a scale of 1e-4, so nothing is
+  ever moved between meshes at runtime.
+- A standing fan gets **legs**: a strip of trousers, sock and shoe, one
+  instanced quad per show fan, stretched from the step under the seat up to the
+  sprite's own hip (`legLength` = the seat's 0.16 m rise plus the row's lift).
+  It follows `rowStep`, so it is under the body, and it collapses to nothing the
+  moment the fan sits — a seated fan's strip is never left dangling under the
+  seat. The strip's top meets the sprite exactly through the rise and the wave
+  (measured to the millimetre in the harness).
+
+### The notes, and the marks
+
+The music row's notes are particles: twelve per show, each with its own spot
+along the row (± half the row plus a little), its own distance in front of it
+(0.25-1.0 m), its own start height (0.95-1.4 m, just over the instruments), its
+own climb (1.5-2.4 m), speed, size, colour, spin and sway — all drawn from a
+hash of the group's id, so a row keeps the same flock from show to show. Each
+fades in over the first 18% of its climb and back out over the last 34%, and
+each turns to face the camera before its own spin is applied; a flat quad with
+no billboard thins to a line as the view swings round.
+
+A shouting row's voice marks are **not** particles, and they do not climb. They
+used to drift up out of the crowd like bubbles, which is the wrong picture twice
+over: sound is emitted from a place, on a beat. `util/shoutMarks.js` puts two
+marks over the row's own top corners — just past the last fan at each end,
+1.42-1.58 m above the seat line, clear of the raised banner — and each mark is
+three long thin pixelated trapeziums (a metre-ish long, a hand's width at the
+tip) thrown off one corner. Their narrow ends crowd round the corner and every wedge
+point up and out of the group: all three lean toward the corner's own side, the
+one nearest the corner most diagonal (48° off upright) and the steepest at 28°,
+so a mark seen straight on is an up-and-left fan on the left of the row and an
+up-and-right one on the right — never a flagpole, and never a set of horizontal
+strokes. The mark billboards to the camera, so the lean is chosen in the screen
+plane (CrowdShow picks the sign from which side of the group the corner falls on
+from where the camera stands), and the picture holds from the far side of the row
+too. The three are staggered out along their own lines (0.05, 0.13, 0.21 m) and
+given a lane each across the mark's own width, 0.15 m apart — the most diagonal
+wedge outboard, the most upright inboard, the lanes mirrored with the lean.
+Fanning three wedges off one point is not enough to read them as three: at the
+plate camera the whole mark is only a couple of dozen pixels wide, and a shared
+origin draws one thick band with a frayed tip. The lanes put a strip of sky
+between the streaks for their whole length.
+
+The motion is a **boil**, not a drift: angles and lengths are sampled from a
+clock quantised to twelve a second, so the wedges hold a pose for five frames and
+then jump — and each pose is an oscillation about the wedge's base angle, so no
+amount of time turns a twitch into a climb. The angle swing belongs to the mark,
+not to each wedge: all three swing together (with their own amplitudes), so
+their leans keep the same order and a clear gap between neighbours and can never
+pass through one another, which independent phases used to allow — and that was
+the thick band by another route. Only the length boil is each wedge's own. A
+shout is *thrown*, so each burst also swells on the row's beat: out of a 34% nub
+on the corner over the first third
+of the visible beat, full size through the middle, shrinking away over the last
+third as it fades — the burst grows and goes rather than blinking at one size.
+The swelling is stepped, not smooth, like everything else about the marks: four
+whole sizes (0.34, 0.55, 0.76, 1), each held for roughly a cartoon frame as the
+burst is thrown, so the mark jumps a size instead of inflating a pixel at a time.
+It is up for 62% of the beat, snapping in and out over 14%, its root twitching
+±2.5 cm while it is up, and the two corners share the row's beat half a beat
+apart, so the row keeps shouting from one side or the other instead of drifting
+until both fall quiet at once. The mark wears the
+group's colour on a coarse nearest-filtered wedge texture — six texels across at
+the tip, two at the root, widened in six four-texel steps, alpha-tested so the
+blocky steps stay crisp while it fades — and turns to face the camera, because a
+flat wedge seen edge-on is a line.
+
+`test/shoutMarks.test.js` pins the layout (a mark over each corner, past the
+half-span and clear of the hands and the cloth, three wedges splayed up and out,
+staggered and laned with daylight between their tips and roots, mirrored across
+the row, the same wedges for the same row),
+the beat (up for its 62%, gone between), the swell (a monotone growth, a hold at
+full size, a monotone shrink, every size exactly one of the four steps, bounded
+and never zero) and the boil (a held pose inside one frame, bounded swing and
+length, a bounded root twitch).
+`e2e/crowd.spec.js` pins what the park does with them: it samples the rendered
+marks for five seconds (the harness at `?dpr=1`, so the slow headless renderer
+still gives the beat enough frames to land on the small steps) and asserts each
+stays within 12 cm of its corner in every axis — the climb they replaced covered
+about a metre in that time — that each mark's scale reaches full size and drops
+below 60% inside the window, that every wedge points up and out (its world +y
+stays under 0.95, keeps a 0.45 vertical component and carries at least a 0.25
+horizontal one) and that the three fan the same way instead of criss-crossing,
+that the drawn ends of neighbouring wedges stand further apart than the wedges
+are wide — the lanes, measured on the rendered quads — that every rendered size
+is one of the four steps, and that at least one corner is up in 95% of the
+frames. A second test opens the row from behind as well and requires every
+visible mark to point away from the row's own centre, which is the screen-side
+rule stated in world terms: it holds whichever side of the row the camera is on.
+
+### The stadium around the bowl
+
+The park used to be a horseshoe of open bleachers with a scoreboard parked in the
+air over centre field. Three structures now sit around the bowl, built with the
+same helpers the stands and the light towers use — `addTransformedBox` for the
+squared members and `addChamferedBox` (`util/roundedGeometry.js`) for the cast
+ones; each roof and the press box is one merged, vertex-coloured geometry, so
+one draw call:
+
+- **The canopy** runs right round the park, so every seat is under the same
+roofline. `createCanopyGeometry` builds it once from a `sample(t)` that walks the
+top of the stands and answers the point and its outward normal; the two roofs
+are only two calls of it. `createGrandstandRoofGeometry` sweeps the infield
+spline (parameter 0.02-0.98, pole to pole) and `createBleacherRoofGeometry` cuts
+the same profile round the outfield bleachers' ring, a couple of degrees past
+each foul pole. The profile is a slab sloping from 9.4 m at the front edge to
+11.2 m at the back, carried on columns behind the top row and closed onto the
+stands' rear facade, with an open truss under its front edge (fascia beam, lower
+chord, hangers every other bay) and flag masts on the ridge. Its bays are cut
+1.3× their chord: on the tight corners behind the plate the back edge runs a far
+wider arc than the chord, and a bay cut to length opens a wedge of sky between
+neighbours. Each run also ends on a **fascia return**: the front fascia's own
+rolled section turned through the cut end, standing 0.16 m past the slab's face
+and raked up the roof's slope to the rear edge, so the beam that draws the front
+edge turns the corner and draws the end as well. It meets the front fascia on
+its own centreline (0.16 m under the slab's top) with the slab's cut edge closed
+in the roof's colour behind it, so the two roofs part at the corner on a clean
+drawn edge instead of on two raw sections of slab facing the sky.
+- **The flags fly** (`FlagWave`). The cloth is not part of the canopy mesh: it is
+one buffer of fifteen flags, each a 10 × 5 grid, and the canopy only raises the
+masts they hang from (both come off the same `FLAG_PLACEMENTS`, so a flag always
+stands on the bay that raised its pole). Every vertex carries its hoist-to-fly
+fraction, its height up the drop, and the direction the wind pushes it; the
+frame loop writes two travelling waves out along it — the shorter one skewed
+down the drop, so the folds run diagonally — both scaled by f² so the hoist stays
+pinned to the mast, plus a lift on the fly end and a static droop in the base
+geometry. The cloth's normals are re-derived from the moved positions each frame
+(`computeVertexNormals`), which is what makes the folds catch the light instead
+of a flat sheet sliding sideways; the whole cloth is 990 vertices, so that is
+nothing per frame.
+- **The roofs stop at their own poles.** At each foul pole the two canopies end
+a few degrees apart pointing different ways, and nothing bridges them: there is
+no hip over the corner, so the gap between the bleachers' roof and the
+grandstand's is open to the sky and the court below it is lit from above. The two
+corner light towers stand out at (±92, −88), beyond the roof ends, so their
+lattice rises above the roofline rather than through it.
+- **The corner is seats, then a brick wall on the radius.** The two structures
+stop square at their own foul pole, but their ends are not parallel — the
+bleachers' is a radius, the grandstand's a cut across its own curve — so they
+open a wedge between them. The bleachers are carried round into it: a row does
+not stop on the foul line but runs on until its outer end reaches the corner's
+section line, a radius of the plate 47.3° round from straight-away
+(`CORNER_WALL.angle`, `bleacherEndAngle(side)`). Every tier ends at that one
+angle, so the corner is squared off in plan rather than stepped, and the wall on
+it lies along the fans' own sight lines to the plate — an edge seen from the
+stands, a face only from the corner itself — so no seat behind it looks through
+it. The seats stop half a metre short and the **wall** stands on the line
+(`createCornerWallGeometry`): one brick panel per row, as wide as that row's own
+end, all on the one plane, each rising half a metre over the back of its row
+under a stone cornice and no higher, so the steps read as a single masonry wall
+rather than a rank of piers. A brick pier caps the rear end of the run, where
+the end wall stops against the bleachers' coping, and that pier is the block's
+abutment on the bleachers: it is carried past the last step up to the bleachers'
+own rear facade and stopped level with it, brick under the same stone cap, so
+the stepped run climbs into the building instead of ending in the air beside it
+and the half metre of facade left over the parapet is held by a pier rather than
+left as height. The field end carries no pier: the padded wall runs in front
+of the wall's foot there, and the lowest panel's own step is the stop the eye
+reads, so no masonry rides over the blue from the plate. The wall itself is the one piece of the park not poured in the stands'
+concrete: a dark red brick under pale stone, where every other section edge is
+concrete. The stone is a dressing rather than three
+improvised caps (`MASONRY`): a string course runs the whole block at 1.82 m —
+one datum across all three walls — and every top is finished with the same deep
+cornice, bed and projecting crown in one band, so the brick faces have a
+horizontal and a shadow line to measure themselves against. A second course runs
+the block at 0.62 m, a water table off the ground, so the brick between the two
+bands reads as courses of masonry rather than one tall panel with a stripe on
+it; the cornice is deepened from its first cut to 0.36 m on a 0.24 m projection,
+deep enough to throw its shadow down the brick from the plate. The bricks
+themselves are drawn, not just coloured (`createBrickTexture`): a course map
+tiles every 3 m in a running bond of 0.5 m bricks through 0.25 m courses, the
+mortar dark enough to be found at the block's distance, every brick a shade off
+its neighbours and every one carrying a lit top arris and a shadow under it.
+Both walls still stand as one mesh each — `assignWallMaterials` splits their
+triangles by colour into a brick group and a stone group, so the brick takes the
+map and the dressings keep the stands' concrete — because a single red field has
+no edges in it and reads as a painted panel however its colour is graded. The
+courses are coarser than a real wall's on purpose: from the plate the corner's
+brick is a few dozen pixels high, and a true 65 mm course would fall between the
+pixels and read as noise.
+- **The blue padding runs past both poles to the corner lines.** The bleachers
+carry on beyond the foul poles to the corner's section line, so their field wall
+is the same navy padding and yellow rail for that last stretch instead of a
+change of wall at the pole: the pads are one ring of bays from corner to corner
+(`WALL_FROM` / `WALL_TO`, `createOutfieldWallGeometry`). There is no separate
+brick apron under the corner's deck; the padded wall closes the frontage all the
+way to the brick.
+- **The side stand's end is the same red brick, cut back to the corner**
+(`createSideEndWallGeometry`). The bowl is a sweep, so its own end is a
+cross-section and not a radius. Run out from the pole, that cross-section used
+to stand in front of the bleachers which carry on past the pole to the section
+line — an end elevation across the corner's frontage rather than a wall closing
+it. It is now cut back to where it crosses that line, so its first brick starts
+flush with the corner wall's court face and no part of it stands in front of a
+bleacher seat; the bleachers themselves close the stand's cut at the pole. From
+there the wall rakes up with the rows to the bleachers' own rear wall — 6.09 m of
+brick — and its stone cornice and string course rake with it. At its rear the
+rake dies into the block's other **abutment**, built to the corner wall's own
+pier: brick carried up past the rake's cornice to the side stand's 7.6 m rear
+facade and capped level with it. That is the same stop at both ends of the block:
+one at each building's facade, the corner wall's steps climbing into it at one
+end and the rake at the other. The two walls stand apart at the rear: the notch
+their ends leave is **open**, with no wall across it and no roof hip over it, so
+the corner reads as two separate buildings at their closest point rather than one
+continuous bowl. The court between them — the bleachers' section wall, the side
+stand's end, the padded field wall, and the open mouth the back wall used to
+close — is **planted as a bank** (`createCornerBedGeometry`,
+`createCornerBedKerbGeometry`). Laid flat it could not be seen from the plate at
+all: the parapet, stepped wall and stands all stand between it and home, and the
+court is the lowest ground in the block. So the court is a raking bank: its turf
+climbs away from the plate with the bleachers' rows (`BANK_RAKE` 0.53, against
+their 0.385, so it rises through the section wall's stepped silhouette) and is
+lifted 1.3 m (`BANK_LIFT`) so its crest finishes on the rear facades' copings —
+7.51 m against the bleachers' 7.29 m and the side stand's 7.6 m — filling the
+notch between the two buildings with green instead of night sky from home plate.
+It fills the court wall to wall, so no strip of bare ground is left down either
+side, and is textured off the world so its leaf clumps stay the size of the
+bushes they stand for — the mouth's upright face carries its own UVs, along the
+mouth and up the drop, so the clumps do not smear into streaks on the way down.
+The planting is darker than the field and cut out rather
+than solid — blocky leaf clumps with holes punched through them (`transparent`,
+`alphaTest`) — so the bank reads as a mass of bushes with the walls and the night
+behind it, not as a green panel. It is also planted in the round
+(`createCornerBedClumpsGeometry`): yawed boxes of the bed's own greens stand
+along the crest and down the batter, each wearing a patch of the same leaf tile.
+Their job is the slope's drawn edge: the crest breaks into brows and notches
+instead of a straight rake, every fourth station carries a bush a head taller,
+roughly one in seven is left open to the sky, and the foot of the batter finishes
+in clumps standing over the kerb rather than on the plane's cut line. A clump is
+trimmed back to the brick at the ends of the run and drawn inside the court's two
+walls in plan, so no leaf breaks the outside face of the corner's masonry, and
+the fringe crowns only a hand's width above the rear copings — planting over the
+stepped wall from the plate, not a green parapet. At the open mouth it is cut back to the ground
+over the last 1.5 m (`batter`), a planted slope rather than a retaining wall,
+with a single low course of the block's pale stone along its foot. It is the one
+piece of ground in the block that no seat looks into, so it is safe to fill, and
+the open mouth above it turns the leftover wedge into a garden court. The corner
+seats' sight lines to the plate still pass over the low brick rather than
+through the stand behind it.
+- **Both rear facades are capped in the block's stone**
+(`createBleacherCopingGeometry`, `createGrandstandCopingGeometry`). The corner's
+two abutments climb to those facades and stop level with them, so the eaves
+themselves need a finished top or a pier meets the bare last edge of the
+concrete with the roof's back wall standing a storey behind it. Each facade now
+carries a coping: the corner's cornice carried on, the same 0.36 m bed standing
+the same 0.24 m proud, with its top on the facade's own top — so at either end of
+the block the pier's stone cap, the stepped cornice and the coping all finish on
+one height, and the band that closes the corner turns off into both buildings
+instead of stopping at the brick. It projects to the field and only
+0.04 m behind the wall, because what it caps is an eave with a roof behind it
+and not a free-standing parapet. The two runs are swept as continuous strips on the
+stands' own bay counts — 64 round the bleachers from one corner's section line
+to the other, 80 along the grandstand's spline from pole to pole — rather than
+laid as chains of caps, which would cross themselves on the inside of every bay.
+- **The batter's eye is a bay cut out of the bleachers, not a screen propped
+against them.** Straight away in centre field, the back bleachers are a wall of
+moving colour behind the pitcher's release — a fan in every seat, the deck
+stepping up behind them — which is the worst possible thing to pick a white ball
+up against. So the middle of that frontage is closed (`createBattersEyeGeometry`):
+a dark, flat screen standing on the deck's own front edge just behind the padded
+wall, 6.8° either side of straight away (about 24 m) and rising 0.35 m over the
+top row's deck — 21 ft of screen off the grass, which is where a real one stands.
+What makes it part of the stand rather than a prop is that its bay is *cut* from
+the seating: `BLEACHER_ROWS` marks every slot inside the screen's own span
+(`BATTERS_EYE_BAY_HALF`) as blank, so no cushion is meshed there and
+`seatFillRun` puts no fan there — the crowd carries on to either side and nothing
+is left behind the screen peering over it. The slots stay in the row's grid, so
+the seats either side keep their places and a crowd show's window snaps to one
+side of the bay instead of splitting across it. The cloth is then set in a frame
+of the stand's own concrete (`createBattersEyeFrameGeometry`): a 0.9 m-wide pier
+at each end, run 1.7 m back across the bare bay so they stand on the deck, and a
+curved 0.22 m cap over the two of them, overhanging the face and framed with a
+lit front edge, so the screen has a top to walk under rather than a cut edge of
+cloth. It wears the same quilted finish it always did
+(`createPixelBattersEyeTexture` — a two-pixel weave, a seam every eight texels, a
+painted frame and a catchlight along the cap) with the same baked light down it,
+0.5 at the foot to 0.82 at the cap. Measured where it is read — the front of the
+wall, in the app's own light — it sits at about (7, 21, 14), well under the
+crowd's own tones: a hitter's background, not a lit sign.
+- **The canopy wears a pixel skin.** `createPixelRoofTexture` draws 64 px of
+standing-seam metal — a seam every 8 texels, a lit rib edge, bolt heads, a
+course line, a rare freckle of rust, all stepped tones — and multiplies it over
+the canopy's vertex greens (it is a shading map, not a colour one). Every face
+of every member is mapped at one tile per 3 m (`faceUvsFor`), so the
+corrugation is the same size on a 6 m slab and a 0.15 m tie, and the slab's
+faces carry baked tones (`roofFaces`: sky-lit top, shadowed field side,
+occluded underside). `faceShades` gives the light-tower lattice and the press
+box the same treatment, and the tower steel is a good deal lighter than it was
+so it reads as a structure instead of a silhouette.- **The press box** (`createPressBoxGeometry`) hangs under the front of the
+  home-plate half of that canopy on the backstop axis: plinth, body, a glass band
+  with mullions facing the field, and a roof cap. Its volumes are chamfered boxes
+  rather than cuboids — the body by a wide 0.26 m — so the pavilion rolls its
+  edges instead of showing a crate, and the mullions are rolled steel.
+- **The backstop is padded, not painted on.** The sponsor wall behind the plate
+  (`createBackstopWallGeometry`) used to be a single plane. It is now a slab
+  standing 0.26 m off the wall behind it, with its arrises chamfered: the face
+  still carries the ad texture, while the back, ends and top sample that
+  texture's own dark-green ground, and the top chamfer takes the caution band
+  off the face's top edge. From the plate the yellow rail is a rolled bumper on
+  a real pad.
+- **The board is mounted** (in `DynamicBillboard`): the screen keeps its housing
+and gains speaker towers at both ends, a truss beam and a catwalk behind it, and
+masts down into the stands' structure. Every piece of that mount is a chamfered
+box, so the housings and masts share the park's rounded silhouette. It rides at
+the front edge of the centre-field canopy — the roof's front fascia passes just
+behind the housing — so the screen reads as hung on the new roofline rather than
+floating over it.
+- **The foul poles** stand 90 ft (27.4 m) tall — the rule's minimum is well above
+the wall, and real parks run them the full height — with the pixel mesh screen
+running from 10 m up to just under the ball, so they read from anywhere in the
+park instead of stopping at the top of the wall. Mast and screen are drawn
+semi-transparent: the mast at 0.45 (no depth write, so it is one pane rather
+than two shells), the screen at 0.38, since a double-sided plane blends its two
+faces onto each other and at the 0.85 it used to carry it read as a solid yellow
+bar that made the ghosted mast invisible. The pole still marks the line from
+anywhere in the park, but the ball, the wall and the crowd behind it are no
+longer masked by it — and it casts no shadow, which would otherwise contradict
+its own transparency. The chamfered foot stays opaque: the footing is a solid
+thing even when the mast above it is ghosted. Where the mast crosses the wall's
+rail it passes through a chamfered collar in the wall's own navy
+(`createFoulPoleCollarGeometry`), so the rail is interrupted by a pad rather than
+sliced by a cylinder. The mast is a `MeshPhysicalMaterial` rather than a standard
+one for a single reason: `sheen` adds a grazing-angle rim, which is what keeps the
+ghosted yellow drawing its own silhouette against the unlit stands instead of
+dissolving into them, with a little emissive underneath to keep that rim lit.
+
+Everything under the screen stays *behind* its face. The bleachers' back rows
+rise to head height right below the board, so a ribbon band brought forward —
+the first cut — was drawn across the crowd instead of under the screen.
+
+The dugouts that used to sit at field level along the foul lines are gone: they
+were the only structures inside the field wall, and they read as parked boxes
+from the broadcast camera.
+
+The app's 3D canvas is drawn at the screen's own pixel density (`dpr={[1, 2]}`
+in `Scene.jsx`): the pitch's trajectory, the strike zone grid and the HUD have to
+stay pixel-sharp, so nothing is downscaled any more. The park's soft, "filmed at
+low resolution and enlarged" look is built into its geometry instead. Every
+member that is round in life is a capped cylinder rather than a square bar —
+`addRoundMember` takes a box's own numbers (its three sides, yaw and pitch) and
+re-emits it as eight-sided tube, so the roof's fascia, lower chord, hangers,
+columns, flag masts and capital, the light-tower legs, ties, X-braces, ladder
+rungs and floodlight frame, and the handrails all roll their highlight instead of
+meeting at a corner.
+
+What is cast rather than round is a **chamfered box**. `addChamferedBox`
+(`util/roundedGeometry.js`) takes the same arguments as `addTransformedBox` and
+the same face order, colours and UV rectangles, then cuts every edge back by a
+bevel: six inset faces, twelve chamfer bands and eight corner facets, each with
+the average of the colours and normals it joins. That is what the seats are made
+of — each cushion and backrest loses its eight hard corners, so a row reads as
+moulded pads rather than as stacked bricks — along with the light towers'
+floodlight pods, hoods, catwalk, transformer and hazard band, the press box, and
+the scoreboard's housing, speaker towers, truss, masts and trim, the outfield
+wall's pad bays and the rail along them, the distance markers, the padded collar
+and the foot each foul pole meets the park through, and the three base bags —
+a 1.5 ft square of canvas 0.09 m thick chamfered as deep as its thin side allows
+(`createBaseBagGeometry`), so the top face shrinks to most of the bag and the
+bands become its rolled edges. The chamfer bands take their UVs along the shared
+edge of the face they border, so a band continues the face's artwork instead of
+smearing the whole texture through it.
+
+The outfield wall is where that pays off at close range
+(`createOutfieldWallGeometry`). The old wall was thirty cuboids butted end to
+end, so every bay met the next at a right angle and the ring read as a fence of
+crates. Each bay is now a chamfered pad (0.08 m), which leaves a shallow V between
+neighbours instead of a crease — the pad's own joint — and the top rail is
+chamfered the same way and carries `faceShades`, so its edges are lit as
+moulded rubber rather than as painted box. Pads and rail are two merged meshes
+over the same thirty-two `wallBay` lines — the extra two bays carry the padding
+round each corner to the section line — and the pad's faces keep the pad texture
+(one tile per bay face, as before).
+
+The distance markers (`createDistanceSignGeometry`) stopped being planes. Each
+is a chamfered slab standing 0.01 m off the padding, its face carrying the
+marker texture, its sides and back a patch of that texture's navy ground, and
+its chamfer band picking up the yellow border the texture paints round the
+number — so the sign wears a rolled yellow edge. The slab is turned with
+yaw `PI - mid` to look back into the field, which runs its own U the opposite way
+from the way a spectator reads the wall, so the front face's UV rectangle is
+mirrored (`[1, 0, 0, 1]`); without that the number comes out backwards. One
+geometry serves all five markers; only the texture and the bay differ.
+
+Each foul pole stands on a chamfered yellow sleeve
+(`createFoulPoleBaseGeometry`), a little wider than the padding it passes
+through, so the mast meets the ground on a moulded foot instead of arriving as a
+cylinder cut off square at the dirt.
+
+The bowl itself is shaded rather than faceted. The stands' tier rows are shared
+by the two strips either side of them, and their vertex colours are baked with
+the ambient of the corner they form: a tread's inner edge is its nosing and
+carries the sky, its outer edge sits in the shadow at the foot of the next
+riser, and each riser runs dark at the foot to bright at the top. Because both
+neighbouring strips agree on the tone at a shared row, the gradient runs
+continuously round the step, so the terracing shades like one moulded sweep of
+concrete instead of a stack of flat planes meeting at right angles.The outfield bleachers, carried round into the corners, bake the same gradient
+into their quads.
+
+The aisles are paved as the stairs they are (`createAisleTreadsGeometry`). A
+walkway is a two-slot gap in the rows, and an unpaved gap is not a walkway: from
+the field the cuts between blocks read as black shafts punched through the
+stands, as if the park had run out of seats rather than held them back for
+people to climb past. Each aisle now carries a flight of concrete — one tread
+and one riser per deck step, taken from the same `INFIELD_TIERS` profile the
+bowl is built from and from the bleacher ring's own tiers, so a walkway steps
+exactly where the concrete it crosses steps. Every tread has a lit nosing band
+along its field-side arris and the deck's baked shading (bright at the nosing,
+into the foot of the next riser). The whole skin floats 12 mm over the deck, so
+the two never fight for the same depth, and it keeps clear of the nearest seat —
+0.6 m in the bowl and 0.8 m round the bleachers, where the paving is cut on the
+ring's old slot angles — so no cushion clips it.
+
+Each flight carries a handrail as well (`createAisleHandrailsGeometry`): one
+rail down the middle of the aisle, leaning with the nosings at 0.95 m above each
+tread rather than stepping with them, on posts planted every second nosing and
+at the top. Rail and posts are both painted in the wall rail's safety yellow —
+a dark post vanishes against the dark deck and leaves the rail reading as a
+floating wire — so a walkway is legible from the far side of the field, not just
+from above.
+
+The crowd stands on the same grid as the seats. `INFIELD_SEAT_ROWS` /
+`INFIELD_SEATS_PER_ROW` and `BLEACHER_ROWS` / `bleacherSeatAt` were pulled out of
+the seat mesh so the fan list walks them instead of keeping a second, looser grid
+of its own. The bleachers' rows do not share one count: a row runs from corner
+wall to corner wall, so its length grows with its radius (124 seats in the
+front rows, 126 in the back, 874 in all). Each row is cut into
+blocks by the same aisle angles — a walkway is a flight of stairs and a rail
+from the wall to the back, so it cannot drift with the seat count — and packed
+between them at 0.92 m of arc, centred in each block. Before the rows were laid
+out this way the bleachers ran 130 fans round a ring that only holds 80 seats
+(fans overlapping each other) while the grandstand seated 130 of its 190
+lower-bowl seats — which is why a full corner section sat next to rows that
+looked half empty.
+
+Density is set in fans per square metre of seat deck, not as a share of each
+block's seats. A share is not a density: the two blocks cut a square metre of
+deck differently — the grandstand's rows stand 1.12 m apart, the bleachers'
+tiers 1.35 m. Filling both to the same share of their seats — which is how this
+used to be set, per running metre of row — put a different crowd on every square
+metre: a packed block beside rows that looked half empty. The pitches agree (the
+bleacher rows are laid out at 0.92 m of arc per seat, the grandstand carries 246
+seats along its spline at 0.90 m) and `CROWD_FILL` gives each block the share of
+its own seats that puts the same crowd on a square metre of its deck: the
+bleacher rows are filled to the cap. That is about 870 fans in the bleachers and
+2,060 in the grandstand, and every bleacher row is filled to the same share —
+the front row and the back row alike. A square metre of deck carries
+about 0.96 of a fan on the grandstand; the bleachers sit at 0.79 only because
+their tiers are the deepest block in the park and they are already sold out at
+the cap.
+
+The empty seats are the other half of the look. `util/crowdFill.js` fills a row
+rather than each seat: the row's empties are counted off its share first, then
+cut out in groups of one to four neighbours and spread along its whole length,
+so a sold-out row still has its handful of gaps spread from one end to the other
+instead of bunched where the first misses fell. Counting first is what makes a
+share mean a share — a coin flip per seat cannot hold one, because the gap it
+opens also costs the row the seats on either side, so a block asked for 0.62
+came out at 0.71. Every group is a run of neighbours on the concrete, so a
+gap never spills across an aisle; a row with room in it is never wholly empty;
+and each row runs a little fuller or emptier than its block. A crowd show's
+window is the exception: its seats are kept full wherever the row's own gaps
+would have fallen (`keep`), so a cheering or music row is an unbroken run of
+neighbours, and the row is a little fuller over those seats.
+
+The show clusters name a seat window as a wish — "about these seats, this wide" —
+and `util/seatWindow.js` lands it on one block of seats between two aisles
+(`snapSeatWindow`, over the row's own `perRow` and `aisle` rule, kept in
+`SHOW_SEAT_GRIDS`). A window asked for across a walkway would leave the middle of
+the row holding the banner over a gap with nobody standing in it, which is what
+the bleacher shows did: three of the five clusters straddled an aisle. The
+snapped window is the same width the show asked for where the block allows it,
+take the whole block when it is narrower, and minimal-shifts from the requested
+seat, so the shows stay where they were authored. Every wish was rescaled with
+its row's extra seats (they are seat numbers, not places), and after snapping
+the bleacher clusters land at 63-72, 141-150 and 41-50 while the grandstand's
+sit at 44-54 and 17-26. The window is kept full, so every seat in it has a fan
+for the cloth to be held by.
+
+### Reading it back
+
+`test/fanSprites.test.js` pins the projection (a texel's metre position, the two
+grips' symmetry, the grip sitting exactly on the drawn plane at four yaws), the
+banner's frame (corners on the grips, upright, face toward the field, unmirrored
+from either side), the whole row on the cloth (twenty hands inside its span, on
+its bottom edge, holders at `s = 0` and `s = 1`), the drum (its card in the
+fan's own plane, both top corners exactly on the `play` grips, its body below
+them), the horn (held between the palms, mouthpiece reaching back at the player,
+a canted aim with `cos(17°) · cos(22°)` of the facing on the field and a real
+component along the row, its card normal turned with it, one hand each side,
+bell out over the field from either yaw) and the legs (a strip exactly the
+seat's rise plus the lift). `test/seatWindow.test.js` pins the snapping: the blocks a row is cut into
+(including the shorter tail when a row does not divide evenly), a show window
+sitting wholly inside one block however it was asked for, the width kept or the
+block taken whole, the nearest block winning and a tie keeping the earlier one,
+and a block with no aisles keeping its window as asked. `test/crowdFill.test.js`
+pins the row fills: only real seats taken, empties running in groups of at most
+four with at least one group missing together, the gaps spread over every
+quarter of a row and not on a metronome, the realised share within two points of
+the block's own at every fullness from 0.6 to 0.97, a show window filled even
+where the row's gaps fell (and a walkway still refused), a full block with no
+gaps at all, the same seed filling the same row, and a row of pure walkway
+staying empty while a one-seat row keeps its fan. `test/showMotion.test.js`
+pins the clock: the rise and sit,
+the forward step, the integer crests (both ends in step), the still-seated row
+between acts, the arms going up and down, the banner rising from its bottom edge
+and being gone before the arms drop, the pose step, and the playing clock (whole
+steps, six a second, four of them, looping). `test/shoutMarks.test.js`
+pins where a shouting row's corner marks sit and how they boil, and
+`e2e/crowd.spec.js` reads the rendered marks back over three seconds to check
+they stay put — and a music row's cards over a second and a half, to check the
+drum beats between its two frames while its card holds still and the horn's
+bell nods through more than one pose. `e2e/harness/crowd.html`
+is the eye: the real `Ballpark` with the camera parked on one cluster,
+`?crowdHold=all&crowdHoldT=2.5` pinning every show mid-burst so a screenshot
+catches it deterministically, `?back=1` standing behind the row so the marks'
+lean can be read from the far side, `?view=stadium|stands|board|corner|behind`
+for the stadium itself, and `window.__crowdLayouts` reporting where each prop was
+laid out.
 
 ## Pose sheet
 

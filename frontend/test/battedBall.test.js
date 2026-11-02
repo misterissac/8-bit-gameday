@@ -8,6 +8,7 @@ import {
   shouldFielderCamRestore,
   getBaseTargetLocation,
   resolveFielderCamTarget,
+  resolveFielderCamThrowTarget,
   CONTACT_COMPLETE_ARM,
   CONTACT_COMPLETE_FINISH,
 } from '../src/util/battedBall.js'
@@ -291,4 +292,76 @@ test('resolveFielderCamTarget starts at catch location and smoothly eases to the
   assert.ok(Math.abs(walkTarget.x - bag.x) < 1e-4)
   assert.ok(Math.abs(walkTarget.y - bag.y) < 1e-4)
   assert.ok(Math.abs(walkTarget.z - bag.z) < 1e-4)
+})
+
+// ── Fielder-cam throw look-at targeting (assist chains) ───────────────────
+
+const THROW_CHAIN = [
+  // Lands at t = 3.0
+  { start: 2.0, duration: 1.0, toPos: { x: 27, y: 0, z: -27 } },
+  // Lands at t = 4.75
+  { start: 3.75, duration: 1.0, toPos: { x: 27, y: 0, z: 27 } },
+]
+
+const THROW_ARGS = {
+  ballCatchTime: 1.0,
+  throws: THROW_CHAIN,
+  catchLocation: { x: 5, y: 0.1, z: -12 },
+  transitionDuration: 0.3,
+}
+
+test('resolveFielderCamThrowTarget returns null before the catch or with no throw in the plan', () => {
+  // The ball is still in flight to the fielder: he watches the ball.
+  assert.equal(resolveFielderCamThrowTarget({ ...THROW_ARGS, t: 0.9 }), null)
+  // No assist chain at all.
+  assert.equal(resolveFielderCamThrowTarget({ ...THROW_ARGS, t: 2.0, throws: [] }), null)
+  assert.equal(resolveFielderCamThrowTarget({ ...THROW_ARGS, t: 2.0, throws: null }), null)
+  // Missing clock.
+  assert.equal(resolveFielderCamThrowTarget({ ...THROW_ARGS, t: null }), null)
+  assert.equal(resolveFielderCamThrowTarget({ ...THROW_ARGS, t: 2.0, ballCatchTime: null }), null)
+})
+
+test('once he has the ball the look turns off his own glove onto the fielder he throws to', () => {
+  // At the catch itself the look is still on the glove (where the ball is)…
+  const atCatch = resolveFielderCamThrowTarget({ ...THROW_ARGS, t: 1.0 })
+  assert.ok(Math.abs(atCatch.x - THROW_ARGS.catchLocation.x) < 1e-4)
+  assert.ok(Math.abs(atCatch.z - THROW_ARGS.catchLocation.z) < 1e-4)
+
+  // …and a beat later it has turned onto the receiving fielder — at glove
+  // height on his body, NOT down at the ball (which would stare at the ground).
+  const turned = resolveFielderCamThrowTarget({ ...THROW_ARGS, t: 1.5 })
+  assert.ok(Math.abs(turned.x - THROW_CHAIN[0].toPos.x) < 1e-4)
+  assert.ok(Math.abs(turned.y - 1.5) < 1e-4)
+  assert.ok(Math.abs(turned.z - THROW_CHAIN[0].toPos.z) < 1e-4)
+
+  // The turn is a smoothstep, not a snap: mid-window the look is still easing
+  // off the glove toward the target.
+  const midTurn = resolveFielderCamThrowTarget({ ...THROW_ARGS, t: 1.15 })
+  assert.ok(midTurn.x > THROW_ARGS.catchLocation.x && midTurn.x < THROW_CHAIN[0].toPos.x)
+  assert.ok(midTurn.z < THROW_ARGS.catchLocation.z && midTurn.z > THROW_CHAIN[0].toPos.z)
+
+  // The hold of the ball and the wind-up play out under the same look: during
+  // the throw's flight the fielder still watches the man he threw to.
+  const inFlight = resolveFielderCamThrowTarget({ ...THROW_ARGS, t: 2.5 })
+  assert.ok(Math.abs(inFlight.x - THROW_CHAIN[0].toPos.x) < 1e-4)
+  assert.ok(Math.abs(inFlight.z - THROW_CHAIN[0].toPos.z) < 1e-4)
+})
+
+test('the chain re-aims at each next receiver, and the final one holds to the end', () => {
+  // After the first throw lands (t = 3.0) the look re-eases from the first
+  // receiver to the second.
+  const reAim = resolveFielderCamThrowTarget({ ...THROW_ARGS, t: 3.1 })
+  assert.ok(reAim.z > THROW_CHAIN[0].toPos.z && reAim.z < THROW_CHAIN[1].toPos.z)
+
+  // Once turned, it holds the second receiver (glove height, not the ground).
+  const second = resolveFielderCamThrowTarget({ ...THROW_ARGS, t: 3.5 })
+  assert.ok(Math.abs(second.x - THROW_CHAIN[1].toPos.x) < 1e-4)
+  assert.ok(Math.abs(second.y - 1.5) < 1e-4)
+  assert.ok(Math.abs(second.z - THROW_CHAIN[1].toPos.z) < 1e-4)
+
+  // …and still holds it after every throw has landed (the last receiver keeps
+  // the ball, and the fielder keeps watching him).
+  const held = resolveFielderCamThrowTarget({ ...THROW_ARGS, t: 8.0 })
+  assert.ok(Math.abs(held.x - THROW_CHAIN[1].toPos.x) < 1e-4)
+  assert.ok(Math.abs(held.z - THROW_CHAIN[1].toPos.z) < 1e-4)
 })

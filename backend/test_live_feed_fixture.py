@@ -1115,6 +1115,136 @@ class LiveFeedFixtureTests(unittest.TestCase):
         self.assertEqual(status_snap["gameState"], "Game Over")
         self.assertFalse(status_snap["isLive"])
 
+    def test_walk_off_flag_marks_only_the_game_ending_play(self):
+        # A finished game's feed carries its FINAL status on EVERY play, so the
+        # walk-off flag must come from the game-ending lead change (home takes
+        # the lead in the bottom of the 9th or later) — replaying an earlier
+        # hit must never brand it a walk-off.
+        feed = copy.deepcopy(self.feed)
+        feed["gameData"]["status"] = {
+            "abstractGameState": "Final",
+            "codedGameState": "O",
+            "detailedState": "Final",
+            "statusCode": "F",
+        }
+        mid_game_single = {
+            "about": {"atBatIndex": 40, "inning": 5, "halfInning": "bottom", "isComplete": True},
+            "matchup": {
+                "pitcher": {"id": 200, "fullName": "Fixture Pitcher"},
+                "batter": {"id": 101, "fullName": "Fixture Batter"},
+            },
+            "result": {"type": "atBat", "event": "Single", "eventType": "single"},
+            "runners": [
+                {
+                    "details": {"runner": {"id": 101}, "isBatter": True},
+                    "movement": {"start": None, "end": "1B", "isOut": False},
+                },
+            ],
+            "playEvents": [{"isPitch": True, "pitchNumber": 1}],
+        }
+        walk_off_single = {
+            "about": {"atBatIndex": 88, "inning": 9, "halfInning": "bottom", "isComplete": True},
+            "matchup": {
+                "pitcher": {"id": 200, "fullName": "Fixture Pitcher"},
+                "batter": {"id": 101, "fullName": "Fixture Batter"},
+            },
+            "result": {"type": "atBat", "event": "Single", "eventType": "single"},
+            "runners": [
+                {
+                    "details": {"runner": {"id": 102}},
+                    "movement": {"start": "2B", "end": "score", "isOut": False, "isScoringEvent": True},
+                },
+            ],
+            "playEvents": [{"isPitch": True, "pitchNumber": 1}],
+        }
+        feed["liveData"]["plays"]["allPlays"] = [mid_game_single, walk_off_single]
+
+        with mock.patch.object(main, "_fetch_savant_rows", return_value=[]):
+            early = main._game_state_snapshot(
+                feed, mid_game_single, mid_game_single["playEvents"][0], pitch_index=0,
+            )
+            walk_off = main._game_state_snapshot(
+                feed, walk_off_single, walk_off_single["playEvents"][0], pitch_index=0,
+            )
+
+        self.assertFalse(early["isWalkOff"])
+        self.assertTrue(walk_off["isWalkOff"])
+
+        # The flag is a property of the play, not of the feed's status: a live
+        # walk-off is already flagged before the feed flips to Game Over.
+        feed["gameData"]["status"] = {
+            "abstractGameState": "Live",
+            "codedGameState": "I",
+            "detailedState": "In Progress",
+            "statusCode": "I",
+        }
+        with mock.patch.object(main, "_fetch_savant_rows", return_value=[]):
+            live_walk_off = main._game_state_snapshot(
+                feed, walk_off_single, walk_off_single["playEvents"][0], pitch_index=0,
+            )
+        self.assertTrue(live_walk_off["isWalkOff"])
+
+    def test_walk_off_flag_requires_a_bottom_of_the_ninth_or_later_lead_change(self):
+        feed = copy.deepcopy(self.feed)
+        feed["gameData"]["status"] = {
+            "abstractGameState": "Final",
+            "codedGameState": "O",
+            "detailedState": "Final",
+            "statusCode": "F",
+        }
+
+        def make_play(at_bat_index, inning, half, runner_start, runner_end):
+            return {
+                "about": {
+                    "atBatIndex": at_bat_index, "inning": inning,
+                    "halfInning": half, "isComplete": True,
+                },
+                "matchup": {
+                    "pitcher": {"id": 200, "fullName": "Fixture Pitcher"},
+                    "batter": {"id": 101, "fullName": "Fixture Batter"},
+                },
+                "result": {"type": "atBat", "event": "Single", "eventType": "single"},
+                "runners": [
+                    {
+                        "details": {"runner": {"id": 102}},
+                        "movement": {
+                            "start": runner_start, "end": runner_end,
+                            "isOut": False, "isScoringEvent": runner_end == "score",
+                        },
+                    },
+                ],
+                "playEvents": [{"isPitch": True, "pitchNumber": 1}],
+            }
+
+        def snapshot_of(plays):
+            feed["liveData"]["plays"]["allPlays"] = plays
+            with mock.patch.object(main, "_fetch_savant_rows", return_value=[]):
+                return main._game_state_snapshot(
+                    feed, plays[-1], plays[-1]["playEvents"][0], pitch_index=0,
+                )
+
+        # A go-ahead run in the BOTTOM OF THE 8TH of a called game is not a
+        # walk-off: the game did not end on the run.
+        eighth_inning_winner = snapshot_of([
+            make_play(60, 8, "bottom", "2B", "score"),
+        ])
+        self.assertFalse(eighth_inning_winner["isWalkOff"])
+
+        # The game's final play in the TOP of the 9th (away adds a run) is not
+        # a walk-off either.
+        ninth_inning_insurance = snapshot_of([
+            make_play(70, 9, "top", "2B", "score"),
+        ])
+        self.assertFalse(ninth_inning_insurance["isWalkOff"])
+
+        # A bottom-of-the-9th play that only TIES the game ("Final: Tied"
+        # suspension) is not a walk-off: no lead change.
+        ninth_inning_tying_run = snapshot_of([
+            make_play(71, 5, "top", None, "score"),
+            make_play(72, 9, "bottom", "2B", "score"),
+        ])
+        self.assertFalse(ninth_inning_tying_run["isWalkOff"])
+
     def test_extra_innings_postseason_has_no_ghost_runner(self):
         # Postseason games (game.type != "R") start extra innings with the
         # bases empty — no automatic runner.
@@ -2209,3 +2339,173 @@ class SavantRowsCacheTests(unittest.TestCase):
         self.assertIn("9005", main._savant_rows_cache)
 
 
+
+
+class BigScreenLinescoreTests(unittest.TestCase):
+    """The park's big screen (util/billboard.js) linescore as of one pitch.
+
+    The board's per-inning runs and H/E/LOB totals are counted from the play
+    log through the pitch — the state the jumbotron carried at that moment,
+    not the live linescore's later numbers.
+    """
+
+    def setUp(self):
+        self.feed = _load_fixture()
+
+    @staticmethod
+    def _play(inning, half, event=None, runners=(), outs=None, is_complete=True):
+        return {
+            "about": {"inning": inning, "halfInning": half, "isComplete": is_complete},
+            "matchup": {},
+            "result": {"event": event} if event else {},
+            "runners": [
+                {
+                    "details": {"runner": {"id": runner_id}},
+                    "movement": {
+                        "start": start,
+                        "end": end,
+                        "isOut": is_out,
+                        "outNumber": 1 if is_out else None,
+                    },
+                    "credits": [],
+                }
+                for (runner_id, start, end, is_out) in runners
+            ],
+            "count": {"outs": outs} if outs is not None else {},
+            "playEvents": [],
+        }
+
+    def test_linescore_counts_per_inning_runs_hits_and_totals(self):
+        plays = [
+            self._play(1, "top", "Single", runners=[(300, None, "1B", False)]),
+            self._play(1, "top", "Double", runners=[(300, "1B", "score", False),
+                                                    (101, None, "2B", False)]),
+            self._play(1, "top", "Sac Fly", runners=[(400, None, "1B", True)], outs=3),
+            self._play(1, "bottom", "Field Error", runners=[(500, None, "1B", False)]),
+            self._play(1, "bottom", "Strikeout", runners=[(501, None, "1B", True)], outs=3),
+        ]
+        line = main._linescore_through_plays(plays)
+
+        self.assertEqual(line["innings"], {1: {"away": 1, "home": 0}})
+        # The fielding error belongs to the team in the field: home batted
+        # around on it in the bottom half, so the away line wears it (the E
+        # column counts a team's own errors), and each side's half stranded
+        # one runner.
+        self.assertEqual(line["away"], {"runs": 1, "hits": 2, "errors": 1, "leftOnBase": 1})
+        self.assertEqual(line["home"], {"runs": 0, "hits": 0, "errors": 0, "leftOnBase": 1})
+
+    def test_a_half_in_progress_strands_nobody_and_shows_its_runs_so_far(self):
+        plays = [
+            self._play(3, "top", "Single", runners=[(300, None, "1B", False)]),
+            self._play(3, "top", is_complete=False),  # the at-bat being animated
+        ]
+        line = main._linescore_through_plays(plays)
+
+        self.assertEqual(line["innings"], {3: {"away": 0, "home": None}})
+        self.assertEqual(line["away"]["leftOnBase"], 0)
+
+    def test_the_next_half_seals_the_one_before_it(self):
+        plays = [
+            self._play(2, "top", "Single", runners=[(300, None, "1B", False)]),
+            self._play(2, "bottom", "Walk", runners=[(101, None, "1B", False)]),
+        ]
+        line = main._linescore_through_plays(plays)
+
+        # The top half's third out never shows in this prefix (the feed has
+        # moved on), but its runner is stranded all the same; home is still
+        # batting, so its runner is not left on base yet.
+        self.assertEqual(line["away"]["leftOnBase"], 1)
+        self.assertEqual(line["home"]["leftOnBase"], 0)
+
+    def test_a_double_play_that_empties_the_bases_strands_nobody(self):
+        plays = [
+            self._play(4, "top", "Single", runners=[(300, None, "1B", False)]),
+            self._play(4, "top", "Double Play",
+                       runners=[(300, "1B", "2B", True), (101, None, "1B", True)], outs=2),
+            self._play(4, "top", "Flyout", runners=[(400, None, "1B", True)], outs=3),
+        ]
+        line = main._linescore_through_plays(plays)
+
+        # The runners on base were put out, not stranded: left-on-base is the
+        # end-of-half occupancy, so the board reads zero here.
+        self.assertEqual(line["away"]["leftOnBase"], 0)
+
+    def test_the_ghost_runner_strands_like_any_other(self):
+        plays = [
+            self._play(10, "top", "Flyout", runners=[(101, None, "1B", True)], outs=1),
+            self._play(10, "top", "Strikeout", runners=[(102, None, "1B", True)], outs=3),
+        ]
+
+        # Regular-season extras start with the automatic runner on second; he
+        # is a real runner where left-on-base is concerned. Postseason extras
+        # start empty.
+        self.assertEqual(
+            main._linescore_through_plays(plays, game_type="R")["away"]["leftOnBase"], 1)
+        self.assertEqual(
+            main._linescore_through_plays(plays, game_type="P")["away"]["leftOnBase"], 0)
+
+    def test_big_screen_linescore_rides_the_snapshot_as_of_the_pitch(self):
+        plays = self.feed["liveData"]["plays"]["allPlays"]
+        target_play = plays[1]  # AB42 single
+        with mock.patch.object(main, "_fetch_savant_rows", return_value=[]):
+            snapshot = main._game_state_snapshot(
+                self.feed, target_play,
+                target_play["playEvents"][-1] if target_play["playEvents"] else {},
+                pitch_index=None,
+            )
+
+        line = snapshot["linescore"]
+        self.assertEqual(line["innings"]["away"], [None, None, None, None, 0])
+        self.assertEqual(line["innings"]["home"], [None, None, None, None, None])
+        self.assertEqual(line["away"], {"runs": 0, "hits": 1, "errors": 0, "leftOnBase": 0})
+        self.assertEqual(line["home"], {"runs": 0, "hits": 0, "errors": 0, "leftOnBase": 0})
+        # The hits are counted through the pitch; the live linescore is
+        # already three runs and seven hits further along.
+        self.assertEqual(snapshot["score"]["away"]["hits"], 7)
+        self.assertEqual(snapshot["teams"]["away"]["teamName"], "Away Fixtures")
+        self.assertEqual(snapshot["nextBatters"], [])
+        self.assertIsNone(snapshot["batterNumber"])
+        self.assertEqual(snapshot["batterFirst"], "Fixture")
+        self.assertEqual(snapshot["batterLast"], "Batter")
+
+    def test_big_screen_batter_card_follows_the_at_bat_side(self):
+        feed = copy.deepcopy(self.feed)
+        players = feed["gameData"]["players"]
+        players["ID101"] = {
+            "firstName": "Fixture", "lastName": "Batter",
+            "primaryNumber": "24", "firstLastName": "Fixture Batter",
+        }
+        players["ID300"] = {"firstName": "Previous", "lastName": "Batter",
+                            "firstLastName": "Previous Batter"}
+        players["ID400"] = {"firstName": "Next", "lastName": "Up",
+                            "firstLastName": "Next Up"}
+        players["ID401"] = {"firstName": "On", "lastName": "Deck",
+                            "firstLastName": "On Deck"}
+        feed["liveData"]["boxscore"]["teams"]["away"]["battingOrder"] = [300, 101, 400, 401]
+        feed["liveData"]["boxscore"]["teams"]["away"]["players"]["ID101"] = {
+            "person": {"id": 101, "fullName": "Fixture Batter"},
+            "seasonStats": {"batting": {
+                "avg": "0.289", "obp": "0.350", "slg": "0.502", "ops": "0.852",
+                "homeRuns": "12", "rbi": "40",
+            }},
+        }
+
+        plays = feed["liveData"]["plays"]["allPlays"]
+        target_play = plays[1]  # AB42, the away side at bat
+        with mock.patch.object(main, "_fetch_savant_rows", return_value=[]):
+            snapshot = main._game_state_snapshot(
+                feed, target_play,
+                target_play["playEvents"][-1] if target_play["playEvents"] else {},
+                pitch_index=None,
+            )
+
+        self.assertEqual(snapshot["batterNumber"], "24")
+        self.assertEqual(snapshot["batterFirst"], "Fixture")
+        self.assertEqual(snapshot["batterLast"], "Batter")
+        self.assertEqual(snapshot["batterId"], 101)
+        self.assertEqual(snapshot["batterSeason"]["ops"], "0.852")
+        # The next three due up come from the AT-BAT team's order and wrap
+        # past the ninth hitter, skipping the man at the plate.
+        self.assertEqual(snapshot["nextBatters"],
+                         ["NEXT UP", "ON DECK", "PREVIOUS BATTER"])
+        self.assertEqual(snapshot["teams"]["away"]["teamName"], "Away Fixtures")

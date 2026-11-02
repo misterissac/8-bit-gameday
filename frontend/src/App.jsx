@@ -2805,11 +2805,15 @@ const playSequence = useMemo(() => {
       return;
     }
     if (text === 'SINGLE' || text === 'DOUBLE' || text === 'TRIPLE' || text === 'HOME RUN') {
+      // WALK-OFF belongs only to the game-ending play itself. A finished
+      // game's feed carries its FINAL status on EVERY play, so terminality
+      // can't decide this — replaying an earlier hit must read SINGLE, not
+      // WALK-OFF SINGLE. The backend marks the actual game-ending play (home
+      // takes the lead in the bottom of the 9th or later) via
+      // game_state.isWalkOff.
       const isWalkOff = (
-        isGameTerminal(pitchData?.game_state?.gameState) ||
-        isGameTerminal(currentPitchScoreSnapshotRef.current?.gameState) ||
-        isGameTerminal(pitchData?.game_state?.detailedState) ||
-        isGameTerminal(currentPitchScoreSnapshotRef.current?.detailedState)
+        pitchData?.game_state?.isWalkOff === true ||
+        currentPitchScoreSnapshotRef.current?.isWalkOff === true
       );
       showOutcome(isWalkOff ? `WALK-OFF ${text}` : text);
       return;
@@ -3087,6 +3091,14 @@ const playSequence = useMemo(() => {
     !isHitFieldingReady(battedBallData)
   );
 
+  // A finished game has no live feed to return to, so the replay row's
+  // "Back to Live" button must not render for it — finished-game replay is
+  // navigated through the game log / at-bat panel instead. The feed-derived
+  // checks cover a game that ends while a replay is already open.
+  const gameEnded = gameTerminal
+    || isGameTerminal(pitchData?.game_state?.gameState)
+    || isGameTerminal(currentPitchScoreSnapshotRef.current?.gameState);
+
   // Shared base style for the lightweight top-left status lines (loading /
   // waiting-for-pitch-data / error). No panel box, just readable text over the
   // field with a dark shadow so it stays legible against the grass and sky.
@@ -3352,13 +3364,15 @@ const playSequence = useMemo(() => {
             fontSize: 13, letterSpacing: '0.02em', boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
             whiteSpace: 'nowrap',
           }}>↺ REPLAY</div>
-          <button
-            onClick={backToLive}
-            title="Resume the live feed"
-            style={{ padding: '6px 10px', background: '#b33a3a', color: '#fff',
-              border: '1px solid rgba(255,180,180,0.7)', borderRadius: 6,
-              fontFamily: 'monospace', fontWeight: 'bold', fontSize: 11, cursor: 'pointer' }}
-          >▶ Back to Live</button>
+          {!gameEnded && (
+            <button
+              onClick={backToLive}
+              title="Resume the live feed"
+              style={{ padding: '6px 10px', background: '#b33a3a', color: '#fff',
+                border: '1px solid rgba(255,180,180,0.7)', borderRadius: 6,
+                fontFamily: 'monospace', fontWeight: 'bold', fontSize: 11, cursor: 'pointer' }}
+            >▶ Back to Live</button>
+          )}
           {newLivePlayAvailable && (
             <span role="status" aria-live="polite" style={{ padding: '5px 8px',
               background: 'rgba(255,209,102,0.14)', color: '#ffd166',

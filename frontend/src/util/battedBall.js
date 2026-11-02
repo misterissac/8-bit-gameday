@@ -169,3 +169,70 @@ export function resolveFielderCamTarget({
   }
 }
 
+// The height a throw is aimed at — glove/hand height, the same height the
+// throw arcs fly between (see playPlan's throws).
+const THROW_AIM_HEIGHT = 1.5
+
+// Resolve the look-at target for FielderCam while the fielder HAS the ball and
+// is turning toward / throwing to another fielder (the assist chain). The
+// fielder's body turns to face his target, so the camera — which sits on the
+// fielding fielder's own head — must look where he looks: at the receiving
+// fielder (at glove height), not straight down at the ball in his own glove
+// (which stares at the ground). Over a brief window after the catch the aim
+// eases off the glove toward the target; each later throw of the chain
+// re-eases from the previous receiver to the next, and the final receiver
+// holds through the end of the play.
+export function resolveFielderCamThrowTarget({
+  t,
+  ballCatchTime,
+  throws,
+  catchLocation,
+  transitionDuration = 0.3,
+}) {
+  if (!Array.isArray(throws) || throws.length === 0) return null
+  if (t == null || ballCatchTime == null || t < ballCatchTime) return null
+
+  // The throw he is turning toward / making: the first one not yet landed.
+  // Once the whole chain has landed, the play's final receiver holds.
+  let index = throws.findIndex((th) => t < th.start + th.duration)
+  if (index < 0) index = throws.length - 1
+  const target = throws[index]
+  const aim = {
+    x: target.toPos.x,
+    y: THROW_AIM_HEIGHT,
+    z: target.toPos.z,
+  }
+
+  // Where the look comes from: the glove at the catch for the first turn, the
+  // previous receiver for every throw after it.
+  const from = index === 0
+    ? (catchLocation
+      ? {
+        x: catchLocation.x,
+        y: Math.max(catchLocation.y ?? 0, 0.1),
+        z: catchLocation.z,
+      }
+      : { ...aim })
+    : {
+      x: throws[index - 1].toPos.x,
+      y: THROW_AIM_HEIGHT,
+      z: throws[index - 1].toPos.z,
+    }
+
+  // The turn's own window: after the catch for the first throw (the catch hold
+  // and the wind-up play out under it), after the previous landing for every
+  // throw after it.
+  const turnStart = index === 0
+    ? ballCatchTime
+    : throws[index - 1].start + throws[index - 1].duration
+  const elapsed = Math.max(t - turnStart, 0)
+  const p = transitionDuration > 0 ? Math.min(elapsed / transitionDuration, 1) : 1
+  const ease = p * p * (3 - 2 * p) // smoothstep
+
+  return {
+    x: from.x + (aim.x - from.x) * ease,
+    y: from.y + (aim.y - from.y) * ease,
+    z: from.z + (aim.z - from.z) * ease,
+  }
+}
+

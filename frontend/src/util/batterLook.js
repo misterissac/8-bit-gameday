@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { measurePlayerRig, measureWaistband, waistCut } from './playerRig.js'
 
 // The batter's own kit, read off the model and put right — as distinct from the rig
 // (playerRig.js), which poses the body. Five things:
@@ -62,7 +63,8 @@ import * as THREE from 'three'
 //     stands proud of the collar: z 0.1003 at y 1.5586. So an opening read off the
 //     body's front near the midline finds the neck above the collar and the jaw above
 //     that, which is how a line drawn to 1.588 ended up on the face.
-//   the jersey's front, from the belt (y 1.055) up to the collar: a line
+//   the jersey's front, from the belt's own fold (y 1.0583 on this uniform, read
+//     off the model rather than kept) up to the collar: a line
 //     of vertices down the chest's centre, x 0.000, whose front runs z 0.101 at the
 //     belly (y 1.30), in to 0.076 at the sternum (y 1.46) and back out to 0.100 at the
 //     chest (y 1.56). The cloth is one flat colour in the atlas, read off it there:
@@ -350,8 +352,24 @@ const LINE_HALF_WIDTH = 0.0015 // 0.003 rig across: a line drawn on the cloth, n
 // the cloth's own tone — that keeps the line reading as a seam in the fabric rather than
 // a strip laid on it.
 const LINE_LIFT = 0.005
-const LINE_FROM_Y = 1.055 // the belt's own top edge (the jersey hem meets the belt band at y 1.055):
-// ...the opening extends from collar all the way down to reach the belt
+// Where the opening *begins* — its bottom, and so the lowest button's own leave — is not a
+// height on this model but the uniform's belt: the jersey's opening runs down the chest to
+// the hem's fold, and the fold is where the belt is. So the bottom of the line is `waistCut`
+// of the model's own belt — the belt's top edge lifted into the tuck above it by a share of
+// the belt's own height (see playerRig.js) — which is the same height the driver breaks the
+// body's surface at to take the twist.
+//
+// That agreement is the reason to read it rather than keep it: the jersey's opening and the
+// seam the two blocks turn against are one line, so a turn of them cannot open the placket
+// across the belt. And it holds on a body whose belt cannot be read off the texture at all,
+// because `measureWaistband` answers with the model's own proportions there and the driver
+// takes its cut from the same band — one rule, whether the belt was seen or inferred. (The
+// height the opening was drawn at by eye on this uniform, 1.055, is within a millimetre of
+// where that rule puts it: 1.0583.)
+//
+// Read per body, in the model's *own* units — the frame this pass draws the geometry in — so
+// that the two actors, whose rigs are the same body in frames that differ only by a scale,
+// hang the opening off the same belt (the suite compares their reports to the digit).
 const LINE_TO_Y = 1.512 // ...terminating cleanly below the collar notch (1.5158) so it stays on fabric
 const LINE_BANDS = 48 // how many rings of the line follow the surface
 // The buttons: hollow rings, on the cloth beside the line, from the collar down to the
@@ -387,6 +405,15 @@ const LINE_GREY = 0.42
 const BUTTON_GREY = LINE_GREY
 const JERSEY_FALLBACK = [0.169, 0.424, 0.69] // the tuning's own jersey blue
 const SHOE_FALLBACK = [0.847, 0.369, 0.208] // the shoe's own texel, measured above
+
+// The two pieces of the look pass that are meshes of their own rather than welded into
+// the body's geometry (see `skinnedDetail`): the brows above the eyes, and the laces
+// across the shoe. Everything else the pass adds is part of the body's own surface and
+// is drawn with whichever kit the body ends up wearing; these two carry the tone they
+// were read out of the body and keep their own white materials, so a caller that
+// dresses the body afterwards must leave them alone (see util/playerKit.js's
+// `dressBody`, which takes them as `keep`).
+export const LOOK_DETAIL_MESHES = ['BrowDetail', 'LaceDetail']
 
 // The shoes. Everything below is read off the shoe's own shell: the edge of its sole
 // follows its rim on the ground, and the laces their own stations across the instep.
@@ -739,14 +766,15 @@ function nearestVertex(position, x, y, z) {
 }
 
 // The jersey's own colour: the texel at the front-most vertex of the chest, which is
-// the cloth the opening is drawn on.
-function jerseyColourOf(body) {
+// the cloth the opening is drawn on. Read between the opening's own ends, so the cloth it
+// samples is the cloth the opening is drawn on rather than the trousers below it.
+function jerseyColourOf(body, fromY) {
   const position = body.geometry.getAttribute('position')
   let best = -1
   for (let vertex = 0; vertex < position.count; vertex += 1) {
     if (Math.abs(position.getX(vertex)) > 0.05) continue
     const y = position.getY(vertex)
-    if (y < LINE_FROM_Y || y > LINE_TO_Y) continue
+    if (y < fromY || y > LINE_TO_Y) continue
     if (best < 0 || position.getZ(vertex) > position.getZ(best)) best = vertex
   }
   return texelAt(body, body.geometry, best) ?? JERSEY_FALLBACK
@@ -809,7 +837,7 @@ const CHEST_WINDOW = 0.045 // how far either way of a station a covering triangl
 // surface drawn between two vertices bulges forward of both of them: measured at the
 // belly, the drawn facet runs 0.003 rig forward of the front-most vertex within the
 // station's own window, which is more than the line's whole stand-off.
-function chestSurfaceOf(body) {
+function chestSurfaceOf(body, fromY) {
   const position = body.geometry.getAttribute('position')
   const index = body.geometry.getIndex()
   const skinIndex = body.geometry.getAttribute('skinIndex')
@@ -836,7 +864,7 @@ function chestSurfaceOf(body) {
     const [a, b, c] = [array[i], array[i + 1], array[i + 2]]
     if (!isTorso(a) || !isTorso(b) || !isTorso(c)) continue
     const ys = [position.getY(a), position.getY(b), position.getY(c)]
-    if (Math.min(...ys) > CHEST_TOP_MAX_Y || Math.max(...ys) < LINE_FROM_Y - 0.03) continue
+    if (Math.min(...ys) > CHEST_TOP_MAX_Y || Math.max(...ys) < fromY - 0.03) continue
     // ...and a triangle has to *reach out to the front* to be the cloth's front. The
     // shoulders are the torso's own bone and their slope passes over the top of the cloth
     // at the height the opening's stations are on: measured, covering a station at y 1.53
@@ -1210,9 +1238,9 @@ function weldDetail(body, { positions, normals, uvs, colors, bones, shares, indi
 // the chest and a column of hollow rings on the cloth beside it — part of the chest's own
 // surface, drawn in the cloth's own material and the cloth's own tone, so it is a seam in
 // the jersey rather than a grey shape laid on it.
-function addJerseyFront(body, jersey) {
+function addJerseyFront(body, jersey, fromY, belt) {
   const position = body.geometry.getAttribute('position')
-  const chest = chestSurfaceOf(body)
+  const chest = chestSurfaceOf(body, fromY)
   const vertices = []
   const colors = []
   const normals = []
@@ -1255,7 +1283,7 @@ function addJerseyFront(body, jersey) {
   // The opening, from the belt to the collar, hugging the chest's own front.
   const line = []
   for (let band = 0; band <= LINE_BANDS; band += 1) {
-    const y = LINE_FROM_Y + (LINE_TO_Y - LINE_FROM_Y) * (band / LINE_BANDS)
+    const y = fromY + (LINE_TO_Y - fromY) * (band / LINE_BANDS)
     line.push([
       add(-LINE_HALF_WIDTH, y, 0, seam),
       add(LINE_HALF_WIDTH, y, 0, seam),
@@ -1271,7 +1299,7 @@ function addJerseyFront(body, jersey) {
   // rather than a disc, with the cloth showing through the hole — a buttonhole, with the
   // button in it.
   const top = LINE_TO_Y - BUTTON_MARGIN_Y
-  const bottom = LINE_FROM_Y + BUTTON_MARGIN_Y
+  const bottom = fromY + BUTTON_MARGIN_Y
   for (let step = 0; step < BUTTON_COUNT; step += 1) {
     const share = BUTTON_COUNT === 1 ? 0.5 : step / (BUTTON_COUNT - 1)
     const y = top - share * (top - bottom)
@@ -1308,7 +1336,11 @@ function addJerseyFront(body, jersey) {
       name: 'JerseyFront',
     }),
     surfaceTriangles: chest.triangles,
-    fromY: LINE_FROM_Y,
+    // The bottom of the opening — the belt's own fold, in the model's own units — and the
+    // belt it was read against, so the suite can check the opening against the belt rather
+    // than against a height.
+    fromY,
+    belt,
     toY: LINE_TO_Y,
     buttonX: BUTTON_X,
     buttons: BUTTON_COUNT,
@@ -1916,7 +1948,26 @@ export function applyBatterLook(model, { sign = 1, headgear = 'helmet' } = {}) {
   // is the pass's own report, carried on the model it was made for.
   const done = model.userData.batterLook ?? {}
   report.brows = done.brows ?? addBrows(body, scaled, faceToneOf(body, scaled), browTopMaxY)
-  report.jersey = done.jersey ?? addJerseyFront(body, jerseyColourOf(body))
+  // The jersey's opening hangs off the uniform's own belt, so the belt is read first — in
+  // the model's *own* units, which is the frame this pass draws in: `measurePlayerRig` with
+  // no sprite nominal height, so a rig unit is a model unit and the band comes back in the
+  // frame the geometry is in. Read here rather than handed in by the caller, so that the
+  // two actors — whose rigs are the same body in frames that differ only by a scale — hang
+  // the opening off the same belt.
+  //
+  // Only when the opening is about to be drawn: on a second pass over the same body the
+  // opening is already welded into it, and its own vertices would join the ring the belt is
+  // read off (the pass is idempotent, see the guard above).
+  if (done.jersey) {
+    report.jersey = done.jersey
+  } else {
+    const band = measureWaistband(model, measurePlayerRig(model))
+    const fromY = waistCut(band)
+    // The belt the opening was hung off, as the suite reads it: where it is and whether it
+    // came off the texture or from the model's own proportions.
+    const belt = { bottom: band.bottom, top: band.top, source: band.source }
+    report.jersey = addJerseyFront(body, jerseyColourOf(body, fromY), fromY, belt)
+  }
   if (done.shoes) {
     report.shoes = done.shoes
   } else {

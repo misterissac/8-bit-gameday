@@ -401,8 +401,11 @@ test('the keys are authored for the reference height they claim', () => {
   // the authored shape is that height's own — and the reference is *derived* from the
   // release key's lean (see the constants), so the two cannot drift: the height whose
   // authored slot lean is the key's lean.
+  // ...and the key's own lean is the *deepened* release fold (the reference's PS-12:
+  // the trunk bent further forward at the end of the release than the old 0.57), which
+  // is what the derivation above is pinned to.
   assert.ok(
-    Math.abs(releaseLean(AUTHORED_RELEASE_HEIGHT) - 0.57) < 1e-9,
+    Math.abs(releaseLean(AUTHORED_RELEASE_HEIGHT) - 0.92) < 1e-9,
     `the reference height's own lean is ${releaseLean(AUTHORED_RELEASE_HEIGHT)}`,
   )
   // What the *delivery* stands at there is the solved posture's fold, not the
@@ -1138,7 +1141,10 @@ test('the trunk turns on the axis it is folded along', () => {
       `at ${t}s the trunk leans ${sideways.toFixed(1)}° off the pitch's line, toward the glove hand`,
     )
     // ...and it is the fold the keys asked for, not a corner of one.
-    const tilt = Math.acos(Math.max(-1, Math.min(1, up[1] / length))) * DEG
+    // Signed: the forward fold is toward the plate (the rig's -z), and the trunk now
+    // folds *back* as the back leg fires (see the drive keys), which an unsigned angle
+    // cannot read — ``acos`` reports a -3° back lean as +3°.
+    const tilt = Math.atan2(-up[2], up[1]) * DEG
     assert.ok(
       Math.abs(tilt - pose.hip.fold * DEG) < 2,
       `at ${t}s the trunk stands ${tilt.toFixed(1)}° off upright, not the ${(pose.hip.fold * DEG).toFixed(1)}° it was folded by`,
@@ -1154,25 +1160,33 @@ test('the trunk turns on the axis it is folded along', () => {
     Math.abs(thrown.hip.fold) > 0.2,
     `at the release the trunk is folded ${(thrown.hip.fold * DEG).toFixed(0)}° forward: nothing to turn on`,
   )
-  // ...and the fold is *spent* by the frame the trail foot lands in, which is what
-  // leaves both legs at their own length there (see the finish below): the body stands
-  // up out of the throw over its own two feet rather than landing sitting in the fold
-  // and standing up out of it afterwards.
+  // ...and the fold is still *deep* by the frame the trail foot lands in, though no longer
+  // the whole of it: the trunk comes over the front foot at the crossing and the stand leaves
+  // that top on the next frame (see holdShareAt), so the landing stands in 33.7° of the
+  // 60.2° the finish was thrown into — a little under the keys' own deepest frame (39.2° at
+  // the release) and over half of every other frame the beat has, and deep enough that the
+  // legs can stand it because the hips give under the trunk as it comes over them (see
+  // FINISH_SINK, and the pose's own leg test, which reads every foot against its own socket
+  // at every height). The stand is paced at two and a half times the keys' own tail
+  // (STAND_PACE), so the crossing's top is spent faster than the fold was reached and the
+  // landing catches 33.7° where the keys' own pace left 48°; the pace is the reason the
+  // landing no longer stands in more fold than the release does. What the test still holds
+  // is that the finish's fold is not given back before the shoe is down: the landing is
+  // still better than halfway over the front foot, and the stand has a second of the beat
+  // and the whole of the recovery still to spend.
   const landed = pitcherPose(1.68, ctx())
   assert.ok(
-    Math.abs(landed.hip.fold) < 0.1,
-    `the trunk is still folded ${(landed.hip.fold * DEG).toFixed(0)}° when the foot lands: he lands in the fold rather than standing out of it`,
+    landed.hip.fold > 0.5,
+    `the trunk is folded ${(landed.hip.fold * DEG).toFixed(0)}° when the foot lands: the fold is given back on the frames he lands on`,
   )
-  // ...and the other half of that promise is the plant, where the trunk is most of the
-  // way into the fold the pitch is thrown from — not *whole* there, because the last of
-  // it is the release's own (the frame the ball goes on is the frame the posture's fold
-  // is whole on), but a good deal deeper than upright: the lean is *walked in* across
-  // the whole of the delivery's front half rather than laid over on the last of the
-  // stride (see LEAN_IN_TRACK, and the browser suite's reading of it).
+  // ...and the plant is *behind* upright: as the back leg fires the trunk tilts back over
+  // the drive foot (the drive keys' own back tilt, which the lean-in walk does not reach
+  // yet), and the forward fall that carries the body over the foot comes after it, so
+  // the fold the pitch is thrown from is reached by the release rather than at the plant.
   const planted = pitcherPose(1.2, ctx()).hip.fold
   assert.ok(
-    planted > 0.6 * thrown.hip.fold,
-    `the plant is only ${(planted * DEG).toFixed(0)}° into the pitch's own ${(thrown.hip.fold * DEG).toFixed(0)}° fold: the lean waits for the release`,
+    planted < 0,
+    `the plant is folded ${(planted * DEG).toFixed(0)}°: the trunk does not tilt back as the back leg fires`,
   )
   assert.ok(
     planted < thrown.hip.fold,
@@ -1187,8 +1201,9 @@ test('the lean is walked in from the kick, and it is settled by the time the bal
   // rather than one stood up and then laid over on the last of the stride (see
   // LEAN_IN_TRACK, and the keys' own notes). Read off the pose's own fold, frame by
   // frame, because what "more time for the lean-in" is worth is a shape: a fold that
-  // only ever rises from the rocker to the release, and a rate that is gentle on every
-  // frame of it rather than a jump on one of them.
+  // rises from the rocker to the fire, comes *back* over the drive foot as the back leg
+  // fires, and then falls into the pitch's own through the plant — a rate that is the
+  // walk's own rather than a jump on any frame of it.
   const DEG = 180 / Math.PI
   const foldAt = (t) => pitcherPose(t, ctx()).hip.fold
   const frame = 1 / 60
@@ -1204,16 +1219,48 @@ test('the lean is walked in from the kick, and it is settled by the time the bal
   }
   // ...and from there it only rises: every frame of the kick, the balance, the drive and
   // the release is a frame the trunk is further into the pitch than the last.
+  // The fall to the plant: the trunk tilts *back* from the very frame the torso starts
+  // falling forward (the reference's PS-1 — the lean-back is as early as the fall, not
+  // saved for the back leg's own fire) and only then falls forward over the drive foot
+  // (see the drive keys), so that window is the one place the fold is allowed to come
+  // back out. It is read for its own shape below.
+  const BACK_TILT_START = 1.0
+  const BACK_TILT_END = 1.2
+  // ...and the *other* frame it is allowed to come back out on is the gather, on the two
+  // hundredths of a second before the ball: the finish's own clock is already running there
+  // (see FINISH_RIP_LEAD) and what it does is ease the trunk a degree or two *off* the
+  // posture it is held at and gather, so that the rip crosses the release at the whip's own
+  // rate rather than setting off from it. That is the finish's movement rather than the
+  // walk's, so it is read apart from the lean-in and *bounded* rather than forbidden: the
+  // lean-in's own promise is that the fold has arrived, and it is whole on the frame the
+  // ball goes (the fall test below holds it to the solved posture to the decimal there, and
+  // reads the gather's own depth).
+  const GATHER_FROM = AUTHORED_RELEASE_TIME - 0.02
   let was = foldAt(rocker)
   let steepest = 0
+  let steepestAt = rocker
   let climbs = 0
   for (let t = rocker + frame; t <= AUTHORED_RELEASE_TIME + 1e-9; t += frame) {
     const now = foldAt(t)
+    if (t > BACK_TILT_START + 1e-9 && t <= BACK_TILT_END + 1e-9) {
+      steepest = Math.max(steepest, Math.abs(now - was))
+      was = now
+      continue
+    }
+    if (t > GATHER_FROM + 1e-9) {
+      const off = foldAt(AUTHORED_RELEASE_TIME) - now
+      assert.ok(
+        off < 0.055,
+        `at ${t.toFixed(3)}s the trunk is ${(off * DEG).toFixed(1)}° off the posture it is handed: deeper than the gather the finish's own clock asks for`,
+      )
+      was = now
+      continue
+    }
     assert.ok(
       now >= was - 1e-9,
       `at ${t.toFixed(2)}s the trunk comes back out of the lean: ${(was * DEG).toFixed(1)}° then ${(now * DEG).toFixed(1)}°`,
     )
-    steepest = Math.max(steepest, now - was)
+    if (now - was > steepest) { steepest = now - was; steepestAt = t }
     if (now > was + 1e-9) climbs += 1
     was = now
   }
@@ -1224,9 +1271,21 @@ test('the lean is walked in from the kick, and it is settled by the time the bal
     climbs > 0.6 * ((AUTHORED_RELEASE_TIME - rocker) / frame),
     `the trunk stands still for all but ${climbs} of the lean-in's own frames`,
   )
+  // The fall over the drive foot is the fastest motion in the window: the trunk comes from
+  // the back tilt through the fall at its steepest about 14.8° a frame at 60 fps (~885°/s,
+  // at 1.18s), which is a trunk being thrown rather than a step. This is the *deeper* arch
+  // the reference pitch bows back over the rubber — most of the way to a right angle of
+  // back-tilt at its plant — and the bound is set for that depth's own fall: the shallow
+  // arch's 10.7° a frame was its number, and the bound is that fall's ceiling rather than
+  // a snap's floor. It still rules out the 75°-in-a-sixtieth step this test replaced (a
+  // real snap is five times this), so what it holds is "thrown, not teleported".
   assert.ok(
-    steepest * DEG < 1.5,
-    `the lean moves ${(steepest * DEG).toFixed(2)}° in one frame: it is a step rather than a walk-in`,
+    foldAt(BACK_TILT_END) < 0,
+    `the trunk is folded ${(foldAt(BACK_TILT_END) * DEG).toFixed(1)}° at the plant: it does not tilt back as the back leg fires`,
+  )
+  assert.ok(
+    steepest * DEG < 16,
+    `the lean moves ${(steepest * DEG).toFixed(2)}° in one frame (at ${steepestAt.toFixed(3)}s): it is a step rather than a walk-in`,
   )
   // ...and it is a *walk-in* by the time the knee is at the top of the kick: the trunk is
   // a couple of degrees further into the pitch at the gather than it was at the rocker,
@@ -1250,17 +1309,157 @@ test('the lean is walked in from the kick, and it is settled by the time the bal
   )
   for (const t of [1.42, 1.48, AUTHORED_SLOT_END]) {
     assert.ok(
-      Math.abs(foldAt(t) - foldAt(AUTHORED_RELEASE_TIME)) < 1e-9,
-      `the trunk comes out of the release's fold at ${t}s, before the ball's own window is over`,
+      foldAt(t) > foldAt(AUTHORED_RELEASE_TIME) + 0.02,
+      `the trunk stops folding at ${t}s: ${(foldAt(t) * DEG).toFixed(1)}° against the release's ${(foldAt(AUTHORED_RELEASE_TIME) * DEG).toFixed(1)}°`,
     )
   }
-  // ...and the *finish* is the authored key's own shallow one again: the posture's fold is
-  // handed back over the follow-through, which is what leaves the landing standing up
-  // (see the finish below), so the lean-in's clock ends where the release window's does.
+  // ...and the *follow-through* goes on folding over the front foot after the ball has
+  // gone, which is the finish's own share of the fold (see FINISH_TILT): the body is
+  // thrown after the pitch rather than stopping at the posture it threw from, and the
+  // deepest frame of the delivery's fold is the finish's, not the release's.
   assert.ok(
-    Math.abs(foldAt(1.68)) < 0.1,
-    `the landing still stands in ${(foldAt(1.68) * DEG).toFixed(0)}° of the release's fold`,
+    foldAt(1.48) > foldAt(1.42) + 0.02,
+    `the finish folds ${(foldAt(1.48) * DEG).toFixed(1)}° at 1.48s against ${(foldAt(1.42) * DEG).toFixed(1)}° at 1.42s: the body is not being thrown after the ball`,
   )
+  // ...and the *finish* is that fold thrown rather than reached: it goes on over the front
+  // foot with the whip and tops out on the frame the back foot sweeps across the body's
+  // line toward the plate on (1.54 — see FINISH_STAND_FROM), with the shoe still out on its
+  // arc, and the trunk is standing back up out of the fold from that frame on while the leg
+  // comes round to land. That is the request's own order: the stand is under way before the
+  // shoe is down, and the landing is a body already coming up rather than a body landing in
+  // the deepest fold it has.
+  assert.ok(
+    foldAt(1.68) > foldAt(AUTHORED_RELEASE_TIME) + 0.3,
+    `the landing stands in ${(foldAt(1.68) * DEG).toFixed(0)}° against the release's ${(foldAt(AUTHORED_RELEASE_TIME) * DEG).toFixed(0)}°: the finish's fold is spent on the frames the feet land on`,
+  )
+  assert.ok(
+    foldAt(1.54) > foldAt(1.68) + 0.02,
+    `the trunk is ${(foldAt(1.54) * DEG).toFixed(1)}° on the crossing and ${(foldAt(1.68) * DEG).toFixed(1)}° at the landing: the fold is not thrown over the foot by the time the shoe is down`,
+  )
+  // ...and from the crossing to the recovery's own key it only comes up: every frame of the
+  // beat is a frame the trunk is further out of its fold than the last — the stand is the
+  // delivery's last movement and it is spent over the beat rather than saved for the walk
+  // back — and what it is by the pause is most of the way out of the fold it peaked in.
+  let wasFolded = foldAt(1.54)
+  for (let t = 1.54 + 1 / 120; t <= 2.8 + 1e-9; t += 1 / 120) {
+    const now = foldAt(t)
+    assert.ok(
+      now <= wasFolded + 1e-9,
+      `at ${t.toFixed(3)}s the trunk goes back into its fold: ${(wasFolded * DEG).toFixed(1)}° then ${(now * DEG).toFixed(1)}°`,
+    )
+    wasFolded = now
+  }
+  assert.ok(
+    foldAt(2.1) < foldAt(1.54) - 0.3,
+    `the trunk is still ${(foldAt(2.1) * DEG).toFixed(0)}° at the pause against the crossing's ${(foldAt(1.54) * DEG).toFixed(0)}°: the stand has not begun`,
+  )
+  // ...and it is the keys' own standing body by the recovery's own key, where the keys'
+  // fold is 0.05 rad again (see FINISH_STAND).
+  assert.ok(
+    Math.abs(foldAt(2.8)) < 0.1,
+    `the trunk is ${(foldAt(2.8) * DEG).toFixed(1)}° at the recovery's key: the stand is not finished by the walk back`,
+  )
+})
+
+test('the arch is the plant’s own, and the fold comes over the foot across the whip', () => {
+  // The delivery's own two shapes about the trunk, read off the pose's fold:
+  //
+  // *The arch* is a place the delivery stands in at the plant — the trunk bowed back
+  // over the drive foot with the back leg firing — and not the couple of degrees of
+  // back-tilt that reads as a body stood up out of its coil (see the plant key's own
+  // note). What the reference pitch shows there is a chest carried up over the rubber,
+  // and what a camera sees of it is the whole trunk's angle: measured off the pose,
+  // three tenths of a radian back, whole at the plant and paid for before the ball goes.
+  const foldAt = (t) => pitcherPose(t, ctx()).hip.fold
+  const solved = releasePosture({ rig: RIG, hand: 'R', height: 1.85 }).lean
+  assert.ok(
+    foldAt(1.18) < 0,
+    `the trunk is ${(foldAt(1.18) * 180 / Math.PI).toFixed(1)}° at 1.18s: it has not arched as the back leg fires`,
+  )
+  assert.ok(
+    foldAt(1.2) < -0.28,
+    `the plant's arch is ${(foldAt(1.2) * 180 / Math.PI).toFixed(1)}°: the trunk stands up over its drive foot rather than bowing back over it`,
+  )
+  // ...and the bow is a *window* around the plant rather than the trunk being stood
+  // back the whole delivery: forward through the kick and the gather (the fall has not
+  // started while the weight is still on the back foot), deeply bowed at the plant, and
+  // coming back out of it by the cock. The leading edge is the *fall's own first frame*
+  // (1.0, where the back-tilt window opens — see BACK_TILT_START above) and not the old
+  // 1.16: the reference's PS-1 leans the torso back as early as the torso starts falling
+  // forward, so on a bow this deep the trunk is already coming back over the rubber as
+  // the fall begins, and pinning it forward past the fall's own start would put the
+  // lean-back after the thing it is answering.
+  assert.ok(
+    foldAt(1.0) > 0 && foldAt(1.22) > foldAt(1.2),
+    'the arch is not a window: the trunk is bowed back before and after it',
+  )
+  // ...and *the fold* comes over the foot across the whole of the whip rather than
+  // between the plant and the cock: the trunk is still short of the release posture's
+  // own fold at the high cock (see FOLD_ARRIVE), and the fall is one motion into the ball
+  // up to the come-through — every frame of it deeper than the one before, with nothing
+  // given back on the way.
+  assert.ok(
+    foldAt(1.26) < solved - 0.05,
+    `the trunk is folded ${(foldAt(1.26) * 180 / Math.PI).toFixed(1)}° at the cock against the posture's ${(solved * 180 / Math.PI).toFixed(1)}°: the fall is spent before the whip`,
+  )
+  let was = foldAt(1.2)
+  for (let t = 1.2 + 1 / 120; t <= 1.3 + 1e-9; t += 1 / 120) {
+    const now = foldAt(t)
+    assert.ok(
+      now >= was - 1e-9,
+      `at ${t.toFixed(3)}s the trunk comes back out of the fall: ${(was * 180 / Math.PI).toFixed(1)}° then ${(now * 180 / Math.PI).toFixed(1)}°`,
+    )
+    was = now
+  }
+  assert.ok(
+    Math.abs(foldAt(1.3) - solved) < 1e-9 && Math.abs(foldAt(AUTHORED_RELEASE_TIME) - solved) < 1e-9,
+    `the fold is ${(foldAt(1.3) * 180 / Math.PI).toFixed(1)}° at the come-through against the posture's ${(solved * 180 / Math.PI).toFixed(1)}°`,
+  )
+  // ...and from the come-through out the trunk is on the *rip's* own clock, which is
+  // started before the ball rather than after it (see FINISH_RIP_LEAD): the fold gathers
+  // the last degree or two *off* the posture it landed on over the two hundredths of a
+  // second before the ball, comes back through the posture's own value with the whip's own
+  // rate on it, and is handed to the rip *on the frame the ball goes* — so the trunk is
+  // still moving on the release's own frames rather than standing at rest on them with the
+  // rip beginning behind it. Measured on the pose: the posture's own 15.4° at 1.300 s,
+  // 13.05° at 1.3125 (the gather's floor, 2.4° under it), 15.45° again at 1.320 with 922°/s
+  // on the frame, 1160 on the frame after it and 26.0° by 1.330. The gather is *paid for* by
+  // the rate it is handed to the rip at (the share's own Hermite — the steeper the rip, the
+  // deeper the gather: the finish's shape leaves the ball at 4.03 shares a second of its own
+  // clock where the cubic left it at 3), so what is held here is that it is a degree or two
+  // and not a fold of its own.
+  const rateAt = (t) => (foldAt(t + 0.0025) - foldAt(t - 0.0025)) / 0.005
+  let gathered = Infinity
+  for (let t = 1.3; t <= AUTHORED_RELEASE_TIME + 1e-9; t += 0.0025) {
+    gathered = Math.min(gathered, foldAt(t))
+  }
+  assert.ok(
+    solved - gathered > 0.015 && solved - gathered < 0.055,
+    `the trunk gathers ${((solved - gathered) * 180 / Math.PI).toFixed(1)}° off the release posture across the ball's own approach: the release's frames are either holding the posture outright or being moved off it by more than a gather`,
+  )
+  const ripRate = (rateAt(AUTHORED_RELEASE_TIME) * 180) / Math.PI
+  assert.ok(
+    ripRate > 600,
+    `the fold is only ${ripRate.toFixed(0)}°/s on the ball's own frame: the trunk is at rest on it and the rip starts after the release`,
+  )
+  // ...and it is the rip's own rate that the ball's frame carries, with the gather's turn
+  // still in front of it: the rate comes back through nought inside the release's own two
+  // frames and is on the rip's side of it by the time the ball goes.
+  assert.ok(
+    rateAt(AUTHORED_RELEASE_TIME - 0.0075) < 0 && rateAt(AUTHORED_RELEASE_TIME - 0.0025) > 0,
+    `the gather turns over at ${((AUTHORED_RELEASE_TIME - 0.0075) * 1000).toFixed(0)}-${((AUTHORED_RELEASE_TIME - 0.0025) * 1000).toFixed(0)} ms: the fold is not gathering into the rip`,
+  )
+  // ...and the rip is never given back: from the gather's floor out past the ball, every
+  // frame of the fold is deeper than the one before it.
+  let deepest = foldAt(1.315)
+  for (let t = 1.315 + 1 / 120; t <= 1.54 + 1e-9; t += 1 / 120) {
+    const now = foldAt(t)
+    assert.ok(
+      now >= deepest - 1e-9,
+      `at ${t.toFixed(3)}s the trunk comes back out of the fold it was thrown into: ${(deepest * 180 / Math.PI).toFixed(1)}° then ${(now * 180 / Math.PI).toFixed(1)}°`,
+    )
+    deepest = now
+  }
 })
 
 test('a carried leg hangs off its knee, and the cock only turns it', () => {
@@ -1355,28 +1554,39 @@ test('the pivot foot turns onto the plate line, so the drive leg keeps its plane
   }
 })
 
-test('the lead shoe turns with the pelvis, on the heel the plant put down', () => {
-  // The lead leg's turn, and the ground it is made on — the two halves of one shape,
-  // read off the pose's own numbers and read again on the realised skeleton in the
-  // browser suite.
+test('the lead shoe turns with the body, on the ankle the plant put down', () => {
+  // The lead leg's turn, and the ground it is made on — the two halves of one shape, read
+  // off the pose's own numbers and read again on the realised skeleton in the browser suite.
   //
-  // The first half: the stride foot is put down pointing at the plate however far the
-  // body has come open over it (that is what the keys down to the plant spend the stride
-  // on), and from there the shoe is *held* against the pelvis rather than tracking it —
-  // every degree the body turns from the plant on, the shoe turns with it, which is what
-  // the whole of the follow-through's yaw is.
+  // The first half: the stride foot is put down pointing at the plate (that is what the keys
+  // down to the plant spend the stride on), and from that frame on the shoe turns with the
+  // *body*. It is handed the whole of the body's turn through the pitch and not the share
+  // that falls after the plant: the chest comes round 61.0° between the release and the plant
+  // and a further 41.2° by the landing, so a shoe given only the second of those is a lead
+  // foot left standing in a finish the body has come most of the way round over — the trail
+  // shoe spins 155° over the same frames, and this one turned less than a third of it and
+  // stopped pointing a hand's width off the plate's line while the chest was square to it.
+  // Handed the first, the shoe turns 101.9°: the body's own turn from the release, in the
+  // trunk's own shape, at 2.474 times the trunk's rate over the frames it has on the dirt
+  // (see FRONT_SHOE_TURN_SHARE in util/pitcherSequence.js).
   //
-  // The second: a shoe the dirt is holding cannot skid round its ankle, so the point it
-  // turns about is its own heel — a tenth of a rig unit behind the ankle the keys name
-  // (see `heelOffset` above, and FRONT_HEEL_SWEEP in util/pitcherSequence.js) — and the
-  // pose carries the ankle round the arc that turn sweeps. So the heel keeps the place
-  // the plant gave it to the thousandth of a unit, and what comes round with the body is
-  // the leg's own base rather than the hip joint's twist taking the whole of the turn.
+  // The second: a shoe the dirt is holding cannot skid, so the point it turns about is one of
+  // its own, and for the lead foot that point is the *ankle* — the leg's own base, which
+  // keeps the spot the plant gave it to the last decimal. The heel is what the trail shoe
+  // turns about; anchoring the lead one there carries its ankle round a circle the boot's own
+  // length behind it, which is 0.155 of a rig unit at 101.9°, and the front leg — standing at
+  // 101 per cent of its own length on the landing already, and rolling the shoe onto its toe
+  // for the last centimetre — has 0.070. Asked for more it comes out torn straight, the ankle
+  // 7 cm short of the place it was asked for and the shoe 8 cm off the dirt (measured on the
+  // skeleton). So what sweeps the dirt is the shoe rather than the leg: 0.155 of a unit of
+  // heel travel between the plant and the landing, which is the chord of the turn about the
+  // ankle to the decimal, and the cost of a foot coming round with a body that has come round
+  // over it.
   const pose = (t) => pitcherPose(t, ctx())
   const front = (t) => pose(t).legs[1]
-  const pelvis = (t) => pose(t).hip.yaw
-  // The shoe's own rear, in the rig frame: the ankle plus the boot's own length back
-  // along the line the shoe points (the rig's +z is behind it, the plate being at -z).
+  const trunk = (t) => pose(t).hip.yaw + pose(t).torsoYawExtra
+  // The shoe's own rear, in the rig frame: the ankle plus the boot's own length back along
+  // the line the shoe points (the rig's +z is behind it, the plate being at -z).
   const heel = (t) => {
     const leg = front(t)
     return [
@@ -1385,83 +1595,129 @@ test('the lead shoe turns with the pelvis, on the heel the plant put down', () =
     ]
   }
   const DEG = 180 / Math.PI
+  const PLANT = 1.42
+  const LANDING = 1.68
+  const RELEASE = AUTHORED_RELEASE_TIME
   // ...it is put down on the plate's own line ...
   assert.ok(
-    Math.abs(front(1.42).footYaw) < 0.03,
-    `the stride foot is planted ${(front(1.42).footYaw * DEG).toFixed(1)}° off the plate's line: the stride has not been spent on it`,
+    Math.abs(front(PLANT).footYaw) < 0.03,
+    `the stride foot is planted ${(front(PLANT).footYaw * DEG).toFixed(1)}° off the plate's line: the stride has not been spent on it`,
   )
-  // ...and from there it is the pelvis' own turn and nothing else: the shoe's angle to
-  // the body does not move by so much as a thousandth of a degree.
-  const landed = front(1.42).footYaw - pelvis(1.42)
-  for (const t of [1.48, 1.54, 1.575, 1.61, 1.645, 1.68, 1.9, 2.8]) {
-    const held = front(t).footYaw - pelvis(t)
+  // ...and from there it carries the body's own turn, all of it: the trunk's turn since the
+  // plant scaled by the share the body's whole turn is worth.
+  const share = (trunk(LANDING) - trunk(RELEASE)) / (trunk(LANDING) - trunk(PLANT))
+  assert.ok(
+    share > 2.4 && share < 2.6,
+    `the lead shoe takes ${share.toFixed(3)} times the trunk's turn after the plant: the body's whole turn is 2.474 of it`,
+  )
+  for (const t of [1.48, 1.54, 1.5575, 1.575, 1.61, 1.645, 1.68, 1.9, 2.8]) {
+    const shoe = front(t).footYaw - front(PLANT).footYaw
+    const above = (trunk(t) - trunk(PLANT)) * share
     assert.ok(
-      Math.abs(held - landed) < 1e-6,
-      `the lead shoe's own angle to the body moves ${((held - landed) * DEG).toFixed(4)}° by ${t}s: the shoe is not turning with the torso`,
+      Math.abs(shoe - above) < 1e-9,
+      `by ${t}s the lead shoe has turned ${(shoe * DEG).toFixed(3)}° where the body's own turn over it is ${(above * DEG).toFixed(3)}°: the shoe is not turning with the torso`,
     )
   }
-  const turned = (front(1.68).footYaw - front(1.42).footYaw) * DEG
+  const turned = (front(LANDING).footYaw - front(PLANT).footYaw) * DEG
   assert.ok(
-    turned > 30 && turned < 36,
-    `the lead shoe turns ${turned.toFixed(1)}° between the plant and the landing: the pelvis' own turn over those frames is 33°`,
+    turned > 100 && turned < 103,
+    `the lead shoe turns ${turned.toFixed(1)}° between the plant and the landing: the body's own turn over those frames is 101.9°`,
   )
-  // ...and the heel it turns on is the spot the plant left it on, through the whole of
-  // the hold — held to the last decimal the pose has.
-  const spot = heel(1.42)
-  for (const t of [1.68, 1.9, 2.8]) {
-    const now = heel(t)
+  assert.ok(
+    Math.abs(front(LANDING).footYaw - (trunk(LANDING) - trunk(RELEASE))) < 1e-9,
+    'the shoe does not end the finish where the body turned from the release has put it',
+  )
+  // ...and the turn has no stall in it: out of rest on the plant's own frame, up to its peak,
+  // and then one decay, each frame's turn no larger than the frame before's.
+  const firstStep = (front(PLANT + 0.02).footYaw - front(PLANT).footYaw) * DEG
+  assert.ok(
+    firstStep > 4 && firstStep < 10,
+    `the lead shoe picks its turn up at ${firstStep.toFixed(2)}° in the frame after the plant: it either lurches or hesitates`,
+  )
+  let last = Infinity
+  for (let t = PLANT + 0.04; t <= 1.68 - 0.02 + 1e-9; t += 0.02) {
+    const step = (front(t + 0.02).footYaw - front(t).footYaw) * DEG
     assert.ok(
-      Math.hypot(now[0] - spot[0], now[1] - spot[1]) < 1e-9,
-      `the lead shoe's heel is ${Math.hypot(now[0] - spot[0], now[1] - spot[1]).toFixed(4)} rig units off the spot the plant put it on by ${t}s`,
+      step <= last + 0.15,
+      `the lead shoe turns ${step.toFixed(2)}° across ${t.toFixed(2)}-${(t + 0.02).toFixed(2)}s, against ${last.toFixed(2)}° before it: the shoe's turn is not a decay`,
+    )
+    last = step
+  }
+  // ...and the shoe is held where the landing put it: the trunk stops turning on that frame,
+  // and the shoe stops with it, to the last decimal the pose has.
+  for (const t of [1.9, 2.8]) {
+    assert.ok(
+      Math.abs(front(t).footYaw - front(1.68).footYaw) < 1e-9,
+      `the lead shoe turns ${((front(t).footYaw - front(1.68).footYaw) * DEG).toFixed(3)}° after the landing: the pose he lands in is not the pose he holds`,
     )
   }
-  // What that costs is the ankle's own place: a shoe left turning about its ankle would
-  // carry its heel 0.058 of a unit across the dirt, and the pose spends that on the
-  // leg's own base instead — which is the difference between the leg coming round with
-  // the body and the body wringing over a foot that stood its ground.
-  const carried = Math.hypot(
-    front(1.68).ankle[0] - front(1.42).ankle[0],
-    front(1.68).ankle[2] - front(1.42).ankle[2],
+  // The ankle it turns on is the spot the plant left it on — held to the last decimal.
+  for (const t of [1.5, 1.6, 1.68, 1.9, 2.8]) {
+    const drift = Math.hypot(front(t).ankle[0] - front(PLANT).ankle[0], front(t).ankle[2] - front(PLANT).ankle[2])
+    assert.ok(
+      drift < 1e-9,
+      `the lead ankle is ${drift.toFixed(4)} rig units off the spot the plant put it on by ${t}s: the leg's base is being dragged round with the turn`,
+    )
+  }
+  // What that costs is the shoe's own sole, and it is the arc of the turn exactly: the heel
+  // it was put down by comes round the ankle by the chord, 2 r sin(Δ/2), and nothing else.
+  const spot = heel(PLANT)
+  const landed = heel(LANDING)
+  const sweepLength = Math.hypot(landed[0] - spot[0], landed[1] - spot[1])
+  assert.ok(
+    sweepLength > 0.145 && sweepLength < 0.165,
+    `the lead heel sweeps ${sweepLength.toFixed(4)} rig units across the dirt between the plant and the landing: 0.155 is the chord of a 101.9° turn about the ankle`,
   )
   assert.ok(
-    carried > 0.05 && carried < 0.07,
-    `the lead ankle is carried ${carried.toFixed(4)} rig units round the shoe's own turn: 0.057 of a unit is what the heel would otherwise drag`,
+    Math.abs(sweepLength - 2 * RIG.heelOffset.z * Math.sin((turned * Math.PI) / 360)) < 1e-9,
+    `the heel travels ${sweepLength.toFixed(4)} of a unit where the chord of the shoe's own turn is ${(2 * RIG.heelOffset.z * Math.sin((turned * Math.PI) / 360)).toFixed(4)}`,
   )
   // ...and the same on the other hand, where the pose is this one's mirror: the rig's
   // own x is mirrored and its z is not, so a left-hander's shoe comes round the other
-  // way and its heel is the end that stays put just the same. The authored delivery is
+  // way and its ankle stays put just the same. The authored delivery is
   // one delivery for both hands (see the mirror test), so the numbers are the same ones.
   const leftPose = (t) => pitcherPose(t, { ...ctx(), hand: 'L' })
+  const leftFront = (t) => leftPose(t).legs[1]
   const leftHeel = (t) => {
-    const leg = leftPose(t).legs[1]
+    const leg = leftFront(t)
     return [
       leg.ankle[0] + Math.sin(leg.footYaw) * RIG.heelOffset.z,
       leg.ankle[2] + Math.cos(leg.footYaw) * RIG.heelOffset.z,
     ]
   }
-  const leftSpot = leftHeel(1.42)
   for (const t of [1.68, 1.9, 2.8]) {
-    const now = leftHeel(t)
+    const drift = Math.hypot(leftFront(t).ankle[0] - leftFront(PLANT).ankle[0], leftFront(t).ankle[2] - leftFront(PLANT).ankle[2])
     assert.ok(
-      Math.hypot(now[0] - leftSpot[0], now[1] - leftSpot[1]) < 1e-9,
-      `a left-hander's lead heel is ${Math.hypot(now[0] - leftSpot[0], now[1] - leftSpot[1]).toFixed(4)} rig units off the plant's spot by ${t}s`,
+      drift < 1e-9,
+      `a left-hander's lead ankle is ${drift.toFixed(4)} rig units off the plant's spot by ${t}s`,
+    )
+    const shoe = leftFront(t).footYaw - leftFront(PLANT).footYaw
+    const above = (leftPose(t).hip.yaw + leftPose(t).torsoYawExtra)
+      - (leftPose(PLANT).hip.yaw + leftPose(PLANT).torsoYawExtra)
+    assert.ok(
+      Math.abs(Math.abs(shoe) - Math.abs(above) * share) < 1e-9,
+      `a left-hander's lead shoe turns ${(shoe * DEG).toFixed(3)}° where the body's own turn over it is ${(above * share * DEG).toFixed(3)}°`,
     )
   }
-  const leftHeld = (t) => leftPose(t).legs[1].footYaw - leftPose(t).hip.yaw
+  const leftSpot = leftHeel(PLANT)
+  const leftLanded = leftHeel(LANDING)
+  const leftSweep = Math.hypot(leftLanded[0] - leftSpot[0], leftLanded[1] - leftSpot[1])
   assert.ok(
-    Math.abs(leftHeld(1.68) - leftHeld(1.42)) < 1e-6 && Math.abs(leftHeld(2.8) - leftHeld(1.42)) < 1e-6,
-    'a left-hander\'s lead shoe does not hold its own angle to the body',
+    Math.abs(leftSweep - sweepLength) < 1e-9,
+    `a left-hander's heel sweeps ${leftSweep.toFixed(4)} where a right-hander's sweeps ${sweepLength.toFixed(4)}: the turn is one turn, mirrored`,
   )
 })
 
-test('the hands are clasped in the glove until the break parts them', () => {
+test('the hands are clasped in the glove until the gather parts them', () => {
   // The ball is *in* the glove while the pitcher stands in the set and winds up: the
   // pose's own ball is the glove's own palm and the two hands run along one line,
   // which is what hides the grip — and what a change to the stance cannot silently
   // pull apart (see claspTracks). The clasp keys are the windup's own: the set, the
-  // rocker, the gather and the balance, up to the break that parts them.
+  // rocker and the gather, up to the *gather* that parts them — the frame the lift tops
+  // out on, which is where the leg is highest and the throwing arm is let go, so that
+  // the whole of the rest of the windup is the arm's to fall and come back up in.
   const carry = releaseCarry(RIG, 'R')
-  for (const t of [0, 0.2, 0.46, 0.7, 0.8, 1.0]) {
+  for (const t of [0, 0.2, 0.46, 0.7, 0.8]) {
     const pose = pitcherPose(t, ctx())
     const glove = gloveOf(pose)
     assert.ok(
@@ -1510,9 +1766,10 @@ test('the hands are clasped in the glove until the break parts them', () => {
       `at ${t}s the clasp is inside the trunk (${show(pose.ball)} against ${show(centre)})`,
     )
   }
-  // The break is where they come apart: the throwing hand swings down beside the
-  // hip while the glove goes out at the plate.
-  const parted = pitcherPose(1.1, ctx())
+  // The gather is where they come apart: the throwing hand swings down beside the hip
+  // while the glove goes out in front of the chest — so by the balance the mitt it is
+  // off is a third of a metre away and still opening.
+  const parted = pitcherPose(1.0, ctx())
   assert.ok(
     distance(parted.ball, gloveOf(parted).palm) > 0.2,
     'the hands never come apart',
@@ -1586,37 +1843,433 @@ test('the trail arm mirrors the lead arm while the hands are clasped', () => {
   }
 })
 
-test('the shoulders are square before the arm unwinds', () => {
+test('the shoulders come square on the frame the ball goes', () => {
   // A throw's power is a chain: the pelvis turns, the torso is handed that turn and
   // turns the shoulders, and the arm comes round last of all — so the body the ball is
-  // thrown by is *facing the plate* by the frame the ball goes, and the chest's own last
-  // few degrees are spent inside the frames the arm is coming through rather than left
-  // to the follow-through. What that reads as here: the chest comes square on the plate
-  // while the ball is still short of the release point, with the pelvis a good way past
-  // the shoulders it is carrying. (How *much* short is the delivery's own authoring:
-  // measured, the chest crosses on the frame between 1.318 and 1.319 with the ball
-  // 0.04 of a rig unit in hand, which is the shape of a release that is square *on* the
-  // frame the ball goes rather than a quarter of a second early — see the release key's
-  // own note, and the drive test above.)
+  // thrown by is *facing the plate* on the frame the ball goes, with the pelvis a good
+  // way past the shoulders it is carrying. The chest's own last few degrees are the
+  // turn's own clock rather than the keys' (see TURN_GATHER_LEAD): the keys cross the
+  // square a hundredth early, and the gather holds the last of the coil closed over the
+  // two hundredths before the ball and hands it over *on* the release's own frame, so
+  // the frame the ball goes is the frame the shoulders are square on — read here as the
+  // two ends of it: nothing squares early (the last frame before the ball is still
+  // closed, with the ball still in hand), and the release's own frame is square.
   const release = pitcherPose(AUTHORED_RELEASE_TIME, ctx())
-  let square = null
-  for (let t = 1.2; t <= AUTHORED_RELEASE_TIME + 1e-9; t += 1 / 240) {
-    const pose = pitcherPose(t, ctx())
-    if (pose.hip.yaw + pose.torsoYawExtra > -0.02) {
-      square = { t, pose }
-      break
-    }
-  }
-  assert.ok(square, 'the chest never comes square on the plate')
   assert.ok(
-    square.pose.ball[2] > release.ball[2],
-    `at ${square.t}s the shoulders squared with the arm already at the release: the ball was at ${square.pose.ball[2]}, the release at ${release.ball[2]}`,
+    release.hip.yaw + release.torsoYawExtra > -0.02,
+    `the chest is at ${((release.hip.yaw + release.torsoYawExtra) * 180) / Math.PI}° on the release: it is not square on the frame the ball goes`,
   )
   assert.ok(
-    square.pose.hip.yaw - (square.pose.hip.yaw + square.pose.torsoYawExtra) > 0.15,
+    release.hip.yaw - (release.hip.yaw + release.torsoYawExtra) > 0.15,
     'the shoulders squared with the pelvis still behind them',
   )
-  assert.ok(square.pose.hip.yaw > 0.1, 'the pelvis was not past square either')
+  assert.ok(release.hip.yaw > 0.1, 'the pelvis was not past square either')
+  // ...and the square is spent *on* that frame and not before it: the chest is still
+  // closed on every frame of the lead, and the last of them has the ball short of the
+  // release point — the arm's own unwind (the elbow opening out of its right angle) is
+  // still in front of it rather than behind it (see the come-through key's own note).
+  let last = null
+  for (let t = 1.2; t < AUTHORED_RELEASE_TIME - 1e-9; t += 1 / 240) {
+    const pose = pitcherPose(t, ctx())
+    assert.ok(
+      pose.hip.yaw + pose.torsoYawExtra < -0.02,
+      `the chest comes square at ${t}s, with the ball still ${(release.ball[2] - pose.ball[2]).toFixed(3)} of a rig unit in hand: the coil is spent before the ball goes`,
+    )
+    last = { t, pose }
+  }
+  assert.ok(last, 'the lead should be walked in frames')
+  assert.ok(
+    last.pose.ball[2] > release.ball[2],
+    `at ${last.t}s the shoulders squared with the arm already at the release: the ball was at ${last.pose.ball[2]}, the release at ${release.ball[2]}`,
+  )
+})
+
+test('the wrist keeps its own angle through the cock', () => {
+  // What a wrist holds while the arm cocks is an *angle*, not a facing: the hand's one
+  // free turn is about the line it runs along (the driver rolls the palm about exactly
+  // that axis — see its own ``palmFacing``), so a facing the pose names square to that
+  // line is a facing the wrist can answer outright, and one it names *relative to the
+  // arm* is one it can hold while the arm swings. Named in the rig's frame instead, the
+  // ask is a direction in the world, and the wrist spends the cock re-turning to keep it:
+  // measured on the realised skeleton before the hold, that re-turn was 60° between the
+  // layback and the come-through — a wrist working against the arm it hangs on.
+  //
+  // The reading below is the pose's own: the ask, in the frame the driver builds the arm
+  // from — the line the hand runs along, and the elbow's own direction off the socket
+  // squared up out of it — at the frames the hold spans. What it holds is that the ask
+  // does not move in that frame (the wrist's own angle), and that it stays square to the
+  // hand's line (which is the part of a facing a roll *can* answer).
+  const armOfPose = (t) => {
+    const pose = pitcherPose(t, ctx())
+    const arm = pose.arms[0]
+    const socket = shoulderOf(pose, arm.side)
+    const line = arm.aim
+    const elbow = [
+      arm.elbow[0] - socket[0], arm.elbow[1] - socket[1], arm.elbow[2] - socket[2],
+    ]
+    const length = Math.hypot(...elbow) || 1
+    const pole = elbow.map((value) => value / length)
+    return { pose, arm, line, pole }
+  }
+  const squareOf = (v, axis) => v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2]
+  const turnOf = (v, line, pole) => {
+    // The pole squared up out of the hand's line, and the axis square to both: the
+    // frame the elbow's own side of the arm is written in.
+    const lean = squareOf(pole, line)
+    const up = [pole[0] - line[0] * lean, pole[1] - line[1] * lean, pole[2] - line[2] * lean]
+    const length = Math.hypot(...up) || 1
+    const plane = up.map((value) => value / length)
+    const side = [
+      line[1] * plane[2] - line[2] * plane[1],
+      line[2] * plane[0] - line[0] * plane[2],
+      line[0] * plane[1] - line[1] * plane[0],
+    ]
+    return Math.atan2(squareOf(v, side), squareOf(v, plane)) * (180 / Math.PI)
+  }
+  const holds = []
+  // The hand's roll spans the *swing up the back*, and the hold the *cock*: the hands part
+  // with the ball hand turned to the plate, the fall turns it square to first base as it
+  // reaches the pitcher's side (1.00 s), and from there the forearm is what rolls — the palm
+  // turning over with it, through the sky and the ground to the pitcher's own back (see
+  // HOLD_ROLL) — until the layback lands it at 1.12 s and the wrist is *loaded*: it keeps
+  // that one angle through the cock and does not turn again until the throw unwinds it. So
+  // the reading is one turn of a joint either way, and what it holds is that the ask never
+  // *chases* the arm: across the swing the wrist rolls one way
+  // monotonically (a forearm turning over, not a hand re-pointing to each rig facing the
+  // swing passes), and across the cock it does not move at all.
+  // The turn's *direction* is the delivery's own and is not the test's to prescribe: the
+  // break shows the palm out the pitcher's back and PS-2 turns it onto the ground, so the
+  // forearm rolls one way through the throwing side (see HOLD_ROLL). What is prescribed is
+  // that it turns *one way* — a wrist that reverses mid-roll is a hand re-pointing itself
+  // at the facings the swing passes through rather than a forearm turning over.
+  const FALL_END = 1.12   // the layback: where the roll lands and the load begins
+  const roll = []
+  const load = []
+  for (let t = 1.04; t <= 1.26 + 1e-9; t += 0.01) {
+    const { arm, line, pole } = armOfPose(t)
+    const ask = arm.palm
+    assert.ok(
+      Math.abs(squareOf(ask, line)) < 0.02,
+      `at ${t}s the palm is asked for a facing ${squareOf(ask, line).toFixed(3)} of the way down the hand's own line: no roll can answer that`,
+    )
+    if (t <= FALL_END + 1e-9) roll.push(turnOf(ask, line, pole))
+    else load.push(turnOf(ask, line, pole))
+    holds.push(turnOf(ask, line, pole))
+  }
+  // The roll: one turn, one way, across the whole of the fall.
+  const way = Math.sign(roll[roll.length - 1] - roll[0]) || 1
+  for (let i = 1; i < roll.length; i += 1) {
+    assert.ok(
+      way * (roll[i] - roll[i - 1]) >= -1e-9,
+      `the wrist reverses its roll mid-fall (${roll[i - 1].toFixed(1)}° then ${roll[i].toFixed(1)}°): that is a hand chasing the swing, not a forearm rolling`,
+    )
+  }
+  assert.ok(
+    Math.abs(roll[roll.length - 1] - roll[0]) > 25,
+    `the forearm rolls only ${Math.abs(roll[roll.length - 1] - roll[0]).toFixed(1)}° across the fall: that is not the palm turning over the sky and the ground to the back`,
+  )
+  // ...and the load: the angle the layback landed on, held through the cock.
+  const loadSpread = Math.max(...load) - Math.min(...load)
+  assert.ok(
+    loadSpread < 5,
+    `the wrist's own angle moves ${loadSpread.toFixed(1)}° through the cock (${load.map((v) => v.toFixed(0)).join(', ')}): the forearm is not loaded`,
+  )
+  // ...and what the hand is *left* turned to as it reaches the pitcher's side is the ball
+  // shown to **first base**: the arm is down by the *balance* (1.00 s) — the break is three
+  // frames further on and the forearm has already begun rolling the palm off the base
+  // (see HOLD_ROLL) — so "out of his back" is that bearing, written where the pose
+  // authors it, which is the rig's frame and NOT
+  // the world's. The rig is the world turned a half turn about its up axis (the driver's
+  // ``toRigVector`` negates x and z, which is what stands the plate at -Z here while it is
+  // at +Z out on the field), so first base — 63.4 ft down the line and 2.9 ft beyond the
+  // rubber, nearly square to the pitch — is (-0.999, 0, 0.046) here and not the mirror of
+  // it: written the way it reads in the world the ask lands on *third* base, which is a hand
+  // a half turn round from the one the delivery means, and that is what the report "the palm
+  // is facing 3B for a RHP" was. Mirrored by ``s`` a lefty shows his to third, which is the
+  // back *he* is turning to.
+  const sidePalm = pitcherPose(1.00, ctx()).arms[0].palm
+  const FIRST_BASE = [-0.9990, 0, 0.0457]
+  const offFirstBase = (v) => Math.acos(Math.min(1, Math.max(-1, squareOf(v, FIRST_BASE)))) * (180 / Math.PI)
+  assert.ok(
+    offFirstBase(sidePalm) < 10,
+    `the balance asks the palm for (${sidePalm.map((v) => v.toFixed(2)).join(', ')}): ${offFirstBase(sidePalm).toFixed(0)}° off first base`,
+  )
+  // ...and it is *let go* rather than held to the end: by the release's own frame the ask
+  // is the pitch's bearing again (see the browser suite's reading of it), which is the
+  // wrist's turn the throw unloads through.
+  for (const t of [AUTHORED_RELEASE_TIME, AUTHORED_RELEASE_TIME + 0.04]) {
+    assert.ok(
+      Math.abs(squareOf(pitcherPose(t, ctx()).arms[0].palm, armOfPose(t).line)) > 0.4,
+      `at ${t}s the palm is still held square to the hand's line: the wrist never unloads`,
+    )
+  }
+})
+
+test('the hand coming out of the mitt turns the ball to first base as it drops', () => {
+  // The ball leaves the mitt on the plate's own bearing — a clasp shows the hitter the
+  // ball (see the clasp's reading, and the glide's own ``glovePalm``) — so what the drop
+  // has to do is turn it over, and *from that frame on*: the hand goes on round as the arm
+  // falls, so that by the time the arm is at the pitcher's side the palm is square to
+  // **first base**, which is the pitcher's own back while he stands sideways to the plate.
+  //
+  // The turn is a held joint rather than a facing named in the rig's frame (see
+  // PALM_HOLD), and the frames in between are why: the hand's own line turns end over end
+  // as the arm comes down (the cock runs the fingers back off the forearm and the arm
+  // swings through it), so for a third of the fall a *direction* in the world is one no
+  // roll can answer — on those frames the ask stands most of the way down the hand's own
+  // line, and the driver squared it up to whatever was left. What is checked here is the
+  // two ends of that turn and that no frame of it is a snap; the shape between them is
+  // HOLD_ROLL's own, and the unit tests that read a wrist's angle (the wind/unwind read
+  // above) are the ones that hold it to being one turn.
+  const palmAt = (t, over) => pitcherPose(t, ctx(over)).arms[0].palm
+  // First base's bearing *in the rig's frame* (see the break's own note: the rig is the
+  // world turned a half turn about its up axis, so x and z are negated). The plate's is
+  // (0, 0, -1) there, for the same reason.
+  const FIRST_BASE = [-0.9990, 0, 0.0457]
+  const offFirstBase = (v) => (
+    Math.acos(Math.min(1, Math.max(-1, v[0] * FIRST_BASE[0] + v[1] * FIRST_BASE[1] + v[2] * FIRST_BASE[2])))
+    * (180 / Math.PI)
+  )
+  // It comes out of the mitt on the plate's bearing: 90° from first base, which is the
+  // facing the clasp's own palm had it turned to — and it comes out at the gather (0.80 s),
+  // the frame the lift tops out on, with the whole of the fall to make the turn in.
+  assert.ok(
+    Math.abs(offFirstBase(palmAt(0.80)) - 90) < 8,
+    `at 0.80s the palm reads ${offFirstBase(palmAt(0.80)).toFixed(0)}° off first base: the hand left the mitt already turned away from the plate`,
+  )
+  // ...and by the frame the arm is at his side it is on the bearing, and stays there while
+  // the arm hangs: the side is 0.98-1.02 s, and that band is read on every frame of it.
+  // (It was 1.11-1.15 s, when the arm was let go of at the balance and the hip was reached
+  // at 1.125: the mitt now parts at the gather — see the clasp's own note — so the side is
+  // reached on the balance's own frame and the lift has taken the arm out of it by 1.04 s.
+  // What the band is for — the ball shown to the infield while the arm is at his side — is
+  // the hang and the two frames either side of it, and it reads 12° at its worst.)
+  for (let t = 0.98; t <= 1.02 + 1e-9; t += 0.01) {
+    const palm = palmAt(t)
+    assert.ok(
+      offFirstBase(palm) < 16,
+      `at ${t.toFixed(2)}s the palm reads (${palm.map((v) => v.toFixed(2)).join(', ')}): ${offFirstBase(palm).toFixed(0)}° off first base with the arm at the pitcher's side`,
+    )
+  }
+  // ...and the mirror of it: a lefty's arm is this one across the chest, so what his palm
+  // comes round to is *third* base — the back he is turning to — on the same frames.
+  const mirrored = palmAt(1.00, { hand: 'L' })
+  assert.ok(
+    mirrored[0] * FIRST_BASE[0] + mirrored[1] * FIRST_BASE[1] + mirrored[2] * FIRST_BASE[2] < -0.94,
+    `a lefty's side asks the palm for (${mirrored.map((v) => v.toFixed(2)).join(', ')}): not third base`,
+  )
+  // ...and it is a *turn* of the wrist rather than a flip through the middle of the
+  // hand: no frame of a hundred-and-twentieth carries it more than half a right angle,
+  // which is what a hand leaving a mitt covers and what a re-pointed facing does not.
+  const STEP = 1 / 120
+  let worst = 0
+  let when = 0
+  let prev = palmAt(0.80)
+  for (let t = 0.80 + STEP; t <= 1.16 + 1e-9; t += STEP) {
+    const now = palmAt(t)
+    const turn = Math.acos(Math.min(1, Math.max(-1,
+      now[0] * prev[0] + now[1] * prev[1] + now[2] * prev[2]))) * (180 / Math.PI)
+    if (turn > worst) { worst = turn; when = t }
+    prev = now
+  }
+  assert.ok(
+    worst < 55,
+    `the palm turns ${worst.toFixed(0)}° in one frame at ${when.toFixed(3)}s: the wrist snaps rather than turning`,
+  )
+})
+
+test('the upper arm screws one way round its own chord through the cock, and the fold is what unwinds', () => {
+  // "Screw the arm up and unwind it" is a *direction* rather than a place, and the one the
+  // upper arm has is a turn about the chord from its socket to the wrist — the axis the
+  // fold's own ring is drawn about, and the one a humerus turns about when it winds a throw
+  // up. Signed about the chord in the ring frame this test builds for itself — the world's
+  // up across the chord, and the ring's own up off that — so nought is the elbow out on the
+  // throwing side and a quarter turn is it under the chord.
+  //
+  // What the delivery owes is the *shape* of that turn: one way and unbroken through the
+  // cock — the arm screwing up rather than hunting for the side of its own ring — and then
+  // the arm *opening* as the throw spends it. The second half is the fold, not the ring:
+  // through the cock the elbow is held at its right angle (which is what keeps the laid-back
+  // forearm laid back), and the release's frames are the unfold — 90° of bend to 175° in two
+  // hundredths of a second, which is the whip the ball is thrown on.
+  //
+  // Read as a *place* instead, the frames either side of PS-8 crossed each other: the
+  // shoulder-plane rule folded the elbow under the plane on the frame before the key while
+  // the authored pole beside it had already carried the arm up and back, so the upper arm
+  // turned 60° one way and 60° back across two hundredths of a second. Read as an angle
+  // off the chord's own frame (see the swivel's own turn in `pitcherSequence`), that is a
+  // reading of a side the ring cannot lose, and the turn is a turn.
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+  const unit = (v) => {
+    const length = Math.hypot(v[0], v[1], v[2]) || 1
+    return [v[0] / length, v[1] / length, v[2] / length]
+  }
+  const armAt = (t) => {
+    const pose = pitcherPose(t, ctx())
+    const arm = pose.arms[0]
+    const socket = shoulderOf(pose, arm.side)
+    const chord = unit([arm.hand[0] - socket[0], arm.hand[1] - socket[1], arm.hand[2] - socket[2]])
+    const pole = unit([arm.elbow[0] - socket[0], arm.elbow[1] - socket[1], arm.elbow[2] - socket[2]])
+    // The ring's own frame, off the world's up across the chord — the frame the pose's whip
+    // rolls the pole in (see `whipPole`).
+    const lateral = unit([-chord[2], 0, chord[0]])
+    const ringUp = [
+      lateral[1] * chord[2] - lateral[2] * chord[1],
+      lateral[2] * chord[0] - lateral[0] * chord[2],
+      lateral[0] * chord[1] - lateral[1] * chord[0],
+    ]
+    const along = dot(pole, chord)
+    const flat = [pole[0] - chord[0] * along, pole[1] - chord[1] * along, pole[2] - chord[2] * along]
+    return {
+      roll: Math.atan2(dot(flat, ringUp), dot(flat, lateral)),
+      bend: (Math.acos(Math.min(1, Math.max(-1,
+        dot(unit([arm.elbow[0] - socket[0], arm.elbow[1] - socket[1], arm.elbow[2] - socket[2]]),
+          unit([arm.hand[0] - arm.elbow[0], arm.hand[1] - arm.elbow[1], arm.hand[2] - arm.elbow[2]])),
+      ))) * 180) / Math.PI,
+    }
+  }
+  // The turn each frame makes, in degrees: the roll unwrapped between the frames (a ring
+  // angle has no branch while the arm is turning one way), and the bend's own change.
+  const turns = (from, to, read) => {
+    const out = []
+    let prev = armAt(from)
+    for (let t = from + 0.01; t <= to + 1e-9; t += 0.01) {
+      const now = armAt(t)
+      if (read === 'roll') {
+        let step = now.roll - prev.roll
+        while (step > Math.PI) step -= Math.PI * 2
+        while (step < -Math.PI) step += Math.PI * 2
+        out.push((step * 180) / Math.PI)
+      } else {
+        out.push(now.bend - prev.bend)
+      }
+      prev = now
+    }
+    return out
+  }
+  // The reach the frame asks for, as a share of the arm's own span: the chord the fold is
+  // drawn about. Held, it is the cock; spent, it is the release.
+  const reachOf = (t) => {
+    const pose = pitcherPose(t, ctx())
+    const arm = pose.arms[0]
+    const socket = shoulderOf(pose, arm.side)
+    return Math.hypot(arm.hand[0] - socket[0], arm.hand[1] - socket[1], arm.hand[2] - socket[2])
+      / (ctx().rig.arm.upper + ctx().rig.arm.fore)
+  }
+  const WIND_START = 1.19   // the lift's own key: the elbow comes out from under the arm
+  const WIND_END = 1.25     // the last frame before the cock's own key settles it
+  const wind = turns(WIND_START, WIND_END, 'roll')
+  const reach = []
+  for (let t = WIND_END + 0.01; t <= AUTHORED_RELEASE_TIME + 1e-9; t += 0.01) reach.push(reachOf(t))
+  console.log(
+    'WIND', wind.map((v) => v.toFixed(1)).join(','),
+    'REACH', reach.map((v) => v.toFixed(2)).join(','),
+  )
+  for (let i = 1; i < wind.length; i += 1) {
+    assert.ok(
+      Math.sign(wind[i]) === Math.sign(wind[0]),
+      `the upper arm reverses its wind at ${(WIND_START + 0.01 * (i + 1)).toFixed(2)}s `
+        + `(${wind[i - 1].toFixed(1)}° then ${wind[i].toFixed(1)}°): it is hunting for the side of its own ring, not screwing up`,
+    )
+  }
+  const wound = wind.reduce((sum, value) => sum + value, 0)
+  assert.ok(
+    Math.abs(wound) > 100,
+    `the upper arm turns only ${wound.toFixed(0)}° through the whole of the cock: it is not winding the throw up`,
+  )
+  // ...and then the arm comes open: the fold the cock held at its right angle is *spent*
+  // through the release. Read on the reach rather than on the bend, because the reach is what
+  // the arm can promise — the chord the fold is drawn about — and the keys author it directly
+  // (see STRAIGHT_TRACK): the cock holds it at 0.70 of the arm's span, and the release's own
+  // frames take it to the 0.99 a thrown arm reaches.
+  assert.ok(
+    reach[0] < 0.78,
+    `the arm is already ${(reach[0] * 100).toFixed(0)}% of its span at ${(WIND_END + 0.01).toFixed(2)}s: the fold is spent before the throw`,
+  )
+  assert.ok(
+    reach[reach.length - 1] > 0.95,
+    `the arm only reaches ${(reach[reach.length - 1] * 100).toFixed(0)}% of its span at the release: it is not coming open`,
+  )
+  for (let i = 1; i < reach.length; i += 1) {
+    assert.ok(
+      reach[i] >= reach[i - 1] - 0.02,
+      `the arm folds back from ${reach[i - 1].toFixed(3)} to ${reach[i].toFixed(3)} of its span at `
+        + `${(WIND_END + 0.01 * (i + 1)).toFixed(2)}s: it is not the whip`,
+    )
+  }
+  // ...and it is spent *faster* than the cock spent winding it: the unfold is the delivery's
+  // fastest shape, and that is what makes it read as a throw rather than as an arm being put
+  // somewhere.
+  const fastestReach = Math.max(...reach.map((value, i) => (i === 0 ? 0 : value - reach[i - 1])))
+  assert.ok(
+    fastestReach > 0.04,
+    `the arm opens ${(fastestReach * 100).toFixed(0)}% of its span in its fastest frame: that is not a whip`,
+  )
+})
+
+test('the whip turns the upper arm about its own chord, and never crosses it', () => {
+  // The whip's frames are the ones the authored *places* could not draw: as the socket
+  // drives out from under the arm, the line between two of them cuts across the chord and
+  // the elbow walks onto it — the one reading the two-bone solve cannot take a side from.
+  // What the whip authors instead is a turn about that chord (see `whipPole`): the arm's
+  // own travel from the direction the pole track left it in to the direction the release
+  // key draws, rolled about the chord on the way. The readings that hold it are three:
+  // the elbow keeps a real lean off the chord on every frame of it, the upper arm's own
+  // direction never steps, and both ends of the window are the arms the tracks draw either
+  // side of it — the cock's frame is the pole track's, the release's is the key's.
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+  const unit = (v) => {
+    const length = Math.hypot(v[0], v[1], v[2]) || 1
+    return [v[0] / length, v[1] / length, v[2] / length]
+  }
+  const degrees = (a, b) => (Math.acos(Math.min(1, Math.max(-1, dot(a, b)))) * 180) / Math.PI
+  const armAt = (t) => {
+    const pose = pitcherPose(t, ctx())
+    const arm = pose.arms[0]
+    const socket = shoulderOf(pose, arm.side)
+    return {
+      pole: unit([arm.elbow[0] - socket[0], arm.elbow[1] - socket[1], arm.elbow[2] - socket[2]]),
+      chord: unit([arm.hand[0] - socket[0], arm.hand[1] - socket[1], arm.hand[2] - socket[2]]),
+    }
+  }
+  const FRAME = 1 / 120
+  const FROM = 1.26
+  const TO = AUTHORED_RELEASE_TIME
+  let lean = Infinity
+  let leanAt = FROM
+  let step = 0
+  let stepAt = FROM
+  let prev = armAt(FROM)
+  for (let index = 1; index * FRAME <= TO - FROM + 1e-9; index += 1) {
+    const t = FROM + index * FRAME
+    const now = armAt(t)
+    const off = degrees(now.pole, now.chord)
+    if (off < lean) { lean = off; leanAt = t }
+    const turned = degrees(prev.pole, now.pole)
+    if (turned > step) { step = turned; stepAt = t }
+    prev = now
+  }
+  assert.ok(
+    lean > 30,
+    `the elbow walks to ${lean.toFixed(0)}° of its own chord at ${leanAt.toFixed(3)}s: `
+      + 'the frames are on the line the solve has no side to read',
+  )
+  assert.ok(
+    step < 35,
+    `the upper arm steps ${step.toFixed(0)}° in a frame at ${stepAt.toFixed(3)}s: `
+      + 'the whip is reading two arms instead of turning one',
+  )
+  // ...and both hand-overs are one arm: half a frame before the cock's key the pose is
+  // still on the pole track's own elbow, and half a frame past the release it is on the
+  // release key's, so the whip neither starts nor ends on a reading of its own.
+  assert.ok(
+    degrees(armAt(FROM).pole, armAt(FROM - FRAME / 2).pole) < 10,
+    'the whip starts on an elbow the pole track did not leave it on',
+  )
+  assert.ok(
+    degrees(armAt(TO).pole, armAt(TO + FRAME / 2).pole) < 10,
+    'the whip ends on an elbow the release key does not draw',
+  )
 })
 
 test('the delivery stretches with the release clock', () => {
@@ -1694,18 +2347,25 @@ test('the blend crosses between two poses without leaving them', () => {
   }
 })
 
-test('he lands standing in the pose he holds, and nothing moves across the hold', () => {
-  // There is no *give* in this finish: the body comes up out of the stride's fold
-  // *into* the frame the trail foot lands in, and the pose that frame carries is the
-  // pose he stands in for the rest of the beat. The rise is the swing's own — the tail
-  // keys carry the pelvis up a tenth of a rig unit over the last tenth of a second (see
-  // the sequence's own note) — because a leg is a fixed length: it can only be straight
-  // in the frame its foot plants in if the pelvis is already over it by then, and a
-  // pelvis that arrives low and stands up afterwards is a knee that gives under the
-  // weight (which is what this delivery used to do and what the landing is now authored
-  // not to). What this checks is the *lever*: the pelvis is on its way up all the way
-  // to the landing, the landing frame *is* the hold's frame, both feet are on the
-  // ground with nothing hanging off a knee, and nothing moves across the hold.
+test('he lands still travelling, comes to rest in the finish, and nothing moves after it', () => {
+  // There is no *give* in this finish: the body comes up out of the stride's fold and
+  // the pose it comes to rest in is the pose he stands in for the rest of the beat. The
+  // rise is the swing's own — the tail keys carry the pelvis up a tenth of a rig unit
+  // over the last tenth of a second (see the sequence's own note) — because a leg is a
+  // fixed length: it can only be straight in the frame its foot plants in if the pelvis
+  // is already over it by then, and a pelvis that arrives low and stands up afterwards
+  // is a knee that gives under the weight (which is what this delivery used to do and
+  // what the landing is now authored not to).
+  //
+  // What the pelvis *does* keep doing is travelling: the stride's plant is a stride
+  // further out than it was — the front shoe lands a foot further down the mound, so
+  // there is room over it that there was not — and the delivery spends that room over
+  // the follow-through rather than arriving at a standstill on the frame the trail foot
+  // lands in and holding there. So the finish is no longer one frame: the hips go on
+  // forward past the landing, at a rate that only falls (nought of it re-accelerates),
+  // and they stop in the frame the hold holds. What is left of the promise is the one
+  // that matters and it is the *hold*'s: from the frame the body comes to rest in to
+  // the end of the clip nothing moves at all.
   const pelvis = (t) => pitcherPose(t, ctx()).hip.offsetY
   const tail = [1.575, 1.61, 1.6275, 1.645, 1.6625, 1.68]
   const climb = tail.map(pelvis)
@@ -1719,17 +2379,47 @@ test('he lands standing in the pose he holds, and nothing moves across the hold'
     pelvis(1.68) - pelvis(1.575) > 0.08,
     `the pelvis only comes up ${(pelvis(1.68) - pelvis(1.575)).toFixed(3)} of a rig unit out of the stride's fold`,
   )
-  // ...and the frame the foot lands in is the frame the hold keeps, to the thousandth:
-  // the give this replaces was 0.020 of a rig unit of pelvis and 4° of knee, and what
-  // took it out was moving that travel *into* the swing's tail.
+  // ...and the travel is what the finish is made of: the hips are still going on the
+  // frame the trail foot lands in, they go on every frame after it, and every step of it
+  // is shorter than the one before it — a rate that decays into the hold rather than a
+  // second acceleration once the foot is down.
   const landing = pitcherPose(1.68, ctx())
   const hold = pitcherPose(1.9, ctx())
-  for (const place of ['offsetY', 'offsetZ', 'yaw']) {
+  const travel = (t) => pitcherPose(t, ctx()).hip.offsetZ
+  const follow = [1.68, 1.71, 1.745, 1.78, 1.82, 1.86, 1.9]
+  const steps = []
+  for (let i = 1; i < follow.length; i += 1) {
     assert.ok(
-      Math.abs(landing.hip[place] - hold.hip[place]) < 1e-9,
-      `the pelvis' ${place} moves ${(hold.hip[place] - landing.hip[place]).toFixed(6)} between the landing and the hold`,
+      travel(follow[i]) < travel(follow[i - 1]),
+      `the pelvis stops travelling at ${follow[i]}s: the stride's plant has room it is not being spent in`,
+    )
+    steps.push(travel(follow[i - 1]) - travel(follow[i]))
+  }
+  for (let i = 1; i < steps.length; i += 1) {
+    assert.ok(
+      steps[i] < steps[i - 1] + 1e-9,
+      `the pelvis travels ${(steps[i] * 100).toFixed(1)} cm on the ${i}th frame of the follow-through against ${(steps[i - 1] * 100).toFixed(1)} on the one before: the finish is re-accelerating`,
     )
   }
+  assert.ok(
+    travel(1.68) - travel(1.9) > 0.05,
+    `the pelvis only travels ${((travel(1.68) - travel(1.9)) * 100).toFixed(1)} cm through the follow-through`,
+  )
+  // ...and the number the landing does *not* move on is its turn: a body that went on
+  // turning across its own finish would be the follow-through turning rather than
+  // travelling. Its *height* does move, and it is the stand's own give-back: the fold tops
+  // out on the crossing (see FINISH_STAND_FROM), so the hips are paid back the sink they
+  // gave it as the trunk comes up — the pelvis rises a few millimetres between the landing
+  // and the beat, which is a body standing out of its squat and not a step.
+  assert.ok(
+    Math.abs(landing.hip.yaw - hold.hip.yaw) < 1e-9,
+    `the pelvis turns ${((hold.hip.yaw - landing.hip.yaw) * (180 / Math.PI)).toFixed(3)}° between the landing and the beat`,
+  )
+  const givenBack = hold.hip.offsetY - landing.hip.offsetY
+  assert.ok(
+    givenBack > 0 && givenBack < 0.016,
+    `the hips move ${(givenBack * 1000).toFixed(1)} mm between the landing and 1.9s: the stand is not the sink being given back`,
+  )
   // Both feet are the pitcher's own in the frame he lands in: a finish that plants one
   // foot and leaves the other hanging off its knee is a body leaning on the drive leg
   // rather than standing on its own two feet.
@@ -1737,21 +2427,75 @@ test('he lands standing in the pose he holds, and nothing moves across the hold'
     assert.equal(leg.planted, true, 'a foot of the finish is off the ground')
     assert.equal(leg.hang, 0, 'a foot of the finish hangs off its knee')
   }
-  // ...and across the hold nothing moves at all: the keys either side of it are the same
-  // numbers, so the frame he is left standing in is the frame the delivery ends in, down
-  // to the last place he stands on.
-  const end = pitcherPose(2.8, ctx())
-  const settled = (pose) => [
-    pose.hip.offsetY, pose.hip.offsetZ, pose.hip.yaw,
+  // ...and across the hold the *keys'* body is the pause's to the last decimal — the travel
+  // is spent by the beat's own first frame, and the turn and both feet are where they were
+  // — while what moves over it is the trunk: it is coming up out of the fold all the way to
+  // the pause (see the finish's own test), and the hips it was paid out of come up with it.
+  // Nothing else does: a step taken on the frames the arm lets the throw go would be a foot,
+  // or the pelvis' travel, and neither moves.
+  const pause = pitcherPose(2.1, ctx())
+  const still = (pose) => [
+    pose.hip.offsetZ, pose.hip.yaw,
     ...pose.legs.flatMap((leg) => [...leg.ankle, ...leg.knee]),
   ]
-  const held = settled(hold)
-  const ended = settled(end)
+  const held = still(hold)
+  const paused = still(pause)
   for (let i = 0; i < held.length; i += 1) {
     assert.ok(
-      Math.abs(held[i] - ended[i]) < 1e-9,
-      `the ${i}th number of the held finish moves ${(ended[i] - held[i]).toFixed(6)} across the hold`,
+      Math.abs(held[i] - paused[i]) < 1e-9,
+      `the ${i}th number of the held finish moves ${(paused[i] - held[i]).toFixed(6)} across the hold`,
     )
+  }
+  // ...read as a share rather than as an angle: the fold at 1.9 s is already most of the way
+  // spent (the stand is paced at two and a half times the keys' tail, see STAND_PACE), so what
+  // the beat still owes is the last of it — under half of what the landing frame carried, and
+  // what is left by the pause is the keys' own standing lean.
+  assert.ok(
+    pause.hip.fold < hold.hip.fold * 0.5,
+    `the trunk is ${(pause.hip.fold * (180 / Math.PI)).toFixed(1)}° at the pause against ${(hold.hip.fold * (180 / Math.PI)).toFixed(1)}° at 1.9s: the stand is not spent over the beat`,
+  )
+  assert.ok(
+    pause.hip.offsetY - hold.hip.offsetY > 0.001,
+    `the hips come up ${((pause.hip.offsetY - hold.hip.offsetY) * 1000).toFixed(1)} mm between 1.9s and the pause: the sink is not given back as the trunk stands`,
+  )
+  // ...and what the *recovery* finishes is the same movement: the trunk is the keys' own
+  // standing body by the walk back (see FINISH_STAND), with both shoes and the pelvis'
+  // travel where the hold left them — a body standing up out of what it has done, and not a
+  // step taken on the frames the arm lets the throw go.
+  // ...and the stand is *finished* by the recovery rather than carried into the walk back:
+  // the trunk at 2.8 s is the keys' own standing body (2.9° at the plate) against the 33.7°
+  // the landing stood in and the 60.2° the crossing was thrown into. Read against the hold
+  // rather than the landing it is a short step — the stand is paced at two and a half times
+  // the keys' tail (see STAND_PACE), so 1.9 s is already 8.5° — which is what "stands back
+  // up out of the fold by the walk back" means now: the beat is spent standing, and the
+  // recovery's own body is the one it stands into.
+  const recovered = pitcherPose(2.8, ctx())
+  assert.ok(
+    recovered.hip.fold < landing.hip.fold - 0.3,
+    `the trunk is still folded ${(recovered.hip.fold * 180 / Math.PI).toFixed(0)}° at 2.8s against the landing's ${(landing.hip.fold * 180 / Math.PI).toFixed(0)}°: the torso never stands back up`,
+  )
+  // ...and the sink is given back where the stand is spent: the pelvis rises 0.017 of a rig
+  // unit between the landing and the pause, which is the whole of the FINISH_SINK the fold
+  // was paid out of — by 1.9 s only 0.003 of it is left (the stand is paced at two and a
+  // half times the keys' tail, see STAND_PACE), so the recovery has next to nothing of it to
+  // give. Read over the beat it is the squat standing up, and read after the pause it would
+  // be nothing at all.
+  assert.ok(
+    pause.hip.offsetY - landing.hip.offsetY > 0.015,
+    `the hips come up only ${((pause.hip.offsetY - landing.hip.offsetY) * 1000).toFixed(1)} mm between the landing and the pause: the sink is not given back as the trunk stands`,
+  )
+  assert.ok(
+    Math.abs(recovered.hip.offsetY - pause.hip.offsetY) < 0.001,
+    `the hips move ${((recovered.hip.offsetY - pause.hip.offsetY) * 1000).toFixed(1)} mm after the pause: the sink is being given back twice`,
+  )
+  for (let leg = 0; leg < hold.legs.length; leg += 1) {
+    for (const place of ['ankle', 'knee']) {
+      const moved = distance(hold.legs[leg][place], recovered.legs[leg][place])
+      assert.ok(
+        moved < 1e-9,
+        `a foot of the finish moves ${moved.toFixed(6)} of a rig unit as the trunk stands up: the stand is a step`,
+      )
+    }
   }
 })
 
@@ -1820,72 +2564,557 @@ test('the mound steps the whole body down its slope, and the pose keeps its own 
   )
 })
 
-test('the throwing arm lets the throw go: it hangs limp and straight beside the body', () => {
-  // What the arm does once the pitch is over. The landing is the pose the throw left it
-  // in — the hand down across the *front* of the body, the upper arm reaching forward
-  // off a bent elbow, which is what a follow-through *is* — and the hold is the arm the
-  // throw has finished with: straight (the chord from its own socket to the wrist all
-  // but the whole of the arm's span), hanging (that chord and the pole that shapes the
-  // elbow both down beside the body rather than out in front of it), and limp, which at
-  // this level is the hand's own line *run on down the arm* rather than left cocked off
-  // it: the aim the key writes is the direction the forearm really takes, so the driver
-  // has no wrist to fold back on to its bones (the realised bend is the browser suite's
-  // to read — 1° at the hold against 27° at the landing).
+test('the throwing arm lets the throw go straight, folds about the elbow it holds, and pauses there', () => {
+  // What the arm does once the pitch is over, in the four movements the delivery asks
+  // for. It leaves the release on the arm's own *chord* (see RELEASE_ELBOW and
+  // `straightChord`) and it goes on holding it: every frame from the release to the one
+  // the crossing lands on is within a whisker of the span, because a wrist handed a
+  // place *inside* the chord is an elbow the driver folds to hold it — measured before
+  // the sweep's own keys were authored, 21% of the span at 1.36s, which is an elbow 73°
+  // off straight on the frames right after the throw (see those keys).
+  //
+  // What it is straight *for* is the crossing: the upper arm carries the throw down and
+  // across the **plate's own line** — the line the pitch goes down, which the pose's
+  // frame puts at x = 0 and which holds still under the whole of the delivery — and the
+  // elbow is out on the throwing side of it at 1.36s (0.09 of a rig unit) and a couple
+  // of centimetres across it by the frame the fold takes the arm over on. That is the
+  // landmark the request's "past the strike zone" names, and it is deliberately *not*
+  // the torso's own centre line: the chest turns under the arm the whole way through,
+  // so a reading taken against the body's own midline drifts with the turn, while the
+  // plate's line does not move. What the arm does from there is the request's own three
+  // movements, and they are three because they are three different things. The upper arm
+  // *reaches its own final spot*: the pose writes the pole at the elbow it means on the
+  // fold's own keys, so the direction from the socket to the pole is the upper arm's own
+  // line, and across the fold that direction comes down off the throwing shoulder (its own
+  // up 0.279 of a unit *down* at the hand-over) and in to the body's own side — the up
+  // travelling 0.608 of a unit and the lateral 0.921, so the lateral falls from 0.960 to
+  // 0.039 — and *forward of it* by 0.436 (0.024 to 0.460) — and from the frame the travel
+  // arrives on (1.745s) it is one number for the whole of the rest of the swing and the
+  // hold, so what moves under the forearm is the arm alone. The *forearm* is the pendulum the request asks
+  // for: let off the throw's own line it falls to its own bottom (the hand 0.221 of a rig
+  // unit under the joint it hangs from at the stop) and then swings back up the *glove*
+  // side of the body about that held elbow, its own lateral across the chest's frame from
+  // 0.998 at the hand-over through -0.432 at the stop to -0.949 at the rest — falling at
+  // every key and never once coming back. And it *decelerates* into the rest, which is the
+  // last of the request's own words: the angle it turns through between two keys falls at
+  // every step of the swing, 14.1° off the stop through 10.7, 10.3, 8.1 and 6.6 to 4.4° on
+  // the last of them, and then to nought. What it settles on is the rest the request
+  // names: the forearm level — nought to within a degree of the world's own horizontal —
+  // with the elbow at the chest's own side and the *wrist* carried 0.032 of a rig unit
+  // across the torso's own centre line.
+  //
+  // ...and then the pause is the same numbers again on the next key: nothing about the
+  // arm moves across the better part of a fifth of a second, which is what makes the
+  // recovery's own key (2.80s, the arm long and down at his side) read as the separate
+  // movement it is. What the *driver* realises of all this — the elbow's own bend and
+  // the wrist's — is the browser suite's to read (see the arm test there).
   const span = RIG.arm.upper + RIG.arm.fore
-  const armOf = (t) => {
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+  /** A direction from one place to another, as the pose writes the two. */
+  const toward = (from, to) => {
+    const out = [to[0] - from[0], to[1] - from[1], to[2] - from[2]]
+    const length = Math.hypot(...out) || 1
+    return out.map((value) => value / length)
+  }
+  /**
+   * The arm at one frame: its socket and wrist, where the elbow is, and what the
+   * forearm does from there. ``upper`` picks the way the pose names the upper arm —
+   * "chord" while the arm is straight (the elbow is on the arm's own line and the pole
+   * is dead: see the straight keys' own note), "pole" once the fold has started, where
+   * the pose writes the pole *at* the elbow it means.
+   */
+  const armOf = (t, upper = 'chord') => {
     const pose = pitcherPose(t, ctx())
     const arm = pose.arms[0]
     const socket = shoulderOf(pose, arm.side)
-    const wrist = arm.hand
-    const chord = [wrist[0] - socket[0], wrist[1] - socket[1], wrist[2] - socket[2]]
-    const length = Math.hypot(...chord) || 1
-    // How much of the pole's own direction is *horizontal*: an upper arm reaching out
-    // in front of the body is a pole leaning away from the vertical, and one hanging
-    // at the side of it is not.
-    const pole = [arm.elbow[0] - socket[0], arm.elbow[1] - socket[1], arm.elbow[2] - socket[2]]
-    const poleLength = Math.hypot(...pole) || 1
-    const aim = lineOf(pose, arm)
+    const wrist = placeOf(pose, arm)
+    const reach = distance(wrist, socket)
+    const line = upper === 'pole' ? toward(socket, arm.elbow) : toward(socket, wrist)
+    const elbow = socket.map((value, index) => value + line[index] * RIG.arm.upper)
+    const fore = toward(elbow, wrist)
+    // The two places that matter, in the body's own frame: the chest's lateral (the
+    // midline's own normal), its up and its forward — the frame the request's "centre
+    // line" and "upwards" are written in.
+    const centre = chestOf(pose)
+    const turn = upperTurnOf(pose)
+    const axes = {
+      lateral: turnVector(turn, [1, 0, 0]),
+      up: turnVector(turn, [0, 1, 0]),
+      forward: turnVector(turn, [0, 0, -1]),
+    }
+    const ofBody = (v) => ({
+      lateral: dot(v, axes.lateral),
+      up: dot(v, axes.up),
+      forward: dot(v, axes.forward),
+    })
     return {
-      chord: length,
-      down: socket[1] - wrist[1],
-      lean: Math.hypot(pole[0], pole[2]) / poleLength,
-      // ...and how much of the hand's own line is *down*: a limp hand hangs along the
-      // arm it is on.
-      droop: -aim[1],
+      reach,
+      // The upper arm's own line in the *rig's* frame, beside the same line in the body's:
+      // the keys author their places in the rig, so a place the keys hold is a line that
+      // does not move *there* — while the body's own frame turns under it as the trunk
+      // stands up, which is the body's movement and not the arm's (see the hold below).
+      upperRig: line,
+      foreRig: fore,
+      // The elbow's own place in the *rig's* frame as well as the body's: the sweep's
+      // landmark is the *plate's* own line — the line the pitch goes down, which the
+      // pose's frame puts at x = 0 (see `plateBearing`, and the anchor's own solve:
+      // the plate is on the rig's midline whatever the pitch's own lateral is) — and
+      // the body's frame is what the *torso* is read in, which is a different
+      // landmark and the one this test used to name.
+      elbowRig: [elbow[0], elbow[1], elbow[2]],
+      elbow: ofBody([elbow[0] - centre[0], elbow[1] - centre[1], elbow[2] - centre[2]]),
+      upper: ofBody(line),
+      foreBody: ofBody(fore),
+      // ...and where the *wrist* is, in the same frame: the swing's own end is written at
+      // the hand, and "across the torso's centre line" is what that is read against (see
+      // the fold's own block).
+      wristBody: ofBody([wrist[0] - centre[0], wrist[1] - centre[1], wrist[2] - centre[2]]),
+      // The forearm's own elevation off the level, in the world's own sense, and how
+      // far the hand stands over the elbow it hangs from.
+      elev: (Math.asin(Math.max(-1, Math.min(1, fore[1]))) * 180) / Math.PI,
+      rise: wrist[1] - elbow[1],
+      handY: wrist[1],
+      // ...and the fold *about* the joint: the angle between the upper arm the pose
+      // holds and the forearm that hangs off it, which is what a swing about the elbow
+      // is a change in. (Nought on the straight keys, whose pole is dead: see `line`.)
+      bend: (Math.acos(Math.max(-1, Math.min(1, dot(line, fore)))) * 180) / Math.PI,
+      // How much of the hand's own line runs on down the arm it is on: a hand left
+      // cocked off its own forearm is a wrist the driver has to bend to hold.
+      wrist: dot(lineOf(pose, arm), fore),
     }
   }
-  const landing = armOf(1.68)
-  const hold = armOf(1.9)
-  const ended = armOf(2.8)
-  // The throw's own arm: bent, and reaching out in front of the body with the hand
-  // across it.
-  assert.ok(
-    landing.chord < span * 0.95 && landing.lean > 0.35,
-    `the landing's arm is ${(landing.chord / span).toFixed(2)} of its span out with its elbow leaned ${landing.lean.toFixed(2)} off the vertical: the follow-through never crossed the body`,
-  )
-  // ...and the arm the throw has finished with: opened most of the way to the span,
-  // hanging with the hand level with the thigh, and at the side of the body.
-  assert.ok(
-    hold.chord > landing.chord + 0.02 && hold.chord > span * 0.96,
-    `the arm only opens to ${hold.chord.toFixed(3)} of a ${span.toFixed(3)} span (from ${landing.chord.toFixed(3)})`,
-  )
-  assert.ok(
-    hold.lean < 0.25,
-    `the hold's upper arm is still leaned ${hold.lean.toFixed(2)} off the vertical: the elbow is out in front of the body`,
-  )
-  assert.ok(
-    hold.down > 0.5 && hold.down < 0.6,
-    `the hand hangs ${hold.down.toFixed(3)} below its own socket: not beside the body`,
-  )
-  assert.ok(hold.droop > 0.8, `the hand's own line hangs only ${hold.droop.toFixed(2)} of the way down`)
-  // ...and it is held: the arm does not come up out of the hold the way it will on the
-  // way back to the set (see the recovery key, where it is doing something again).
-  for (const part of ['chord', 'lean', 'down', 'droop']) {
+  // Straight out of the release and across the body, in the terms the *pose* can
+  // promise. The release's own frame is the chord — it is the frame the body is placed
+  // by, so its chord is the pitch's own release point — and the window's own keys are
+  // authored *long* of it: a share of the span past one, and inside the 1.25 the
+  // driver's own bones will stretch to. They have to be, because a straight arm has no
+  // slack to answer the one thing the pose cannot know: the driver hangs the arm off
+  // the socket its body really carries, the pose writes a ball off the socket it
+  // *estimates*, and the two are a few centimetres apart on the frames right after a
+  // throw. Measured on the realised skeleton, a key that asked for the chord off the
+  // pose's own estimate came back 19% of the span *inside* it at 1.38s — an elbow 73°
+  // off straight — so each window key carries the direction the throw already had with
+  // the wrist put back out on the driver's own chord, which is the number the browser
+  // suite reads (see its own arm test, and the keys' note).
+  const window = [1.32, 1.34, 1.36, 1.38, 1.4, 1.42, 1.44, 1.46, 1.48, 1.5, 1.51, 1.52, 1.54]
+  for (const t of window) {
+    const share = armOf(t).reach / span
     assert.ok(
-      Math.abs(ended[part] - hold[part]) < 1e-9,
-      `the arm's ${part} moves ${(ended[part] - hold[part]).toFixed(6)} across the hold`,
+      share > 0.99 && share < 1.25,
+      `the arm reads ${share.toFixed(3)} of its own span at ${t}s: the throw's own line is not the straight one`,
     )
   }
+  // ...and *long* of it on every frame the throw's own window is written on: an arm
+  // asked for a share inside the chord is an arm the driver folds, whatever the keys
+  // around it meant (see the note above).
+  for (const t of [1.36, 1.38, 1.4, 1.42, 1.44, 1.46, 1.48, 1.5, 1.51]) {
+    const share = armOf(t).reach / span
+    assert.ok(
+      share > 1.1,
+      `the window's own arm is only ${share.toFixed(3)} of its span at ${t}s: it is inside the chord, which is an elbow`,
+    )
+  }
+  // ...and it is the *upper arm* that carries it across the **plate's own line**:
+  // still out on the throwing side at the plant, and a couple of centimetres across it
+  // by the frame the fold takes the upper arm over on. That is the landmark the shape
+  // is about, and not the torso's own centre line: the *torso* turns under the arm the
+  // whole way through — read against the chest's own midline the same elbow crosses it
+  // a frame or two earlier and the reading drifts with the chest's turn — where the
+  // plate's line is the line the pitch goes down and holds still under all of it.
+  assert.ok(
+    armOf(1.36).elbowRig[0] > 0.05,
+    `the elbow is already ${armOf(1.36).elbowRig[0].toFixed(3)} across the plate's own line at 1.36s`,
+  )
+  assert.ok(
+    armOf(1.54, 'pole').elbowRig[0] < -0.03,
+    `the elbow is still ${armOf(1.54, 'pole').elbowRig[0].toFixed(3)} on its own side of the plate's line at 1.54s`,
+  )
+  // The fold and the pause, key by key, off the pole the pose writes from the frame the
+  // crossing lands on. The *crossing* key's own pole is the arm's own line rather than
+  // the held one — it is the hand-over frame, and the ring the driver hangs the elbow
+  // on is read from it (see that key's own note) — so the direction the fold *holds* is
+  // the one the key after it writes, and every frame from there is read against it.
+  const fold = [1.54, 1.5575, 1.575, 1.61, 1.6275, 1.645, 1.6625, 1.68]
+  // ...and the swing's own keys: the stop, the six frames the forearm's arc is written on
+  // between it and the rest, and the pause the rest is held through.
+  const held = [1.68, 1.71, 1.745, 1.78, 1.82, 1.86, 1.9, 2.1]
+  const handed = armOf(1.5575, 'pole')
+  const stop = armOf(1.68, 'pole')
+  const pause = armOf(1.9, 'pole')
+  // ...and the frame the arm's own travel *ends* on: the swing's own third key, from which
+  // the line is held for the rest of the beat and out to the pause (see the easing below).
+  const home = armOf(1.745, 'pole')
+  // The keys the travel is written on: the fall's own last key, the two keys of the swing
+  // it is eased over, and the frame it arrives on.
+  const travel = [1.6625, 1.68, 1.71, 1.745]
+  // The upper arm *travels* to its own final spot: the request's own words are that it
+  // reaches the spot and the forearm swings under it, and what the pose writes is that —
+  // the direction from the socket to the pole comes down off the throwing shoulder (its
+  // own up 0.279 of the unit *down* at the hand-over) and in to the body's own side, where
+  // the whole of its lateral is spent as well: its up from -0.279 to -0.887 and its
+  // lateral from 0.960 to 0.039, so the elbow the throw left slung out over the shoulder
+  // is carried *down* the side of the chest and comes to rest under the socket it hangs
+  // from — and *forward of it*, a hand's own length in front of the chest's own centre
+  // (0.145 of a rig unit, against the 0.005 the hand-over's own elbow stands at), which is
+  // the room the forearm's own sweep across the body's front is read in (see the keys'
+  // own note, and the browser suite's arm test).
+  //
+  // The travel *eases out* rather than stopping where the fall leaves it: the whole arm
+  // swings on the arc the socket draws, and a line that arrives at its own spot in one key
+  // is a line the *hand* has to be stopped by. The fall brings the arm round at several
+  // rig units a second (see the browser suite's reading of the whip), so the last of its
+  // travel spent in a single frame drives the hand's own sweep to a full stop in the
+  // middle of the swing and starts it again: measured on the realised skeleton before the
+  // easing, the hand's own lateral step fell to 0.0001 of a unit at 1.70s and came back to
+  // -0.008 on the very next step — a hitch, and one the arm's own line is the only thing
+  // that can pay for. So the travel is spread over the swing's first three keys as an
+  // ease-out — 0.45 of it by 1.68s, 0.80 by 1.71s and the whole of it by 1.745s, each step
+  // smaller than the one before it — and what the elbow's line is *held* on from there is
+  // the final spot.
+  assert.ok(
+    handed.upper.up - home.upper.up > 0.5,
+    `the upper arm's own up travels only ${(handed.upper.up - home.upper.up).toFixed(3)} of a unit from the hand-over to its own final spot`,
+  )
+  // ...and it closes on that spot at *every* step of the travel rather than turning round
+  // on it: read as the angle between the line and the line it is going to, the arm backs
+  // away from its own spot on no frame of the travel — which is the request's own "no snap"
+  // as a number, since a line that reverses is a hand that stops and starts again.
+  const toSpot = (t) => {
+    const now = armOf(t, 'pole').upper
+    const end = home.upper
+    const cos = now.up * end.up + now.lateral * end.lateral + now.forward * end.forward
+    return (Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI
+  }
+  let backed = 0
+  let backedAt = 0
+  for (let t = 1.6625 + 0.0025; t <= 1.745 + 1e-9; t += 0.0025) {
+    const step = toSpot(t) - toSpot(t - 0.0025)
+    if (step > backed) { backed = step; backedAt = t }
+  }
+  assert.ok(
+    backed < 1e-3,
+    `the upper arm's own line backs away from its final spot by ${backed.toFixed(5)} of a degree at ${backedAt.toFixed(4)}s: the travel turns round on its way in`,
+  )
+  // ...and the *ease* is a schedule rather than a hope: read as the share of the travel's
+  // own chord each key has spent, the shares climb and the steps between them fall — the
+  // arm arriving at the spot rather than being stopped on it.
+  const chord = (() => {
+    const from = armOf(travel[0], 'pole').upper
+    const to = armOf(travel[travel.length - 1], 'pole').upper
+    const d = ['up', 'lateral', 'forward'].map((which) => to[which] - from[which])
+    const length = d[0] ** 2 + d[1] ** 2 + d[2] ** 2
+    return (t) => {
+      const now = armOf(t, 'pole').upper
+      const moved = ['up', 'lateral', 'forward'].map((which, i) => (now[which] - from[which]) * d[i])
+      return (moved[0] + moved[1] + moved[2]) / length
+    }
+  })()
+  const eased = travel.slice(1, -1).map(chord)
+  assert.ok(
+    eased[0] > 0.3 && eased[1] > eased[0] && eased[1] < 0.9,
+    `the arm carries ${eased[0].toFixed(2)} and then ${eased[1].toFixed(2)} of its own travel at 1.68s and 1.71s: the travel is not spread over the swing`,
+  )
+  assert.ok(
+    eased[0] > eased[1] - eased[0] && eased[1] - eased[0] > 1 - eased[1],
+    `the arm's own steps are ${eased[0].toFixed(2)}, ${(eased[1] - eased[0]).toFixed(2)} and ${(1 - eased[1]).toFixed(2)} of the travel: it is not easing into its spot`,
+  )
+  // ...and it stays on the throwing side of the body's own midline the whole way in, and
+  // never rises on the way: the elbow is what the swing turns about, and an elbow carried
+  // across the chest's centre is a forearm swinging *through* the body rather than past
+  // it. Read at every step of the travel rather than at the keys, because the track
+  // between two keys is its own curve.
+  let least = 1
+  let turning = 0
+  for (let t = 1.5575 + 0.005; t <= 1.745 + 1e-9; t += 0.005) {
+    const now = armOf(t, 'pole').upper
+    const before = armOf(t - 0.005, 'pole').upper
+    least = Math.min(least, now.lateral)
+    turning = Math.max(turning, now.up - before.up)
+  }
+  assert.ok(
+    least > 0.02,
+    `the upper arm's own line comes within ${least.toFixed(3)} of the body's own centre: the elbow crosses the midline on its way to the stop`,
+  )
+  assert.ok(
+    turning < 0.005,
+    `the upper arm's travel turns round before it stops: its up comes back up by ${turning.toFixed(4)} of a unit in a two-hundredth of a second`,
+  )
+  // ...and from the frame the travel arrives on it *is* held, which is what makes the
+  // swing's own second half the forearm's movement rather than the arm's: the line `home`
+  // writes is the line every key after it writes — all three of the direction's own
+  // numbers, to a thousandth of a unit — because the tracks either side are equal and the
+  // interpolator's own tangents fall to nought where two keys are.
+  //
+  // Read in the *body's* own frame rather than the rig's: the keys hold their places on the
+  // body they drew, and the pose carries those places with the chest as it stands up out of
+  // the finish (see the sequence's `standShare`: whole from the crossing out, so a place the
+  // keys wrote is a place on the trunk, turned with it). What that leaves moving in the rig
+  // is the chest's own stand and nothing of the arm's, and what it leaves *still* is the
+  // line read on the body the arm hangs from — which is the promise: the arm is held, and
+  // the body is what carries it up. The shift the socket's travel puts under it (see
+  // `foldRide`) is a translation of the whole arm and so moves no line at all.
+  //
+  // What the body reads is the arm held against the *crossing's* fold while the fold comes
+  // off under it: the ride turns the places by the stand since that top, so the keys' own
+  // arm is fixed in the world while the chest stands out of the fold, and the line on the
+  // body drifts by however far the fold has come up — 0.007 at 1.78 s and 0.0175 at the
+  // pause, where the trunk has stood 21.3° under it. At the keys' own pace the same drift
+  // was under 0.012 by the pause (the trunk had stood 25.3°); the stand being two and a half
+  // times as quick is what spends it sooner rather than further, because the fold it turns
+  // by the pause is that much shallower. It is a drift on the body and not a step (the
+  // browser suite reads the realised joints frame by frame), and the shape the arm holds —
+  // reach, elbow on its ring, hand off its forearm — does not move.
+  const settled = armOf(1.9, 'pole').upper
+  for (const t of held.filter((key) => key > 1.9)) {
+    const now = armOf(t, 'pole').upper
+    const body = Math.hypot(now.lateral - settled.lateral, now.up - settled.up, now.forward - settled.forward)
+    assert.ok(
+      body < 0.02,
+      `the upper arm's own line moves ${body.toFixed(4)} of a rig unit on the body between the travel's own end at 1.745s and ${t}s: it is still travelling`,
+    )
+  }
+  // ...and the elbow it holds hangs *down* off its own shoulder, which is the one thing the
+  // world says about a throw's arm that the chest's own frame cannot: the trunk comes over
+  // the arm through the follow-through, so read against the chest's own lateral the held
+  // elbow walks a quarter of a rig unit across the body as the fold deepens (0.484 at the
+  // finish's 60°, against the 0.223 the shallower finish read) — and that reading is the
+  // *trunk's* movement, not the arm's, because the chest is what turned under it (0.223 of
+  // a unit out is the shoulder's own half-width, and the elbow is a socket's width further
+  // out again along its own line). In the world the line is the arm's own, and it is the
+  // one the swing arrives on: down and a hand's width out from the shoulder, on the frame
+  // the travel ends on and on every frame of the hold after it. The *body* is what carries
+  // it from there: the pelvis, the trunk and the feet are the landing key's own numbers on
+  // every key of the swing and the hold, so what moves under the forearm is the arm alone.
+  const hangOf = (at) => {
+    const pose = pitcherPose(at, ctx())
+    const arm = pose.arms[0]
+    return toward(shoulderOf(pose, arm.side), arm.elbow)
+  }
+  const hang = hangOf(1.745)
+  // ...down and out, with the stand's own pace on it: at the frame the travel ends the trunk
+  // is 28.9° folded (it was 43° at the keys' own pace), so the arm is carried a little less
+  // far over and down the world's vertical — 0.857 of its unit *under* the socket against
+  // 0.9, with the same hand's width out (0.279) — and the body is what takes the rest of the
+  // carry as it stands. The bound holds the hang rather than the number.
+  assert.ok(
+    hang[1] < -0.8 && hang[0] < -0.1 && hang[0] > -0.4,
+    `the held upper arm points ${hang.map((value) => value.toFixed(3)).join(', ')}: it does not hang down and out from its own shoulder`,
+  )
+  // The world's own up is *not* the held promise any more: the arm rides the trunk as it
+  // stands (see the sequence's `standShare`), so the line that is held on the body lifts in
+  // the world as the chest comes up under it — measured over the whole of the hold, 0.236 of
+  // the unit at 2.1 s, which is the trunk's own 21.3° of stand between 1.745 s and the pause
+  // (35.1° off the crossing's top) and not a swing of the arm's: on the body the same line
+  // holds to 0.02 (see above). At the keys' own pace the same carry read 0.158, because the
+  // fold at 1.745 s was deeper and there was more of it to spend — the same carry, in less
+  // stand. What a windmill would do is many times that, so the bound holds the shape rather
+  // than the number: the hang stays a hang.
+  for (const at of [1.78, 1.9, 2.1]) {
+    const later = hangOf(at)
+    assert.ok(
+      Math.abs(later[1] - hang[1]) < 0.3,
+      `the held upper arm's own up moves ${(later[1] - hang[1]).toFixed(4)} between 1.745s and ${at}s: the arm swings while the body stands`,
+    )
+  }
+  // The *forearm*, then, and it is the pendulum: let off the throw's own line it falls to
+  // its own bottom — the hand 0.214 of a rig unit *under* the joint at the stop, against
+  // 0.139 at the hand-over — and comes back up the *glove* side of the body about the elbow
+  // it holds: read in the chest's own frame the forearm's lateral falls from 0.998 of the
+  // unit at the hand-over through the stop's -0.432 to -0.949 at the rest, which is the
+  // request's "strictly towards the glove side" as a number.
+  assert.ok(
+    handed.rise < -0.1 && stop.rise < -0.2,
+    `the hand is ${handed.rise.toFixed(3)} of a rig unit over the joint at the hand-over and ${stop.rise.toFixed(3)} at the stop: the forearm never drops`,
+  )
+  const swing = [1.5575, 1.575, 1.61, 1.6275, 1.645, 1.6625, 1.68, 1.71, 1.745, 1.78, 1.82, 1.86, 1.9]
+  const arc = swing.map((t) => armOf(t, 'pole'))
+  // What the arc does from the frame the throw lets the arm go is *fall*: read in the
+  // world — the frame a hanging arm is read in, and the one the keys' own place decides —
+  // the forearm's elevation only goes down from the hand-over to the hold, and the last of
+  // it is under the joint rather than level with it. The first frames are the ride's own
+  // (the fold is at its top by then, so the socket has already been carried the whole way),
+  // and they are bounded rather than ordered, so a deeper fold cannot turn the fall into a
+  // windmill.
+  const SETTLED = 1.78
+  for (let i = 1; i < arc.length; i += 1) {
+    if (swing[i] <= SETTLED) {
+      assert.ok(
+        arc[i].elev - arc[i - 1].elev < 6,
+        `the forearm climbs ${(arc[i].elev - arc[i - 1].elev).toFixed(1)}° at ${swing[i]}s: the ride is throwing the arm up rather than letting it down`,
+      )
+      continue
+    }
+    assert.ok(
+      arc[i].elev < arc[i - 1].elev + 3,
+      `the forearm comes back up to ${arc[i].elev.toFixed(1)}° at ${swing[i]}s from ${arc[i - 1].elev.toFixed(1)}°: the arm is climbing again`,
+    )
+  }
+  // ...and strictly toward the glove side *between* the keys as well as on them: the track
+  // the keys are joined on is its own curve, and what it may not do is carry the forearm
+  // back out toward the throwing side. On the keys the swing is monotone outright — every
+  // step of the list above is a fall — and the curve they are joined on is monotone to a
+  // ten-thousandth of a unit but for one seam, the hand-over's own (1.5575 to 1.575s),
+  // where it overshoots: a fiftieth of one frame's travel there, and the one place in the
+  // delivery the fold's asks run *in* toward the socket while the arm is still stretched
+  // to hold them (the asks were brought in on those keys so the arm's own stretch — the
+  // driver's answer to a place past its reach — can carry the fold through the hand-over,
+  // and so the pose's own clamp stays on the frames the asks are inside the reach it
+  // holds; see the fold's keys in util/pitcherSequence.js), so the interpolated places
+  // move with them. The reading is in the *chest's* frame, which is the finish's to turn:
+  // the fold carries the trunk over most of a right angle through those frames (60.2° at
+  // the finish, arriving at about 160°/s through the whip — see FINISH_FOLD), so a seam in
+  // the world projects a hundredth of a unit onto the chest's own lateral where it used to
+  // project a half-thousandth — a fraction of a millimetre of forearm at each frame of the
+  // turn, and 0.012 measured at 1.61 s where the fold's own rate is fastest. The reading
+  // below holds it under two hundredths, which is a fiftieth of the step a reversal of the
+  // swing would make.
+  // ...and the fall does not carry the forearm back up between the keys either: the track
+  // they are joined on is its own curve, and what a hang may not do is windmill — the
+  // elevation is read frame by frame from the hand-over to the pause, and no step of it
+  // may climb more than a couple of degrees.
+  let back = 0
+  let backAt = 0
+  for (let t = 1.745 + 0.0025; t <= 2.1 + 1e-9; t += 0.0025) {
+    const step = armOf(t).elev - armOf(t - 0.0025).elev
+    if (step > back) { back = step; backAt = t }
+  }
+  assert.ok(
+    back < 2,
+    `the forearm climbs ${back.toFixed(2)}° between two frames at ${backAt.toFixed(4)}s: the fall turns round on its way into the hang`,
+  )
+  // ...and the climb is read in the *world*, which is where a pendulum swings: the chest is
+  // folded over the elbow through the swing (see FINISH_FOLD), so the same rise projects onto
+  // the chest's own up as nought — the forearm's own line at the stop is already the chest's
+  // own down — and what the arm does across the beat is 23° of elevation against the world's
+  // own level (-70.7° at the stop, -47.8° at the rest). It was 48° at the keys' own pace
+  // (-55.1° and -6.9°): the stand now carries the trunk upright by the pause, so the arm it
+  // hangs from is the standing body's and the hand sits at the hip rather than held out level.
+  // The *chest's* frame is where the arm's own held shape is read, and the bound below holds
+  // the world's climb rather than that.
+  assert.ok(
+    pause.elev < -60 && pause.elev - stop.elev < 8,
+    `the forearm reads ${pause.elev.toFixed(1)}° at the pause, ${(pause.elev - stop.elev).toFixed(1)}° off the frame the throw let it go: it is still climbing over the elbow rather than hanging under it`,
+  )
+  // ...and the hand ends *under the socket it fell from* rather than swung across the
+  // body: what the hold is worth by now is the arm's height off its own shoulder. The arm
+  // has been let go of by here (see the keys' own note): nothing is holding it out, so it
+  // hangs — the hand the better part of a rig unit under the socket, on the throwing side
+  // of the body's own centre line.
+  const rest = pitcherPose(1.9, ctx())
+  const socketOf = (at) => {
+    const pose = pitcherPose(at, ctx())
+    return shoulderOf(pose, pose.arms[0].side)
+  }
+  const drop = socketOf(1.9)[1] - rest.arms[0].hand[1]
+  assert.ok(
+    drop > 0.45 && rest.arms[0].hand[0] < -0.02,
+    `the hand hangs ${drop.toFixed(3)} of a rig unit under its own socket, ${rest.arms[0].hand[0].toFixed(3)} of one across the body's centre line: the arm is not hanging down the throwing side`,
+  )
+  const arcOf = (from, to) => {
+    const a = armOf(from, 'pole').foreBody
+    const b = armOf(to, 'pole').foreBody
+    const cos = a.lateral * b.lateral + a.up * b.up + a.forward * b.forward
+    return (Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI
+  }
+  // ...and the fall *settles* rather than stopping: the arm's own last steps into the
+  // hold are smaller than the ones that brought it down, and across the beat itself it
+  // does not move at all — the pause is the same numbers on the next key.
+  assert.ok(
+    arcOf(1.86, 1.9) < 25 && arcOf(1.9, 2.1) < 1,
+    `the swing's own last step is ${arcOf(1.86, 1.9).toFixed(2)}° and the hold's is ${arcOf(1.9, 2.1).toFixed(3)}°: the arm is still travelling across the beat`,
+  )
+  // ...and what it settles into is the rest the keys' own hold place draws: a forearm hanging
+  // down the standing body's side, the hand under the joint it hangs from, and the *wrist*
+  // carried across the torso's own centre line: 0.27 of a rig unit on the far side of it, so
+  // the hand the swing is written at stands across the body's own midline with the palm's
+  // own length past it.
+  //
+  // The arm *rides the trunk as it stands* (see the sequence's `standShare`), so what the rest
+  // reads in the world is the chest's own stand on it as much as the arm's: at 1.9 s the trunk
+  // is 8.5° folded and by the pause it is the standing body's 2.9°, so the forearm hangs
+  // **52.6° under the world's horizontal** with the hand 0.222 of a unit under the joint it
+  // hangs from — the arm at his side, carried by a body that has finished standing rather
+  // than held out level over a folded trunk (‑6.9° and ‑0.005 at the keys' own pace, where
+  // the stand had a third of the beat still to go at the pause). On the body the rest is the
+  // shape the keys drew, whatever the world says; the bounds below hold that the arm hangs
+  // down and across rather than standing out, and what they still catch is an arm left up.
+  assert.ok(
+    pause.elev < -60 && pause.rise < -0.3,
+    `the forearm is ${pause.elev.toFixed(1)}° at the pause with the hand ${pause.rise.toFixed(3)} of a unit over its own elbow: the arm has not come to rest hanging`,
+  )
+  // ...and it is read against the *body's* centre line in the rig's own frame rather than
+  // through the chest's axes: the trunk is folded 60° over the hand at the rest (see
+  // FINISH_FOLD), so a place in front of the chest projects *along* its lateral and the
+  // reading becomes the fold's number rather than the hand's. The body's own midline is
+  // the same line at every fold — the pelvis is on it and the chest turns about it — and
+  // the wrist stands 0.26 of a rig unit on the glove side of it.
+  assert.ok(
+    rest.arms[0].hand[0] < -0.02,
+    `the wrist stands ${rest.arms[0].hand[0].toFixed(3)} across the body's centre line: the hand is not across the body`,
+  )
+  // ...and the hand rides the swing rather than hanging off it: the line the keys write for
+  // the hand *is* the line the forearm takes on the fold's own keys, so the driver has no
+  // wrist to fold back on to the arm's own bones while the throw is still on him. (The keys
+  // of the hold are the arm at rest, and the hand's own line there is the pose's — see the
+  // keys' own note.)
+  for (const t of fold) {
+    assert.ok(
+      armOf(t, 'pole').wrist > 0.75,
+      `the hand's own line is ${armOf(t, 'pole').wrist.toFixed(3)} of the way down the forearm at ${t}s`,
+    )
+  }
+  // ...and the swing's own arc runs the hand *up* rather than dropping it back down the arm:
+  // the hand's world height climbs at every key from the swing's own bottom — the 1.645 key,
+  // where the fall off the throw is spent and the hand hangs 0.252 of a rig unit under the
+  // joint — to the rest. A whisker of the trunk's own ride is allowed for: the hand is
+  // carried by the socket it hangs from, and the socket is on its way *down* under the fold
+  // (see FINISH_SINK), so the last of the fold is worth four millimetres against the swing's
+  // own hand's width across the same frames — two at the keys' own pace, and more since the
+  // stand is paced at two and a half times that tail (see STAND_PACE), because a place turned
+  // by a stood trunk is a place carried a little way *down* the forward lean it was drawn in.
+  // What the check holds is that the arm is doing the work, not the body: a hand dropped back
+  // down the arm would be ten times that.
+  // ...read off the *socket* rather than the ground: the body stands up under the arm
+  // through these frames (see FINISH_STAND_FROM), so a world height would rise with the
+  // trunk whatever the arm did. What the arm does is lengthen down the body: the hand's
+  // own drop under the socket grows from the hand-over to the hold.
+  const bottom = 1.71
+  const dropOf = (at) => {
+    const pose = pitcherPose(at, ctx())
+    const arm = pose.arms[0]
+    return shoulderOf(pose, arm.side)[1] - placeOf(pose, arm)[1]
+  }
+  let hung = dropOf(bottom)
+  for (const t of held.filter((key) => key > bottom && key < 2.1)) {
+    const now = dropOf(t)
+    assert.ok(
+      now > hung - 0.03,
+      `the hand comes back up the body from ${hung.toFixed(3)} to ${now.toFixed(3)} of a rig unit under the socket at ${t}s`,
+    )
+    hung = now
+  }
+  // ...and the hold is a stop *of the arm's*: nothing about the places the keys wrote moves
+  // across the better part of a fifth of a second — read on the *body*, because that is the
+  // body the arm rides as the chest stands up under it (see the sequence's `standShare`).
+  // Read in the rig instead, the hold shows exactly the stand: 0.189 of the upper arm's own
+  // line and 0.191 of the forearm between the rest and the pause (0.308 and 0.378 between
+  // the landing and the pause), all of it the trunk's 11.6° of rise across that window
+  // carrying a body-held arm with it. That is the ride's promise rather than a leak in the
+  // swing's, and what it leaves the rig is the chest's movement and nothing else.
+  const pauseEnd = armOf(2.1, 'pole')
+  for (const axis of ['lateral', 'up', 'forward']) {
+    const upperMoved = Math.abs(pauseEnd.upper[axis] - pause.upper[axis])
+    const foreMoved = Math.abs(pauseEnd.foreBody[axis] - pause.foreBody[axis])
+    assert.ok(
+      upperMoved < 0.02 && foreMoved < 0.02,
+      `the arm's own ${axis} moves across the hold (${upperMoved.toFixed(4)} of the upper arm, ${foreMoved.toFixed(4)} of the forearm): the swing is still travelling`,
+    )
+  }
+  const down = armOf(2.8)
+  assert.ok(
+    down.reach > span * 0.95 && down.elev < -60 && down.rise < -0.2 && down.elbow.up < -0.2,
+    `the arm comes home at ${(down.reach / span).toFixed(2)} of its span with the forearm ${down.elev.toFixed(1)}° below the level at 2.80s`,
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -1893,17 +3122,19 @@ test('the throwing arm lets the throw go: it hangs limp and straight beside the 
 // is the only one that asks for them (see `pitcherRelease`): the arm's cone carries the
 // release as far across as the arm's own lateral reach goes, and the rest of the ask is
 // the *body's* — the trunk's roll out toward the side the pitch is thrown from, and the
-// metres of carry the step pays for. Both belong to the back leg's own *drive*, and
-// neither to the kick: the body's sideways metres are the drive leg's own angle (the
-// pelvis crosses a planted ankle, and the leg, a rigid span, comes off the vertical by
-// exactly that much), so a sidestep taken across the kick swings a leg out from under a
-// body that has not started to move — and the roll is the trunk standing over the leg the
-// drive has carried it across, one motion with the stride: the front foot's own place is
-// authored across by the same metres, so the body goes where its step goes rather than the
-// step sliding under a body that stayed.
+// metres of carry the step pays for. The two run on different clocks, and what each of
+// them costs is why. The roll is paid in *height* — a rolled pelvis comes down on the
+// socket the drive leg hangs from by a hip half-width of the roll, and the pelvis is stood
+// back up by exactly that (see `rollLift`) — so it can come out over the *kick*, where the
+// reach the cock is drawn back off is built, and it does: the trunk comes across over the
+// leg the weight is on as the knee comes up over it. The *carry* is paid in the drive
+// leg's own line — the pelvis crosses a planted ankle and the leg, a rigid span, comes off
+// the vertical by exactly that much — so it waits for the *drive*, where the step is what
+// pays for the metres and the front foot's own place is authored across by them: the body
+// goes where its step goes rather than the step sliding under a body that stayed.
 // ---------------------------------------------------------------------------
 
-test('the trunk leans out over the rubber as it drives, and the step carries what the lean cannot', () => {
+test('the trunk leans out over the rubber as the leg kicks, and the step carries what the lean cannot', () => {
   const DEG = 180 / Math.PI
   // The default game's own pitch, body for body: its left-hander's release point stands
   // 1.22 m across the mound — the widest ask a real pitch makes of this body — and the
@@ -1945,29 +3176,72 @@ test('the trunk leans out over the rubber as it drives, and the step carries wha
   }))
   const bare = (t) => pitcherPose(t, ctx({ hand: 'L', height: profile.rigHeight, stride: profile.stride }))
   const tiltAt = (t) => pose(t).hip.tilt
+  const liftAt = (t) => pose(t).hip.tiltLift
   const acrossAt = (t) => pose(t).hip.offsetX
   const near = (value, want, what) => assert.ok(
     Math.abs(value - want) < 1e-9,
     `${what}: ${value} against ${want}`,
   )
-  // The set, the rocker and the gather carry none of it: the stance the clip opens (and
-  // closes) in is the stance the profile reads, and a pitcher in the set stands on his
-  // own two feet rather than out over the rubber's edge.
-  for (const t of [0, 0.46, 0.80]) {
+  // The set and the rocker carry none of it: the stance the clip opens (and closes) in is
+  // the stance the profile reads, and a pitcher in the set stands on his own two feet
+  // rather than out over the rubber's edge. The kick's own first frame is the rocker — the
+  // last frame the stride shoe is on the dirt — and the roll begins with it (see
+  // TILT_TRACK).
+  for (const t of [0, 0.46]) {
     near(tiltAt(t), 0, `the trunk is already rolling at ${t}s`)
     near(acrossAt(t), 0, `the body has already been carried at ${t}s`)
   }
-  // ...and none of the roll is in through the kick: the kick is the front knee coming up
-  // over a back leg that has not moved the body yet, and a trunk rolled on those frames is
-  // a trunk leaning off a leg that is still plumb under it (see TILT_TRACK).
-  near(tiltAt(0.9), 0, 'the trunk is rolling while the front knee is still coming up')
-  near(tiltAt(1.05), 0, 'the trunk is rolling at the fall, before the back leg has driven')
-  // ...it comes out with the *drive* and is whole at the plant: the back leg carries the
-  // pelvis out and the trunk standing over the leg that carried it is the roll.
-  const driven = tiltAt(1.12) / profile.tilt
+  // ...and then it comes across over the leg the kick is standing on, in one motion with
+  // it: up through the gather and the balance, and the drive spends the last of it. Read as
+  // shares of the release's own roll and walked frame by frame, because one motion's
+  // promise is its shape — up from the rocker, monotone, and standing by the plant.
+  const rolling = [0.6, 0.8, 1.0, 1.05, 1.12].map((t) => tiltAt(t) / profile.tilt)
+  const shares = rolling.map((share) => `${(share * 100).toFixed(0)}%`).join(' -> ')
+  assert.ok(rolling[0] > 0, `the kick carries none of the roll: ${shares}`)
+  for (let frame = 1; frame < rolling.length; frame += 1) {
+    assert.ok(
+      rolling[frame] > rolling[frame - 1],
+      `the roll does not come out across the kick: ${shares}`,
+    )
+  }
+  // ...and the last of it is the drive's rather than the kick's, which is the same shape
+  // read at its far end: a roll already whole before the back leg fires would be a body
+  // that had answered the ask and then stood on it.
   assert.ok(
-    driven > 0 && driven < 1,
-    `the roll is ${(driven * 100).toFixed(1)}% in halfway through the drive`,
+    rolling[rolling.length - 1] < 1,
+    `the roll is already whole before the plant: ${shares}`,
+  )
+  // ...and the *height* it costs the legs is not on the same clock: the pelvis' own lift
+  // follows the drive (see TILT_LIFT_TRACK), so the frames the kick's roll is coming out on
+  // carry none of it — a body rolled over the leg it is standing on, with the leg under it
+  // left alone to stand there — and the lift ramps in with the drive, so the two are one
+  // motion again from the plant on. (Between the fall and the plant the roll is the more
+  // advanced of the two, which is the same fact read the other way: the body is already
+  // rolled further over the leg that is carrying it than the height it is charged for, and
+  // what the socket really pays over those frames is measured in TILT_LIFT_TRACK.)
+  near(liftAt(0.46), 0, 'the pelvis is already paying for the roll at the rocker')
+  near(liftAt(0.8), 0, 'the pelvis is paying for the roll before the back leg drives')
+  near(liftAt(1.05), 0, 'the pelvis is paying for the roll at the fall')
+  assert.ok(
+    tiltAt(1.12) / profile.tilt > liftAt(1.12) / profile.tilt,
+    'the roll is not ahead of the height it costs over the drive',
+  )
+  for (const t of [1.2, AUTHORED_RELEASE_TIME, 1.42, 1.68]) {
+    near(liftAt(t), tiltAt(t), `the roll and the height it costs are two motions at ${t}s`)
+  }
+  // ...and the roll is under way on the frames *before* the eyes come off the line they
+  // stand in, which is the ordering the kick is chosen for: the head's own clock takes the
+  // gaze off the stance and onto the zone between AUTHORED_LOOK_SWEEP_TIME and its lock
+  // (see LOOK_PIN), and the body the eyes stand over is already coming across before the
+  // sweep starts. Read on both clocks, because what has to hold is which moved first.
+  const sweepShare = tiltAt(AUTHORED_LOOK_SWEEP_TIME) / profile.tilt
+  assert.ok(
+    sweepShare > 0,
+    'the trunk is still square when the head starts turning for the zone: the roll is behind the look’s own clock',
+  )
+  assert.ok(
+    sweepShare < rolling[1],
+    `the roll is already ${(sweepShare * 100).toFixed(0)}% of the way across by the gather: it is not one motion with the kick`,
   )
   near(tiltAt(1.20), profile.tilt, 'the roll is not complete by the plant')
   // ...and it is complete before the ball goes: the anchor the pitch is placed by is
@@ -2119,13 +3393,16 @@ test('the trunk leans out over the rubber as it drives, and the step carries wha
       near(drive[axis], stillDrive[axis], `the drive foot moved ${['across', 'up', 'fore/aft'][axis]} at ${t}s`)
     }
     // ...and what the pair of them costs is the pelvis's own height and nothing else: the
-    // roll carries the drive socket up by half a hip's width of its sine, and the carry
-    // takes the leg's own span off the vertical, so the body comes down by exactly the two
-    // (see `rollLift`/`stanceDip`) and the leg under it stays a straight rod — which is
-    // the whole of what a *planted* drive foot's slant costs the body.
+    // roll carries the drive socket down by half a hip's width of its sine (see `rollLift`,
+    // which is handed the roll on the *drive's* own clock — the body is rolling with the
+    // kick by these frames, and the height the legs are charged for is the share the drive
+    // pays: see TILT_LIFT_TRACK), and the carry takes the leg's own span off the vertical,
+    // so the body comes up by the one and down by the other and the leg under it stays a
+    // straight rod — which is the whole of what a *planted* drive foot's slant costs it.
     near(
       bare(t).hip.offsetY - pose(t).hip.offsetY,
-      stanceDip({ rig: RIG, lean: Math.abs(acrossAt(t)) }) - rollLift({ rig: RIG, tilt: tiltAt(t) }),
+      stanceDip({ rig: RIG, lean: Math.abs(acrossAt(t)) })
+        - rollLift({ rig: RIG, tilt: liftAt(t) }),
       `the levers cost the legs something other than their own geometry at ${t}s`,
     )
   }
@@ -2149,7 +3426,7 @@ test('the trunk leans out over the rubber as it drives, and the step carries wha
     near(front[0] - stillFront[0], acrossAt(t), `the step's own foot did not go out with the body at ${t}s`)
     near(
       bare(t).hip.offsetY - pose(t).hip.offsetY,
-      -rollLift({ rig: RIG, tilt: tiltAt(t) }),
+      -rollLift({ rig: RIG, tilt: liftAt(t) }),
       `a foot the body is carrying costs it something other than the roll at ${t}s`,
     )
   }

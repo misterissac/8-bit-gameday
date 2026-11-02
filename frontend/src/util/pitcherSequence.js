@@ -114,8 +114,8 @@ const KNEE_OVER_HIP = 0.26
 // fold — which is what a high-slot pitcher does, and what a sidearmer does not.
 const SLOT_LOW_M = 1.35
 const SLOT_HIGH_M = 2.05
-const LEAN_LOW = 0.80
-const LEAN_HIGH = 0.40
+const LEAN_LOW = 1.15
+const LEAN_HIGH = 0.75
 
 // The release height the keys' own leans were written for, and the lean they hold
 // there: the release key is authored at AUTHORED_RELEASE_LEAN, and the height is
@@ -125,7 +125,7 @@ const LEAN_HIGH = 0.40
 // difference between its own slot lean and this one (see the ``slot`` track), so a
 // high slot stands the body up out of the fold instead of asking the same fold to
 // reach higher.
-const AUTHORED_RELEASE_LEAN = 0.57
+const AUTHORED_RELEASE_LEAN = 0.92
 export const AUTHORED_RELEASE_HEIGHT = SLOT_LOW_M
   + (SLOT_HIGH_M - SLOT_LOW_M) * (LEAN_LOW - AUTHORED_RELEASE_LEAN) / (LEAN_LOW - LEAN_HIGH)
 
@@ -461,6 +461,277 @@ const ASK_WHISKER = 0.002
 // about a degree at a cocked arm, and is not spent at all where the ask is the chord
 // itself (the release's anchor, whose ask is inside the whisker by construction).
 const ARM_KEEP_SHARE = 0.02
+
+// How far the glove's own place is swung out of the chest by the frame the fold tops out
+// on, in rig units: the width it takes for the mitt's arm to stay out of a trunk that is
+// folded most of a right angle over it.
+//
+// The mitt is authored against a standing body, and the trunk comes over it by up to a
+// radian through the finish (see holdFoldAt), so the arm's own ring — the circle its two
+// bones draw about the chord — loses its clear arc: the driver's clearance rule has
+// nothing to answer with and the arm sits inside the body (measured, 16.8 mm inside at
+// 1.96 s against its 12 mm bound, the elbow stepping 4 cm on the frame the rule changed
+// its mind). A hand's width of swing is all it takes, and it has to be a *swing*: a nudge
+// out along the chest's own lateral is a longer ask, and the driver answers that by
+// folding the elbow and pulling the wrist 28 mm off the pose (measured at 1.66 s), where
+// the same width spent as a turn about the chest's forward axis is a swing the arm already
+// has in it. Twenty-two millimetres leaves the frame at 1.90 s a hair inside, and the
+// driver answers *that* by folding the arm 13% and pulling the wrist 27 mm off the pose,
+// so the width is the one that leaves no frame for it to answer: 27 mm. Nought with the
+// fold, whole from the crossing to the pause, and nought again by the frame the recovery
+// has stood him up.
+const GLOVE_SWING = 0.027
+
+// The radius the pose hands an elbow's own *pole* to the driver at, in rig units.
+//
+// A pole is a direction and not a place: the driver reads the upper arm's own line
+// from the live socket to the point and takes the point's distance from that socket as
+// nought (see the driver's own note). What the keys author is where the line *points*,
+// written where the arm is — within a third of a unit of the socket, which is what an
+// elbow's own place looks like on a body — and that is a direction the driver can only
+// read as far as the two sockets agree, which they do not: the pose's socket is the
+// body's own turn (see the chord read in `pitcherPose`) while the driver's shoulder
+// rides the clavicle it is swinging, and across the fold the two stand five to a dozen
+// centimetres apart (measured on the realised skeleton: 0.05-0.12 of a rig unit between
+// 1.58 s and 1.66 s, the clavicle's own hand-over being what moves). At the arm's own
+// radius that error re-aims the direction a dozen to two dozen degrees, and the ring
+// the fold's own elbow hangs on is nine or ten degrees wide, so the plane the elbow is
+// placed on is the *estimate's* rather than the pose's: the elbow swings round its
+// chord by the ring's whole radius, which is the throwing arm's flick up across the
+// drive leg (read on the realised skeleton: 20.6° of upper arm in the one frame at
+// 1.6125 s, against 6.6° on the frames either side of it, with the bend held still).
+// Handed out at this radius instead — twenty-five times the width of that ring, five
+// times the widest the sockets disagree — the same direction arrives as the authored
+// one to within three degrees, and the ring, the fold and the bend with it are the
+// pose's own again.
+const POLE_REACH = 1.5
+
+// The forearm's own line, off the pose's own model of the driver's two-bone solve:
+// the elbow sits on the ring the two bones draw about the chord — at the distance
+// the law of cosines puts it from the socket along the chord, swung to the pole's
+// own side of it — and the forearm runs from there to the wrist (see the driver's
+// open-arm solve, whose ring this is). It is what "the hand's line is the
+// forearm's" has to be read against: a wrist's angle is the hand's line off the
+// forearm's, and the forearm's line is the *driver's* to say — the pose only
+// authors where the wrist is and which side of it the elbow hangs on.
+function forearmOf(socket, wrist, polePlace, upper, fore, straight, sweep, out) {
+  // The same three moves the driver's own open-arm solve makes, in its order (see
+  // util/playerRig.js): the bones *stretch* for an ask past the arm's own span, the
+  // frame's own bend caps the chord the wrist may stand at, and the sweep carries a
+  // short ask out to that cap — the line is the pose's and the length is the arm's.
+  // Only then is the elbow placed, on the ring the two bones draw about the chord,
+  // swung to the pole's own side of it.
+  const armSpan = upper + fore
+  const reach = Math.hypot(wrist[0] - socket[0], wrist[1] - socket[1], wrist[2] - socket[2])
+  const stretch = Math.min(1.25, Math.max(1, reach / armSpan))
+  const up = upper * stretch
+  const fr = fore * stretch
+  const cap = Math.sqrt(Math.max(0, up * up + fr * fr - 2 * up * fr * Math.cos(straight)))
+  let chord = reach
+  if (sweep > 0 && reach > 1e-6 && reach < cap) chord = reach + (cap - reach) * sweep
+  if (chord > cap) chord = cap
+  const dir = reach > 1e-6
+    ? [(wrist[0] - socket[0]) / reach, (wrist[1] - socket[1]) / reach, (wrist[2] - socket[2]) / reach]
+    : [0, -1, 0]
+  if (chord > (up + fr) * 0.999) chord = (up + fr) * 0.999
+  const along = (chord * chord + up * up - fr * fr) / (2 * chord)
+  const radius = Math.sqrt(Math.max(0, up * up - along * along))
+  const pole = [polePlace[0] - socket[0], polePlace[1] - socket[1], polePlace[2] - socket[2]]
+  const share = pole[0] * dir[0] + pole[1] * dir[1] + pole[2] * dir[2]
+  const perp = [pole[0] - dir[0] * share, pole[1] - dir[1] * share, pole[2] - dir[2] * share]
+  let perpLength = Math.hypot(perp[0], perp[1], perp[2])
+  // ...and the same side read off the caller's own first chord (see the pose's
+  // two-step), kept as the fallback below: it is the same pole, the same ring and
+  // the same side — only the chord it is read against is the ball's rather than the
+  // wrist's, which is the one pair the carry's own lean on the hand's line cannot
+  // put in the same line as each other.
+  const sideLength = Math.hypot(_ringSide[0], _ringSide[1], _ringSide[2])
+  // A pole stood down the chord's own line leaves the ring no side to be read off
+  // (see the driver's own fallback): the up axis stands in for it — and here the
+  // two are *faded* into each other by the margin rather than switched, because
+  // the pose's own socket is an estimate (see its note) and a side read hard off a
+  // chord that stands a couple of centimetres from the body's own is the one place
+  // that estimate is unforgiving: the hand's whole line hangs on which side of the
+  // chord the elbow is read, and a side that decides differently one frame to the
+  // next steps the hand half a rig unit (measured on the come-through, where the
+  // pole sweeps down the chord's own line as the trunk folds).
+  const poleLength = Math.hypot(pole[0], pole[1], pole[2]) || 1
+  const weight = Math.min(1, perpLength / poleLength / 0.3)
+  if (weight < 1) {
+    // The fallback is the side the *world's* up axis puts on the chord — which is a side
+    // no stretch of the pole can take away, and the one the driver's own solve falls back
+    // on. Where the chord itself is near the up axis that perpendicular shrinks, and the
+    // caller's own first side stands in for it (see the two-step above); where neither is
+    // left, the last resort below answers as it always did.
+    let other = _ringSide.slice()
+    let otherLength = sideLength
+    if (otherLength > 1e-6) {
+      const share2 = _ringSide[0] * dir[0] + _ringSide[1] * dir[1] + _ringSide[2] * dir[2]
+      other[0] -= dir[0] * share2
+      other[1] -= dir[1] * share2
+      other[2] -= dir[2] * share2
+      otherLength = Math.hypot(other[0], other[1], other[2])
+    }
+    if (otherLength < 1e-6) {
+      other = [dir[2], 0, -dir[0]]
+      otherLength = Math.hypot(other[0], other[1], other[2])
+    }
+    if (otherLength > 1e-6) {
+      const scale = perpLength / poleLength
+      // ...and the fallback is read on the *pole's* own side: two sides that oppose each
+      // other cannot be faded into one another — the sum walks through nought and the
+      // hand steps to the other end of the ring in a frame (measured, 0.45 of a rig unit
+      // at 1.288 s, where the whip's pole runs down the ball's own chord). Flipped to
+      // agree, the fade is a turn rather than a jump, and the side the frame settles on
+      // is the pole's own wherever the pole has one to give.
+      const agree = perp[0] * other[0] + perp[1] * other[1] + perp[2] * other[2] < 0 ? -1 : 1
+      perp[0] = perp[0] * weight + agree * (other[0] / otherLength) * scale * (1 - weight)
+      perp[1] = perp[1] * weight + agree * (other[1] / otherLength) * scale * (1 - weight)
+      perp[2] = perp[2] * weight + agree * (other[2] / otherLength) * scale * (1 - weight)
+      perpLength = Math.hypot(perp[0], perp[1], perp[2]) || 1
+    }
+  }
+  // The up axis stands in where neither chord leaves the ring a side (see the
+  // driver's own fallback).
+  if (perpLength < 1e-6) {
+    perp[0] = dir[2]
+    perp[1] = 0
+    perp[2] = -dir[0]
+    perpLength = Math.hypot(perp[0], perp[1], perp[2]) || 1
+  }
+  _ringSide[0] = perp[0] / perpLength
+  _ringSide[1] = perp[1] / perpLength
+  _ringSide[2] = perp[2] / perpLength
+  out[0] = dir[0] * (chord - along) - (perp[0] / perpLength) * radius
+  out[1] = dir[1] * (chord - along) - (perp[1] / perpLength) * radius
+  out[2] = dir[2] * (chord - along) - (perp[2] / perpLength) * radius
+  const length = Math.hypot(out[0], out[1], out[2]) || 1
+  out[0] /= length
+  out[1] /= length
+  out[2] /= length
+  return out
+}
+
+/**
+ * Holds one frame's elbow under the plane the two shoulder sockets draw: turns the
+ * elbow's own place about the socket-to-ball chord until what is left of it *above*
+ * that plane is nought (see SHOULDER_PLANE_IN, which says which frames the rule
+ * binds on).
+ *
+ * The turn is about the chord rather than about the world's up, and that is the whole
+ * of what keeps the arm's shape: the elbow's own ring is a circle about the chord, so
+ * a turn along it moves the elbow round the arm's fold without lengthening the arm,
+ * folding it further, or moving the hand at all. What it decides is which way round
+ * the ring the arm is carried — the same degree of freedom the pose's pole names, and
+ * the one a low slot's upper arm is read by.
+ *
+ * ``share`` is the rule's own weight for the frame (nought outside the windup, one
+ * through it, easing out across the whip — see the constants above), and an elbow
+ * already at or under the plane is returned untouched: the rule only ever takes the
+ * arm down, never lifts it.
+ *
+ * @param {number[]} at the elbow's place, in the rig frame (written in place)
+ * @param {number[]} socket the shoulder the arm hangs from, in the rig frame
+ * @param {number[]} line the unit chord the arm's own hold runs along (socket to ball)
+ * @param {number[]} up the unit normal of the sockets' plane (the chest's own up)
+ * @param {number} share the frame's own weight, nought to one
+ * @returns {number[]} ``at``
+ */
+function holdUnderShoulders(at, socket, line, up, share) {
+  if (share <= 0) return at
+  const [ax, ay, az] = line
+  const ex = at[0] - socket[0]
+  const ey = at[1] - socket[1]
+  const ez = at[2] - socket[2]
+  const along = ex * ax + ey * ay + ez * az
+  // The elbow's own ring about the chord: what is left of the offset once the chord's
+  // share is taken off it. The arm's whole offset climbs by ``along·(chord·up)`` with
+  // the chord, and only the ring's own part of it is the pose's to turn.
+  let px = ex - ax * along
+  let py = ey - ay * along
+  let pz = ez - az * along
+  const chordRise = (ax * up[0] + ay * up[1] + az * up[2]) * along
+  // ...and the elbow's own rise over the plane, split as the ring reads it: the offset
+  // above the chord's line (``a``) and the turn about the chord (``b``) — ``a·cosθ +
+  // b·sinθ`` is the height the elbow comes to after a turn of θ.
+  const a = px * up[0] + py * up[1] + pz * up[2]
+  const cx = ay * pz - az * py
+  const cy = az * px - ax * pz
+  const cz = ax * py - ay * px
+  const b = cx * up[0] + cy * up[1] + cz * up[2]
+  const radius = Math.hypot(a, b)
+  if (radius < 1e-9) return at
+  // An elbow already at or under the plane is left exactly where it is: the rule only
+  // ever takes the arm down, never lifts it.
+  const rise = chordRise + a
+  if (rise <= 1e-12) return at
+  // What the ring's own rise has to be for the elbow to sit on the plane: the whole of
+  // the frame's climb less the rule's own share of it, which is the plane for a share
+  // of one and the elbow's own place for a share of nought.
+  const target = rise * (1 - share) - chordRise
+  const want = Math.max(-radius, Math.min(radius, target))
+  const phi = Math.atan2(b, a)
+  const spread = Math.acos(Math.max(-1, Math.min(1, want / radius)))
+  // The two turns that answer it — the elbow can come down on either side of the ring
+  // — and the nearer of them is the one that only ever moves the arm as far as the
+  // plane, never round its other side.
+  let one = phi + spread
+  let two = phi - spread
+  const wrap = (angle) => {
+    let turned = angle
+    while (turned > Math.PI) turned -= Math.PI * 2
+    while (turned < -Math.PI) turned += Math.PI * 2
+    return turned
+  }
+  one = wrap(one)
+  two = wrap(two)
+  const angle = Math.abs(one) <= Math.abs(two) ? one : two
+  const cos = Math.cos(angle)
+  const sin = Math.sin(angle)
+  px = px * cos + cx * sin
+  py = py * cos + cy * sin
+  pz = pz * cos + cz * sin
+  at[0] = socket[0] + ax * along + px
+  at[1] = socket[1] + ay * along + py
+  at[2] = socket[2] + az * along + pz
+  return at
+}
+
+// The wrist's own cock, key by key: the angle the hand's own line is drawn *back*
+// off the forearm's by, in radians. Nought is the relaxed hand — the palm/forearm
+// joint at its own 180°, the hand running on down the arm it hangs on — and the
+// cock is the joint opening *past* it: the hand drawn back off the forearm, which
+// is what a throwing wrist loads with.
+//
+// It is nought for the whole of the delivery up to the ball: the hand is locked to
+// the forearm it hangs on from the moment it leaves the glove to the frame the ball
+// goes, so what the arm's own rise and the cock's fold do to the hand is *carried*
+// rather than answered — the wrist is not a second joint working against the elbow.
+// (The reference delivery does not cock its wrist on the way back, either: what
+// looks like a cocked hand at the layback is the hand still running on down a
+// forearm that has been folded up behind it. The old schedule here loaded twenty
+// degrees across the come-through and fired it off into the release, which is a
+// wrist moving while the arm is already moving — one more thing to time, on the two
+// frames that have the least time in them.)
+const WRIST_COCK = [
+  [1.05, 0],
+  [AUTHORED_RELEASE_TIME, 0],
+]
+const WRIST_COCK_TIMES = WRIST_COCK.map(([t]) => t)
+const WRIST_COCK_TRACK = WRIST_COCK.map(([, v]) => v)
+// The window the hand's own line is read down the forearm's (see the pose's arm
+// ask): in across the break, out across the release's own line taking over.
+const ARM_ASK_IN = 1.10
+const ARM_ASK_FULL = 1.12
+const ARM_ASK_FADE = 1.32
+const ARM_ASK_OUT = 1.36
+const _foreArm = [0, 0, 0]
+const _planeUp = [0, 0, 0]
+const _armLine = [0, 0, 0]
+const _wristHere = [0, 0, 0]
+const _cockedAim = [0, 0, 0]
+const _ringSide = [0, 0, 0]
+
 
 /**
  * The stature a rig's own joints imply, in the units the rig is measured in: the head
@@ -977,6 +1248,10 @@ function armCone({ socketY, height, reach }) {
  * shorter than it has answers by folding — which is the one thing the tilt may not cost
  * (see TRUNK_TILT_MAX). What the same roll leaves the *other* leg is that amount again of
  * slack, which is the leg that strides and is bent under the body anyway.
+ *
+ * The angle it is handed is the roll the *legs* are paying for, which is the drive's own
+ * clock rather than the body's: see TILT_LIFT_TRACK for why the two are not the same
+ * number over the kick.
  */
 export function rollLift({ rig, tilt = 0 }) {
   return rig.hip.halfWidth * Math.sin(Math.abs(tilt))
@@ -1389,7 +1664,12 @@ const KEYS = [
     headPitch: 0.05,
     pivot: { x: 0.108, lift: 0, z: 0.160, yaw: -1.265, bend: 0.20, hang: 0 },
     front: { x: -0.125, lift: 0, z: 0.020, yaw: 0.02, bend: 0.20, hang: 1, cock: 0 },
-    glove: [0.245, -0.330, -0.290], gloveAim: [0.0, -0.30, -0.954], gloveCurl: 1.55,
+    // ...and the hands are already on their way up here: ten centimetres of the
+    // lift are spent by the rocker, because the hands now have to be at the chest by
+    // the *gather* rather than at the balance (see the gather's own note). Written
+    // at the belt's own height they spent the first third of the windup down there
+    // and then had twenty frames to make the climb in.
+    glove: [0.245, -0.235, -0.290], gloveAim: [0.0, -0.30, -0.954], gloveCurl: 1.55,
     glovePalm: [0.07, 0.30, 0.95],
     curl: 1.5,
   },
@@ -1406,7 +1686,7 @@ const KEYS = [
     // hands — and it is what leaves both elbows *below* the clasped hands here, with
     // the two forearms standing up to them.
     t: 0.80,
-    clasp: true,
+    part: true,
     hipYaw: -1.760, chestYaw: -1.820, lean: 0.16, leanSide: 0.035, hipY: -0.015, drive: -0.095,
     headPitch: 0.04,
     // The weight is *on* the drive leg by here and the shoe has taken it: the pivot
@@ -1414,10 +1694,39 @@ const KEYS = [
     // what the kick rises over is the back leg rather than the space between them.
     pivot: { x: 0.110, lift: 0, z: 0.180, yaw: -1.340, bend: 0.22, hang: 0 },
     front: { x: -0.150, lift: 1.13, z: 0.030, yaw: 0.0, bend: 0.34, hang: 1, cock: 0 },
-    glove: [0.235, -0.170, -0.290], gloveAim: [0.72, 0.28, -0.62], gloveCurl: 1.55,
-    gloveElbow: [-0.10, -0.20, -0.02],
-    glovePalm: [-0.01, 0.36, 0.94],
-    curl: 1.5,
+    // The hands are *at the chest* on this key — the place the balance used to hold
+    // them at (see its own note) — and the mitt lets go of the ball here, because the
+    // knee has reached the top of its kick on this frame and the throwing arm has the
+    // rest of the windup to fall and come back up in. The lift is what the windup's
+    // hands are: they come up with the leg, and the leg is as high as it goes here.
+    glove: [0.225, -0.110, -0.270], gloveAim: [0.90, 0.10, 0.20], gloveCurl: 1.5,
+    // ...and the elbow hangs *deep* under the socket while the hands are at the chest —
+    // sixteen centimetres down and a hand's width behind it, in the chest's own frame —
+    // because that is what keeps the top of the lift from being a pair of elbows coming up
+    // with the hands. Read on the realised skeleton with the elbow asked for at the
+    // balance's own shallow angle, the two elbows rose 10 cm under their sockets over the
+    // kick and stood 9.7 cm apart in shape at the top of it — a wing on one side, which the
+    // browser suite's windup reading catches; asked for deep, they stay 26-30 cm under and
+    // within 3 cm of each other for the whole of the kick.
+    gloveElbow: [-0.16, -0.26, -0.06],
+    glovePalm: [0.06, 0.22, 0.97],
+    // ...and the throwing arm is off the mitt on this frame: the ball a hand's width
+    // below and behind the place the hands were holding, on a bent arm (the elbow's
+    // own 140°) so the swing hangs off the shoulder and goes on opening as it drops.
+    // The standstill it starts from is the clasp's own top, which is now here.
+    ball: [0.3000, 1.0600, 0.6000], aim: [0.42, 0.90, 0.10], curl: 1.42,
+    straight: (140 * Math.PI) / 180,
+    // ...and it leaves the mitt *still showing the ball*: the plate's bearing, which is
+    // the facing the clasp's own palm had it turned to (see the balance's note on the
+    // world and the rig). The turn to first base is the drop's, and it is spent over the
+    // whole of it — the hand is at the hip by the balance, which is where the ball is
+    // shown to the infield's own line.
+    palm: [-0.0480, 0.0000, -0.9990],
+    // The arm's pole is not its own here: with the hands still one shape on this frame
+    // the trail elbow hangs where the lead arm's own mirror puts it (see `mirrorTracks`),
+    // and it is the pole *track* that takes the side over from there, on its own clock.
+    // (The hand's own curl is the arm block's 1.42 above — the clasp's 1.5 that used to sit
+    // here was a second `curl` on the same object, and a key cannot say one thing twice.)
   },
   {
     // The balance point: the knee at the top of the kick, the body coiled *hard* over
@@ -1455,8 +1764,18 @@ const KEYS = [
     // and the shin under it hangs the way every other carried leg's does (see the
     // browser suite's reading of the hang, and its reading of the cock, which is the
     // same window).
+    //
+    // ...and the hands *part on this key*, which is the whole of what the balance is
+    // for. A windup's two hands lift together and the grip is let go at the top of
+    // that lift: left clasped, the hands go on holding the chest for the three frames
+    // the fall takes, which is a delivery standing in its own windup at the one moment
+    // it has already finished winding — and it costs the throwing arm a twentieth of a
+    // second of the quarter second it has to start from rest in. So the key that lifts
+    // the mitt to its highest is the key that lets it go (see PART_KEYS below): the
+    // ball is still in the glove on this frame — the swing begins where the hands were
+    // holding, from a standstill, the way a pendulum's top is a moment of rest — and the
+    // arm's own track leaves from there, three frames before it used to.
     t: 1.00,
-    clasp: true,
     hipYaw: -2.090, chestYaw: -2.170, lean: 0.17, leanSide: 0.060, hipY: -0.025, drive: -0.135,
     headPitch: 0.03,
     // The balance: the hips are over the drive leg and stay there — a rig unit of
@@ -1483,13 +1802,26 @@ const KEYS = [
     // running down it), which is what leaves the wrist a wrist for the showing to be
     // a roll of.
     glovePalm: [0.06, 0.22, 0.97],
-    curl: 1.5,
-    // The throwing arm's own elbow hangs down and behind the hands it is clasped
-    // into: with the hands up at the chest its pole has to fall back out of their
-    // own line, or the two-bone solve has no side to bend the arm to (see the
-    // chord guard in the unit tests — this key's pole sat a millimetre off it once
-    // the clasp came up to the chest).
-    elbow: [0.30, 1.10, 0.42],
+    // ...and the throwing hand is *down beside the hip* by here: the mitt let it go at
+    // the gather and the swing is spent over the balance, so the arm the drive finds is
+    // the one it has always wanted — plumb, straight, the hand behind the hip — with
+    // twelve hundredths of a second still to come before it starts up the back. That is
+    // the whole of what the earlier letting-go buys: the same key, the same body, an arm
+    // that is already at the bottom of its swing rather than on its way down to it.
+    //
+    // ...and the palm is square to **first base** on this frame — the pitcher's own back
+    // while he stands sideways to the plate — which is what the hold then carries from
+    // 1.02 s. Written the way the world reads it and *negated in x and z*, because the
+    // rig frame is the world turned a half turn about its up axis (the driver's
+    // ``toRigVector``): first base stands (0.999, 0, -0.046) in the world and
+    // (-0.999, 0, 0.046) here. A palm written the world's way round shows the ball to
+    // third, which is a hand at the pitcher's side read upside down.
+    ball: [0.1700, 0.4254, 0.6640], aim: [0.0657, -0.9782, 0.1970], curl: 1.4,
+    straight: (168 * Math.PI) / 180,
+    palm: [-0.9990, -0.0100, 0.0457],
+    // The arm's own elbow still hangs down and behind the hands it was clasped into
+    // (see the gather's own pole): the place the swing's bottom is read from.
+    elbow: [0.1378, 0.8339, 0.5913],
   },
   {
     // The fall: the body's weight goes forward *before* anything unwinds. The coil is
@@ -1505,13 +1837,25 @@ const KEYS = [
     //
     // ...and it is where each of the delivery's three forward motions gets its own
     // start, all of them at a body's pace rather than a throw's: the weight is four and
-    // a half centimetres here, the pelvis a single degree of turn, and the throwing
-    // hand has not left the glove at all. Read as *rates* — which is what the eye reads
-    // a delivery by — the five hundredths of a second the fall spans are slow on all
-    // three at once, and what follows is one build from here to the ball rather than a
-    // step out of the coil and then a windup (see the break's own note on the starts,
-    // and the browser suite's reading of the three speeds, which holds each of them to
-    // its fastest frame on the release rather than a crest inside the stride).
+    // a half centimetres here and the pelvis a single degree of turn. Read as *rates* —
+    // which is what the eye reads a delivery by — the five hundredths of a second the
+    // fall spans are slow on all three at once, and what follows is one build from here
+    // to the ball rather than a step out of the coil and then a windup (see the break's
+    // own note on the starts, and the browser suite's reading of the three speeds,
+    // which holds each of them to its fastest frame on the release rather than a crest
+    // inside the stride).
+    //
+    // ...and the *swing is already running by here*: the mitt let the hand go at the
+    // gather — the clasp's own top — so the ball leaves it at the height the windup lifted
+    // it to, and the swing that follows starts from rest rather than being launched out of
+    // the clasp the instant the hands come apart. That is the whole of what gives the windup
+    // its length: with the mitt held to the balance (where it used to be let go) the hand
+    // had to cover the drop from the chest to the hip in the seven hundredths of a second
+    // between that key and this one, which is a hand *thrown* down rather than let down,
+    // and the cock that followed had a quarter of a second to arrive in. Off the gather it
+    // has twenty hundredths for the drop and ten for the carry up the back, which is a body
+    // swinging an arm as a pendulum swings — and the frame the hands part on is the pass at
+    // the top, where a pendulum is standing still.
     //
     // The knee's own cock is what the fall leaves longest: the leg is up and pointed
     // where the coil pointed it (``cock`` carries the wound angle it held at the
@@ -1520,23 +1864,45 @@ const KEYS = [
     // break below — which is what "the ball is thrown by the body that has already
     // fallen" looks like from the outside.
     t: 1.05,
-    clasp: true,
-    hipYaw: -2.075, chestYaw: -2.160, lean: 0.175, leanSide: 0.050, hipY: -0.045, drive: -0.090,
-    headPitch: 0.035, curl: 1.45,
+    hipYaw: -2.075, chestYaw: -2.160, lean: -0.26, leanSide: 0.050, hipY: -0.045, drive: -0.090,
+    headPitch: 0.035,
     pivot: { x: 0.113, lift: 0, z: 0.198, yaw: -1.525, bend: 0.25, hang: 0 },
     front: { x: -0.169, lift: 1.14, z: 0.008, yaw: -0.10, bend: 0.42, hang: 1, cock: -0.30 },
-    // The hands are where the balance put them — up at the chest and still clasped —
-    // with the glove drifting forward off it: the *elbow* is what has not moved, and
-    // it is authored to arrive late (see the break). The palm is already on its way
-    // round to the plate with it: the showing is the elbow's own rise's passenger.
+    // The glove is where the balance put it — up at the chest, drifting forward off
+    // it — with the *elbow* authored to arrive late (see the break). The palm is
+    // already on its way round to the plate with it: the showing is the elbow's own
+    // rise's passenger.
     glove: [0.230, -0.130, -0.300], gloveAim: [0.50, -0.80, 0.32], gloveCurl: 1.35,
     gloveElbow: [-0.22, 0.06, -0.12],
     glovePalm: [0.03, -0.02, -1.0],
+    // ...and the throwing arm, off the clasp: the ball is a hand's width below and
+    // behind the place the two hands were holding (the clasp's own top, one key back),
+    // so the swing has already begun — the mitt let go at the gather, and the hand is
+    // past the ribs on this frame rather than still at the chest. Its line is the one
+    // it leaves the mitt on — down and back along the body's own flank — and its elbow
+    // hangs where the clasped mirror put it, a little further out as the arm comes free.
+    //
+    // ...and the swing has been running for a fifth of a second by this key: the mitt
+    // let the hand go at the gather, so what the fall does is carry the arm *on* from
+    // the hip rather than down to it — a quarter of the climb from the hip's own place
+    // to the lift's, which is the arc the keys either side of this one already drew,
+    // resampled onto the longer swing. The arm is folded 24° past the hanging straight
+    // of the balance and closes on to 58° by the lift, which is the hand drawing up the
+    // back on an elbow that leads it.
+    ball: [0.1920, 0.4830, 0.6550], aim: [0.1290, -0.8300, 0.3640], curl: 1.39,
+    straight: (156 * Math.PI) / 180,
+    // ...and the ball is already turned toward **first base** by the balance — the
+    // pitcher's own back at that frame — so what the fall and the break are for is the
+    // hand's *arc*, not its turn: the facing is the hold's own from 1.02 s (see
+    // PALM_HOLD) and the numbers below are only the fallback it reads where no key
+    // names one.
+    palm: [-0.9990, -0.0100, 0.0457],
+    elbow: [0.1470, 0.8370, 0.5240],
   },
   {
     // The break: the front leg drives out toward the plate and the hands come
-    // apart — the throwing hand swings down beside the hip while the glove goes out
-    // in front of the chest — with the pelvis already turning ahead of the
+    // apart — the throwing hand has swung down beside the hip while the glove goes
+    // out in front of the chest — with the pelvis already turning ahead of the
     // shoulders, which is the drive the torso is about to be handed.
     //
     // The *glove* arm is what hands the shoulders the rest of it, and from here it is
@@ -1591,20 +1957,18 @@ const KEYS = [
     // the last thing still closed while the hips and the ball go on through, before the
     // 8° they are back to at the release.
     //
-    // What the turn does *not* carry is the fold. The trunk comes over the hips in
-    // the last fraction of a second before the ball goes and not before it: the
-    // body turns its way through the stride standing nearly as upright as it stood
-    // in the set, and the fold is what the release is *made* of rather than
-    // something carried into it from the plant. This key is where the lean begins,
-    // and it begins gently: a tenth of a radian here against the release's half,
-    // with the plant and the high cock the two steps between — one and a tenth of a
-    // radian a second across the break, three fifths into the cock, one and nine tenths
-    // over the come-through — and then, in the last two hundredths of a second before
-    // the ball goes, the third of a radian the whole fold is: twenty-six radians a
-    // second, the fastest the trunk moves anywhere in the delivery (see the browser
-    // suite's reading of the lean's *speed*, which finds it on the release frame).
+    // What the turn does *not* carry is the fold. The trunk comes over the hips with
+    // the drive and not before it: the body turns its way through the stride standing
+    // nearly as upright as it stood in the set, and what the pitch's fold is reached by
+    // is the back leg's own two moves — the trunk tilted *back* over the drive foot as
+    // the leg fires, and the fall over it as the drive pushes (see the plant's own note
+    // and the walk's, in LEAN_IN_TRACK). This key is where the walk's own share begins:
+    // the trunk is most of the way into the pitch's lean by the break the slow way — the
+    // walk's square, a little on every frame — and the fastest the trunk moves anywhere
+    // in the delivery is the fall the drive makes of it: ten degrees a frame at sixty,
+    // a couple of hundredths of a second past the plant.
     t: 1.12,
-    hipYaw: -1.640, chestYaw: -1.900, lean: 0.18, leanSide: 0.02, hipY: -0.08, drive: 0.040,
+    hipYaw: -1.640, chestYaw: -1.900, lean: -0.58, leanSide: 0.02, hipY: -0.08, drive: 0.040,
     headPitch: 0.04,
     pivot: { x: 0.118, lift: 0, z: 0.200, yaw: -0.950, bend: 0.26, hang: 0 },
     // The lift is the *knee's* own height while the leg is carried (see the pose
@@ -1613,11 +1977,73 @@ const KEYS = [
     // has to go higher as the hips drop under it — a leg left at the kick's own
     // number would hang its foot into the dirt by the reach.
     front: { x: -0.166, lift: 0.60, z: -0.180, yaw: 0.0, bend: 0.16, hang: 1, cock: 0.10 },
-    ball: [0.245, 0.995, 0.150], aim: [0.30, -0.80, 0.52], curl: 1.4,
-    elbow: [0.31, 1.20, 0.09],
+    // ...and the throwing arm is *on its way up the back* by this key: the swing that
+    // used to begin here is two frames old (the mitt let go at the gather and the hip
+    // was reached at the balance), so what the break does to it is carry it — half of
+    // the climb from the hip's own place to the lift's, the hand past the ribs with the
+    // elbow leading it and the arm folded 44°.
+    //
+    // What the arm no longer does here is *hang*. The break is still the legs' and the
+    // trunk's — the front leg drives out and the pelvis turns ahead of the shoulders —
+    // but the arm is the windup's now, not the drop's, and the frames between here and
+    // the lift are one path up the body's own back with no corner in them at the key.
+    //
+    // The palm's own bearing is the *world's* rather than the rig's (see the balance's
+    // own note on first base and `toRigVector`'s negated x and z): the fall and the
+    // break carry the hand's arc, and the facing is the hold's from 1.02 s (PALM_HOLD),
+    // so this key's numbers are the fallback `palmAt` reads where no key names one.
+    ball: [0.2220, 0.6000, 0.6420], aim: [0.2190, -0.6230, 0.5980], curl: 1.37,
+    straight: (137 * Math.PI) / 180,
+    palm: [-0.9990, -0.0100, 0.0457],
+    // ...and the elbow leads the hand up the back, the way the lift's own key reads it:
+    // from behind the body's coil rather than out in front of it.
+    elbow: [0.1680, 0.8430, 0.3650],
     glove: [0.130, -0.110, -0.400], gloveAim: [-0.092, -0.700, -0.704], gloveCurl: 0.8,
     gloveElbow: [-0.26, 0.16, -0.18],
-    glovePalm: [0.02, -0.07, -0.997],
+    glovePalm: [0, 0, -1],
+  },
+  {
+    // The lift: the throwing arm starts *up*, and up the back of the pitcher — the
+    // shoulder swings the hanging arm backward and the elbow closes as it goes, so
+    // what rises is the hand, drawing a line up behind the hip rather than in front
+    // of the chest. The trunk is still coming over the foot here (the fold is the
+    // window's own), so the arm and the body are travelling in the same direction
+    // for the first time in the delivery: the body forward, the hand back and up.
+    //
+    // The elbow is what leads, and it is below the hand all the way up — a hand
+    // dragged up by a *straight* arm has to go round the front to get above the
+    // shoulder (which is the arc this key replaces); one whose elbow is already
+    // folding can come up the back and arrive over the shoulder without ever
+    // crossing the chest. That is the reference pitch's own shape between the ball
+    // leaving the glove and the high cock, and it is why the wrist is never asked to
+    // turn: the hand runs on down the forearm the whole way (see WRIST_COCK).
+    //
+    // The lift *ends higher* than it used to, and that is what buys the upper arm its
+    // level frames. An upper arm can only lie level while the wrist it carries is
+    // within a forearm's length of the socket's own height (0.286 of a rig unit: the
+    // two bones cannot reach further than that, whatever the fold), and the hand used
+    // to come up to within 0.31 of it here and only cross that line at 1.18 s. The
+    // wrist is asked 0.125 higher — the hand up beside the ear by this key rather
+    // than at the shoulder a key later — and the pole with it (the elbow a hand's
+    // width up), so the level arrives at 1.175 s instead of 1.185 and runs, flat to
+    // within three degrees, to 1.218 where the trunk's own whip takes the arm over.
+    // What the driver cannot realise of the last of that climb is the reach, not the
+    // shape: the shoulder is asked for a wrist a couple of centimetres past its own
+    // span on the two frames at 1.13 s, and answers by leaving the elbow where this
+    // key put it (measured, 8 cm of the ask unrealised at 1.13 s against 5 on the
+    // frames either side) — the arm's own line runs on unbroken through it.
+    t: 1.16,
+    hipYaw: -1.1000, chestYaw: -1.4650, lean: -0.4000, leanSide: 0.0100, hipY: -0.1700, drive: 0.2800,
+    headPitch: 0.0450, curl: 1.35,
+    pivot: { x: 0.1240, lift: 0, z: 0.2025, yaw: -0.5000, bend: 0.3000, hang: 0 },
+    front: { x: 0.0040, lift: 0.6600, z: -0.3950, yaw: 0.2500, bend: 0.2300, hang: 1, cock: 0.2700 },
+    straight: (113 * Math.PI) / 180,
+    ball: [0.2568, 0.7800, 0.6279], aim: [0.3204, -0.3857, 0.8652],
+    elbow: [0.1740, 1.0200, 0.3230],
+    palm: [0.0000, -1.0000, 0.0000],
+    glove: [0.0700, -0.1400, -0.4475], gloveAim: [-0.1460, -0.7900, -0.5670], gloveCurl: 0.5500,
+    gloveElbow: [-0.2800, 0.0550, -0.2400],
+    glovePalm: [0.0500, -0.0800, -0.9900],
   },
   {
     // The reach: the front leg is thrown out to the length of its stride — the foot
@@ -1646,15 +2072,29 @@ const KEYS = [
     // past the release, and the stride is the front leg's own *reach* — out and under
     // the body that is turning over it — rather than something the weight arrives on.
     //
-    // The fold is most of the way in by now: the trunk has been *walked* into the lean
-    // the pitch is thrown from since the rocker (see LEAN_IN_TRACK), and this is the key
-    // the walk arrives at the foot on — the body's own lean is the share of the release's
-    // fold the walk has spent, which is most of it but not the whole, because the last of
-    // the lean-in belongs to the release's own frame. Beside that, what the reach is is
-    // the body's turn and its travel (see the break's own note above, and the finish
-    // below for the other end of it).
+    // ...and the trunk is *tilted back* over the drive foot by here: the walk's own share
+    // is withdrawn at this key (see LEAN_IN_TRACK), so what the body carries is this key's
+    // own lean — half a radian back, which is the arch the reference pitch shows
+    // as the back leg fires (the trunk's weight going back over the rubber with the chest
+    // up over it, before the drive takes it forward). Written at the third of a radian a
+    // first deepening carried, the arch read on the realised skeleton as some eight and a
+    // half degrees of back-tilt across the four frames the plant holds it — a shape the eye
+    // still reads as a body standing up out of the coil rather than one bowed *back* over
+    // the leg it is standing on. The reference pitch's arch is a deep one: the chest is
+    // thrown back over the rubber with the whole trunk's weight on the drive leg before the
+    // drive takes it forward, so the depth here is most of the way to a right angle of
+    // back-tilt at its deepest (measured on the realised skeleton, the chest rides some
+    // twenty-nine degrees back over the hips at the plant's own frame against the seventeen
+    // the third-of-a-radian wrote). The whole of the depth is spent
+    // before the ball goes and none of it is held: the fold comes over the foot across the
+    // whip the throw is made of rather than standing the trunk up between the plant and the
+    // cock (see FOLD_ARRIVE), so the fall the drive makes of it is deeper and *longer* than
+    // the arch that begins it — the arch the delivery is read by is the place the trunk
+    // takes up for the length of the back leg's fire. Beside that, what the reach is is the
+    // body's turn and its travel (see the break's own note above, and the finish below for
+    // the other end of it).
     t: 1.20,
-    hipYaw: -0.560, chestYaw: -1.030, lean: 0.19, leanSide: 0.0, hipY: -0.20, drive: 0.405,
+    hipYaw: -0.560, chestYaw: -1.030, lean: -0.32, leanSide: 0.0, hipY: -0.26, drive: 0.520,
     headPitch: 0.05,
     // The drive leg's own two numbers are held back with the rest of the start: its
     // shoe is three degrees short of the plate's own line here (it comes fully onto
@@ -1669,8 +2109,61 @@ const KEYS = [
     // stride's foot is, and held where it once was the foot comes back with the chest
     // the six degrees this key now holds it by.
     front: { x: 0.174, lift: 0.72, z: -0.610, yaw: 0.500, bend: 0.30, hang: 1, cock: 0.44 },
-    ball: [0.33, 1.20, -0.05], aim: [0.24, 0.30, 0.92], curl: 1.3,
-    elbow: [0.40, 1.30, 0.00],
+    // ...and the arm's own three numbers, re-authored key by key against the reference
+    // pitch (a first-person delivery filmed from the plate): what the windup hands the
+    // throw is a hand coming up the *back* of the body's own arc — off the hip, past
+    // the ribs with the arm's underside turned to the camera, and up behind the
+    // shoulder by the cock below — so the cock is the last key of one path rather than
+    // the first of its own. The hand's line is the *forearm's*, too: a hand cocked off
+    // the arm it hangs on is the one thing a windup cannot hide, and written the way
+    // they were — a hand pointing up and back while the arm swings down behind — the
+    // wrist carried most of a right angle of cock through the whole of the swing
+    // (measured off the realised skeleton, the hand's own line stands 88° off the
+    // forearm at the reach and 83° at the cock, the ball most of a hand's width
+    // outside the arm's own plane on both).
+    // ...and the hand is at the *chest* by here rather than still at the belt: the
+    // reference pitch has the ball carried up the ribs and held at the sternum by the
+    // reach, with the elbow already above its own shoulder — read off the two cameras
+    // as the arm's own outline through the stride (the elbow out and up, the forearm
+    // slanting *down* off it to the hand) — and the old place here, a third of a rig
+    // unit lower, spent the whole of the hand's rise in the six hundredths of a second
+    // between this key and the cock: a hand climbing most of a rig unit between two
+    // frames, which is the throw beginning at the cock rather than arriving out of the
+    // windup. Measured on the realised skeleton, this place holds the throwing elbow
+    // four hundredths of a unit *above* its own socket at the key, against the quarter
+    // of a unit below it the low place read (see the browser suite's own reading of the
+    // two elbows' hangs at the plant).
+    // ...and the arm is *up* by here, hanging off the shoulder's own line: the upper
+    // arm has swung back and level (it points back and a little down, the elbow under
+    // the hand and behind the shoulder) and the forearm is folded up off it, so the
+    // hand is above the elbow and behind the head — the layback, reached from the
+    // hanging arm by one turn of the shoulder rather than by a windmill round the
+    // front. Straightness is the fold's own number now: 79°, the ring the two bones
+    // draw is what the pole below is for, and the hand's line is the forearm's (a
+    // wrist locked to the arm it hangs on — see WRIST_COCK).
+    straight: (80 * Math.PI) / 180,
+    ball: [0.3150, 1.0950, 0.3240], aim: [0.1202, 0.9283, 0.3519], curl: 1.3,
+    // The elbow *leads* the hand up, and it leads it from *behind* the body's own coil:
+    // written off the right hand's own side, the pole this key hands the driver points
+    // back over the throwing shoulder — the shape the layback below is reached from, and
+    // the shape the reference pitch shows of the reach (the elbow out at the shoulder's
+    // own line with the forearm slanting down off it to the hand), rather than the
+    // shoulder-high wing the old place put the driver in (its read: the elbow 0.63 of a
+    // unit *above* the socket, which is most of a forearm's length the wrong way).
+    // Measured on the realised skeleton, the elbow rides 0.23 of a rig unit out along the
+    // shoulders, 0.21 of one *in front* of the plane they draw and 0.02 of one below its
+    // own socket; asked for on the ring's other side — a pole across the body, which is
+    // where this key's own place sat before — the same arm reads 0.29 of a unit *behind*
+    // that plane, and what a pole has to answer to is the browser suite's own reading of
+    // the trail (see its torso reading).
+    elbow: [0.2729, 0.9642, 0.0943],
+    // Which way the ball is turned: to the pitcher's own *back*, which is what a
+    // windup shows a camera at the plate and what the throw then brings round to the
+    // zone (see the layback's own note, and the pose's ``palmAt``).
+    palm: [0.3000, 0.2500, 0.9200],
+    // (Handed on to the hold from the frame after the break — see PALM_HOLD —, so this
+    // facing is the wrist's own angle read at the reach rather than an ask the frames
+    // between here and the cock re-point: the down-swing and the cock are one roll.)
     glove: [0.010, -0.170, -0.495], gloveAim: [-0.20, -0.88, -0.43], gloveCurl: 0.3,
     gloveElbow: [-0.30, -0.05, -0.30],
     glovePalm: [0.10, -0.16, -0.98],
@@ -1686,10 +2179,20 @@ const KEYS = [
     // is spent (see the break's own note on the ramp). The ball is drawn further back
     // off the release at this key than at any other in the window — most of a rig unit
     // of its own line — so the whip has further to come than anywhere else in it.
-    // And the fold is whole by here: the lean-in's own walk arrives on the frame the ball
-    // goes (see LEAN_IN_TRACK), so from this key on the trunk is the release posture's own
-    // fold — the body the arm unwinds off is already most of the way over the hips it is
-    // throwing from, with the shoulders still on their way round.
+    // ...and this key's own lean is a *coordinate* rather than the body's shape by here:
+    // the fold the frame carries is shared between this key and the release posture's own
+    // (see FOLD_ARRIVE), so the number below is what the trunk does on the way *into* the
+    // fall — a trunk still coming over the foot it is thrown from rather than one already
+    // stood up out of the arch — where writing the posture's own depth straight into the
+    // key is what made the fall a three-frame step (measured off the realised skeleton
+    // across a deeper arch: 13.3° of fold in one frame at 1.227 s).
+    //
+    // And the fold is most of the way to the pitch's own by here: the window's slot track
+    // has taken the trunk off the plant's own tilt, and what it is handed is the release
+    // posture's fold (see SLOT_TRACK) — eased in across the whole of the whip rather than
+    // spent between the plant and this key (see FOLD_ARRIVE), so the body the arm unwinds
+    // off is over the hips it is throwing from by the release rather than by the top of the
+    // cock, and the chest is still *coming* through the ball rather than already there.
     t: 1.26,
     release: true, slot: 1,
     // The cock's own elbow: a right angle, which is where a throw is drawn back *to* —
@@ -1697,86 +2200,167 @@ const KEYS = [
     // own note above, and the straightness track the pose reads). Straight here, the
     // elbow has no ring to be pulled on and the pole below is worth nothing.
     straight: (90 * Math.PI) / 180,
-    hipYaw: -0.070, chestYaw: -0.700, lean: 0.20, leanSide: 0.0, hipY: -0.13, drive: 0.580,
+    // ...and the arch is *still* under the arm here — most of a third of a radian back,
+    // which is the reference's own bow at the top of the cock (PS-8) and what lets the
+    // forearm lie straight back under a shoulder line that has tipped back with it (see
+    // FOLD_ARRIVE, which keeps the fold off this frame until the ball has finished
+    // loading). Written where the fold was nearly *nought* here and the trunk already
+    // half-way over the foot, the layback had to be bought sideways: the elbow could not
+    // lie back under a level shoulder line and point the forearm along the body's own
+    // +z at the same time, and it took the ring's outer side to do the second, which is
+    // the lateral shape the cock used to be.
+    hipYaw: -0.070, chestYaw: -0.780, lean: -0.28, leanSide: 0.0, hipY: -0.13, drive: 0.580,
     headPitch: 0.06,
     pivot: { x: 0.150, lift: 0.05, z: 0.050, yaw: 0.050, bend: 0.28, hang: 0 },
     // The foot has reached the place it will land on and is on its way down: the
     // release is a hand's width above the dirt for it (see the plant below).
-    front: { x: 0.000, lift: 0.22, z: -0.880, yaw: -0.120, bend: 0.36, hang: 0, cock: 0 },
-    // The cock's own ball is *above and behind the shoulder*, which is what a
-    // cocked arm holds: written off the release, that is well below it and well
-    // back along it, not a hand's width higher than the release itself. Here it is
-    // drawn back 1.68 rig units across the chest's own plane — a whole stride's worth
-    // of whip to come, and further back than any other key in the window by a unit and
-    // a half (the come-through carries 0.66 of its own line and less than a third of
-    // it across the plane, see its own note) — and all of that extra is the trail's
-    // own price. The elbow's place is read against the ball (see the pole below), and
-    // the deeper the ball is laid back across the plane the further *behind* it the
-    // ring lets the elbow come: measured on the realised skeleton, the same pole and
-    // the same fold that leave the elbow a seventh of a rig unit behind that plane on
-    // the old ball leave it a third of one behind on this. The draw-back costs the
-    // throw nothing — it *buys* it: the whip's own speed is spent in the twenty
-    // milliseconds before the release, which this key's ball does not touch (it is
-    // spent over the *four* frames to the come-through, worth a fiftieth of a unit a
-    // frame more than before), and flattening the ramp into the release takes the
-    // pose's worst frame step down from 0.328 of a rig unit to 0.319 (see the unit
-    // suite's speed test, whose bound is 0.36).
-    ball: [-0.23, -0.04, 1.67], aim: [0.10, 0.58, 0.81], curl: 1.0,
-    // ...and the elbow's pole is written *up and behind the shoulder*, which is where
-    // a cocked arm's elbow is: the throw's own first half is the *torso* carrying the
-    // arm through — the chest unwinds off the hips with the upper arm still laid back
-    // on it, and the arm catches up and is spent past it by the time the ball goes.
-    // The old pole here was the ring's forward-most point, which put the elbow *ahead*
-    // of the plane from the reach on (measured: 0.09 ahead at this key, and 0.12 at
-    // the come-through): the arm was throwing itself while the body rode along, which
-    // is the wrong way round. This one leaves the elbow on the ring's back side — 0.22
-    // of a rig unit behind the chest's own shoulder plane at this key, the deepest the
-    // body allows at the cock (the trunk's own clearance answers for the rest) — and
-    // what the two frames between the keys make of it is the pull: the plane's lead is
-    // back to nought by 1.29 and 0.15 the *other* way by the release, so the chest has
-    // come a quarter turn past the elbow before the arm has finished passing it (see
-    // the browser suite's own reading of the trail).
-    elbow: [-0.12, 0.10, 1.91],
+    front: { x: 0.000, lift: 0.22, z: -1.000, yaw: -0.120, bend: 0.36, hang: 0, cock: 0 },
+    // The cock's own ball is *behind the shoulder at its own level*, which is what a
+    // laid-back arm holds: written off the release, that is 1.905 rig units back along
+    // the ball's own line and 0.11 of one below it, so the hand hangs level with the
+    // socket it is drawn back from rather than over its head. It is the position the
+    // whole throw is loaded from (the reference's PS-7 and PS-8, which are the same
+    // shape a frame apart), and it is what the forearm's own line is read against: with
+    // the hand level and behind, the chord the fold is drawn about points back along the
+    // body's own +z and the forearm folded off it lies level too — straight back at
+    // second base, a couple of degrees to the first-base side of it for a right-hander
+    // (see the pole below, and the browser suite's reading of the line).
+    //
+    // Written a hand's height higher — the ball at face level with the forearm rising to
+    // it, which is where this key's place used to sit — the chord rises with the ball and
+    // the forearm folded off it *keeps* rising: the rings of the whip then run round the
+    // chest instead of behind it, which is the arm swinging the body's own coil rather
+    // than being carried by it. The layback is the *upper arm's* to make (see the elbow
+    // below); the ball's job is only to say where the hand is while it does.
+    //
+    // The draw-back costs the throw nothing it cannot pay: the whip is spent in the twenty
+    // milliseconds before the release, and the pose's own worst frame step through it is
+    // inside the pitch's speed (see the unit suite's speed test, whose bound is 0.36 of a
+    // rig unit a frame at a hundred-and-twentieth). The ball's place is the offset from
+    // the release anchor every window key is written in (see `trackRelease`), and the
+    // hand's line is the forearm's, as at the reach.
+    // (The ball's own *carry* down the hand's line is a window key's rather than the
+    // palm's — the release's chord is what the window's ends are read at, so the number
+    // is larger here than the palm's own eleven-hundredths, see ``handCarry`` — and
+    // what the place below is written off is the *wrist* it should put the hand at.)
+    ball: [-0.255, -0.110, 1.905], aim: [0.53, 0.79, -0.24], curl: 1.0,
+    // ...and the elbow is *out*, level with its own socket, which is what the reference
+    // pitch shows of the layback at the middle of the fold (PS-9): as the upper arm comes
+    // round level and the elbow starts to bend, the joint swings out to the throwing side
+    // and the forearm turns back along the body's own +z — the hand carried behind the
+    // shoulder with the ball still in front of it. Written on the ring's other side, with
+    // the elbow hanging under the arm (where this key's own place sat before), the forearm
+    // comes out square to the body and the ball is shown *round the side* of the throw
+    // rather than carried back on it.
+    //
+    // Where the elbow may sit is the *hand's* to say: a folded arm hangs its elbow on a
+    // ring drawn about the hand, and with the hand 0.42 of a rig unit from the socket — a
+    // right angle of arm — the ring is wide enough for the elbow to lie anywhere from the
+    // body's own side to under the socket. Measured on the realised skeleton with the pole
+    // below: the upper arm stands level with its socket and 89° round to the throwing side,
+    // the elbow a hundredth of a rig unit off the socket's own level and 0.30 of one out
+    // along the shoulders, and the forearm lies 22° up and 2° off straight back — held
+    // there, not passing through it: 21° up at 1.24 and at 1.27, which is the layback the
+    // cock is drawn back to and the frames the eye reads it on (see the browser suite's
+    // reading of the line).
+    //
+    // The arm that shape buys is *lateral*, and it is the layback's own: the elbow is swung
+    // out to the throwing side, which is what puts the forearm straight back behind the
+    // shoulder. The plane the *chest* draws is not the reading for it — through the cock the
+    // chest is still closed over its hips, facing out at third base, so an elbow out on that
+    // side stands a quarter of a rig unit "ahead" of a plane that has turned with the coil,
+    // without the arm being anywhere near the front of the body. What says the arm is behind
+    // the torso is the arm: the ball is 0.58 of a rig unit *behind its own socket* at this
+    // key, and it stays behind it until the frames the ball goes (see the browser suite's
+    // reading).
+    elbow: [0.7198, -0.3420, 0.6040],
+    // ...and the palm: to the pitcher's own back, which is what a camera at the plate
+    // sees of a cocked arm — the ball hidden behind the hand rather than shown to the
+    // throw (see the reach's own note above, and the pose's ``palmAt``).
+    // ...and the palm: the reference turns the whole arm over so the palm faces the
+    // *ground* by the time the elbow has folded up to its right angle — the walk from
+    // the side the hand left the mitt on (first base's own bearing for a right-hander)
+    // round and down — so the ball sits *under* the hand rather than shown out behind
+    // it. (Was "to the pitcher's own back", the same cocked arm with the palm held out
+    // toward the back instead of turned under onto the ground.)
+    palm: [0.0, -1.0, 0.0],
     glove: [-0.190, -0.260, -0.420], gloveAim: [-0.40, -0.85, -0.34], gloveCurl: 0.3,
     gloveElbow: [-0.32, -0.08, -0.24],
-    glovePalm: [0.14, -0.20, -0.97],
+    glovePalm: [0, 0, -1],
   },
   {
     // Coming through: the arm is over the top with the hand nearly on the ball's own
     // line — and the *chest* is still coming round behind the hips it is riding, 38°
     // back of them, which is the widest separation the delivery makes: the shoulders
     // are the last thing in the chain still wound. The two hundredths of a second that
-    // follow are the throw: the hips' travel, the body's turn and the trunk's fold all
-    // have their fastest frame on the release (see the browser suite's reading of the
-    // three speeds), and the ball covers seven tenths of a rig unit of its own path in
-    // them (see the keys' own note on the ramp, at the break).
+    // follow are the throw: the hips' travel and the body's turn have their fastest frame
+    // on the release (see the browser suite's reading of the two speeds — and its own note
+    // on why the trunk's fold is a place the pitch pins rather than one of them), and the
+    // ball covers seven tenths of a rig unit of its own path in them (see the keys' own
+    // note on the ramp, at the break).
     t: 1.30,
     release: true, slot: 1,
-    // The arm is *coming open* here rather than already open: a hundred and sixty-eight
-    // degrees of the chord the release is thrown on, so what the two frames left of the
-    // whip straighten is the last of the fold — the elbow leads it open (see the pole
-    // below) rather than riding a locked arm through the ball.
-    straight: (168 * Math.PI) / 180,
-    hipYaw: 0.240, chestYaw: -0.420, lean: 0.21, leanSide: 0.0, hipY: -0.05, drive: 0.760,
+    // The elbow is still folded to its *right angle* here — the reference's own layback
+    // lock: once the fold reaches 90° the forearm and the palm hold their place against
+    // the upper arm (the forearm trailing back off the laid-back elbow — see the pole
+    // below) right up to the release, where they *unwind*. So this key keeps the whole of
+    // the fold rather than spending it early, which is what opening the arm to 173° here
+    // did: the elbow stays at its 90° through the layback, and the release's own frames
+    // are the unfold — the whip — the arm coming open only as the ball goes. (The follow-
+    // through's straight-window therefore starts just before the release rather than at
+    // 1.30s, since the arm is still folded on this frame and only straightens into the
+    // release — see the browser suite's "folds about the elbow" read.)
+    straight: (90 * Math.PI) / 180,
+    // ...and the chest trails the hips by 32° here rather than the 41° it holds through
+    // the cock (see the cock's key above): the shoulders have turned out from under the
+    // throwing arm by nine degrees across the last four hundredths, which is the last of
+    // the drag the arm is left with — the pose's own share of it, worth 0.02 of a rig unit
+    // at the elbow. Left at the cock's separation, the chest is still riding the arm at the
+    // frame the ball goes, and the arm reads as the thing throwing the chest, and more of it
+    // comes off over the two hundredths *after* this key — the turn's own gather (which dips
+    // 3° deep and returns on the ball, see TURN_GATHER_LEAD): the key's own number is what
+    // the shoulders stand at here, and the frames between here and the release are the
+    // clock's rather than the curve's.
+    //
+    // ...and the number is a *fiftieth of a radian* deeper than the trail alone asks for,
+    // which is the move that puts the chest's own turn on the ball (see the note below the
+    // fold's clock, at TURN_GATHER_LEAD, and the browser suite's claim): a
+    // twentieth-of-a-second window is 0.02 s wide and the key's value leads the window that
+    // ends on it, so a degree of chest here is 57°/s off that window and onto the one that
+    // ends on the release — and with the clock's own snap on top of it, the release is the
+    // fastest frame of the turn on *both* of the suites' grids rather than only the fine
+    // one.
+    hipYaw: 0.240, chestYaw: -0.320, lean: 0.21, leanSide: 0.0, hipY: -0.05, drive: 0.760,
     headPitch: 0.08,
     pivot: { x: 0.175, lift: 0.06, z: -0.280, yaw: 0.060, bend: 0.24, hang: 0 },
-    front: { x: 0.000, lift: 0.17, z: -0.940, yaw: -0.460, bend: 0.30, hang: 0, cock: 0 },
-    ball: [0.05, 0.03, 0.660], aim: [0.02, 0.02, -0.99], curl: 0.9,
-    // The elbow's pole is at the ring's forward-most point again, which is as far as a
-    // folded arm's elbow can *get* toward the plate: the ball is drawn back a hand's
-    // width further at the cock above, and what the two frames between the keys make of
-    // it is the lead — measured off the realised skeleton, the elbow is a hand's width
-    // ahead of the ball along the ball's own line to the release from the cock through
-    // the come-through. Not here, though: this key is the *last* of the whip, and the
-    // lead is spent with it. The ball's own travel across its last two frames is what
-    // the whip is made of, and the delivery's own bound on it is the pitch's speed (0.36
-    // of a rig unit in a frame of a hundred-and-twentieth: 42 rig units a second, which
-    // is what a 94 mph four-seamer leaves at — see the unit suite's speed test), so a
+    front: { x: 0.000, lift: 0.17, z: -1.060, yaw: -0.460, bend: 0.30, hang: 0, cock: 0 },
+    ball: [0.05, 0.20, 0.660], aim: [0.79, -0.30, 0.54], curl: 0.9,
+    // The elbow's own place is not read here at all: from the cock to the release the whip
+    // rolls the pole about the chord as an *angle* (see WHIP_ROLL), and what this key's
+    // number supplies is only the along-the-chord share the ring is composed at. What the
+    // angle itself says is where round that ring the arm is carried: the layback left the
+    // elbow out on the throwing side, and by this key it has come a quarter turn round the
+    // ring to hang *under* the chord — which is what stands the folded forearm up over the
+    // shoulder as the arm comes through (the reference's PS-9 and PS-10, the elbow at the
+    // shoulder and the hand above it).
+    //
+    // Nothing else here may pay for that. The ball's own travel across its last two frames
+    // is what the whip is made of, and the delivery's own bound on it is the pitch's speed
+    // (0.36 of a rig unit in a frame of a hundred-and-twentieth: 42 rig units a second,
+    // which is what a 94 mph four-seamer leaves at — see the unit suite's speed test), so a
     // ball drawn back *here* to buy the elbow more room buys it out of the throw's own
-    // speed: 0.78 of a rig unit behind the release ran the hand at 50 rig units a second
-    // and broke that promise to keep this one. What is left is the pole, which is free,
-    // and which is where the old keys had the elbow out to the throwing side instead.
-    elbow: [0.47, 0.44, 0.91],
+    // speed. The ring is the free one — rolling the elbow round it moves the joint without
+    // touching the arm's length or the ball — and that is exactly why the whip is written
+    // this way round: the chord is the ball's, and the arm's shape inside it is the pose's.
+    elbow: [0.47, 0.95, 1.50],
+    // ...and the palm is *held* here: the cock's own facing carried by the arm as it
+    // sweeps, so the wrist keeps the turn it took when the ball was turned to the
+    // pitcher's own back rather than spending it across the whip. Written as the
+    // direction the carry gives (measured off the realised skeleton: the ball's own
+    // turn round the forearm is 122° at the cock and 122° here), so the whole of the
+    // unload is spent between this key and the release, in the two frames the forearm
+    // approaches the plate (see the release's own note on the bearing it hands over).
+    palm: [-0.6200, 0.1200, 0.7760],
     glove: [-0.250, -0.280, -0.400], gloveAim: [-0.30, -0.87, -0.39], gloveCurl: 0.3,
     gloveElbow: [-0.34, -0.10, -0.20],
     glovePalm: [0.15, -0.25, -0.96],
@@ -1803,7 +2387,7 @@ const KEYS = [
     hipYaw: 0.24, chestYaw: 0.04, lean: AUTHORED_RELEASE_LEAN, leanSide: 0.0, hipY: 0.0, drive: 1.00,
     headPitch: 0.10,
     pivot: { x: 0.200, lift: 0.16, z: -0.400, yaw: 0.090, bend: 0.20, hang: 0 },
-    front: { x: 0.000, lift: 0.155, z: -0.940, yaw: -0.600, bend: 0.28, hang: 0, cock: 0 },
+    front: { x: 0.000, lift: 0.155, z: -1.060, yaw: -0.600, bend: 0.28, hang: 0, cock: 0 },
     ball: [0.0, 0.0, 0.0], aim: [0.03, -0.07, -0.996], curl: 0.6,
     // The release's own pole is the *chord's* bow, and a bow is not a shape the pose
     // can draw on the line: the driver hangs the elbow on the ring its two bones draw
@@ -1832,6 +2416,65 @@ const KEYS = [
     glove: [-0.290, -0.300, -0.370], gloveAim: [-0.32, -0.85, -0.42], gloveCurl: 0.3,
     gloveElbow: [-0.36, -0.12, -0.18],
     glovePalm: [0.16, -0.28, -0.95],
+  },
+  {
+    // The first of the *window's* own keys, and the note the four beside it are read
+    // with (1.40 here, 1.42 and 1.48 either side of the pair, and 1.51 where the run
+    // ends). What the run asks for is one thing: an arm that is *straight* out of the
+    // release and across the body until the upper arm has crossed the torso's own
+    // centre line. A straight arm is the one arm with no slack in it, and that is
+    // what makes the shape something the *driver* has to be asked for rather than
+    // the pose: the pose hangs the arm off the socket it estimates (a rig's own
+    // shoulder over a pelvis its tracks carry) and the driver off the socket its body
+    // really has, and the two part by a few centimetres on the frames right after a
+    // throw — which a folded arm forgives and this one cannot.
+    //
+    // Measured on the realised skeleton: the sweep's own interpolated ask (a share
+    // of the span either side of the chord) came back a fifth of it *inside* at 1.36s
+    // — an elbow 73° off straight — and the two keys solved against the pose's own
+    // estimate fared no better, 0.93 of the span at 1.36 and 0.82 at 1.40, where the
+    // estimate stood five and eleven centimetres off the joint. So the ask is written
+    // off the driver's own report: each key keeps the direction the throw already had
+    // (the ball read from the realised skeleton, so the trajectory the sweep authored
+    // is the one it keeps) with the wrist put back out on the chord the *body*
+    // carries, and the hand's own line turned to run down that line rather than cocked
+    // off it. What that leaves is an authored chord *long* of the span (1.10 to 1.23 of
+    // it here, against the 1.25 the driver's own bones stretch to): the unit suite
+    // reads that number and the browser suite the realisation (see both).
+    //
+    // Every other track is the frame's own place between its neighbours — the body's
+    // turn, its lean, the hips' travel, both feet, the glove — so the delivery's own
+    // shape across here is exactly what the keys either side asked for, and the keys
+    // are the throwing arm's alone.
+    t: 1.36,
+    release: true, slot: 1,
+    hipYaw: 0.488, chestYaw: 0.464, lean: 0.518, leanSide: 0.0, hipY: -0.016, drive: 1.070,
+    headPitch: 0.124,
+    pivot: { x: 0.450, lift: 0.240, z: -0.694, yaw: 0.134, bend: 0.172, hang: 0 },
+    front: { x: 0.000, lift: 0.093, z: -1.060, yaw: -0.704, bend: 0.272, hang: 0, cock: 0 },
+    ball: [-0.1658, -0.3152, -0.4375], aim: [0.6359, 0.1908, -0.7478], curl: 0.52,
+    // A straight arm's own ring has no radius, so the pole is written off the chord it
+    // is on rather than anywhere the elbow is doing work (see the key above): the side
+    // it names is the one the arm would fold to, which is the throw's own.
+    elbow: [-0.3341, -0.3571, 0.1424],
+    glove: [-0.294, -0.308, -0.366], gloveAim: [-0.352, -0.630, -0.600], gloveCurl: 0.3,
+    gloveElbow: [-0.352, -0.128, -0.164],
+    glovePalm: [0.216, -0.448, -0.830],
+  },
+  {
+    // The second of the window's own keys, solved the same way (see the key above):
+    // the same read again, a twentieth of a second on.
+    t: 1.40,
+    release: true, slot: 1,
+    hipYaw: 0.736, chestYaw: 1.030, lean: 0.466, leanSide: 0.0, hipY: -0.032, drive: 1.133,
+    headPitch: 0.148,
+    pivot: { x: 0.701, lift: 0.320, z: -0.988, yaw: 0.178, bend: 0.144, hang: 0 },
+    front: { x: 0.000, lift: 0.031, z: -1.060, yaw: -0.808, bend: 0.264, hang: 0, cock: 0 },
+    ball: [-0.2410, -0.5601, -0.5596], aim: [0.6041, -0.1272, -0.7867], curl: 0.44,
+    elbow: [-0.5168, -0.1331, -0.0755],
+    glove: [-0.298, -0.316, -0.362], gloveAim: [-0.384, -0.410, -0.780], gloveCurl: 0.3,
+    gloveElbow: [-0.344, -0.136, -0.148],
+    glovePalm: [0.272, -0.616, -0.710],
   },
   {
     // The arm crossing the body and the *chest* finishing its turn — the body's own
@@ -1867,8 +2510,12 @@ const KEYS = [
     // would have it, the chord from this key to the finish runs through the shoulder
     // socket — the hook has folded to five centimetres by the middle of it and the
     // elbow came out inside the hip. A hand forward of the line instead leaves the
-    // whole sweep outside the trunk: the arm's own radius from the socket is the
-    // three or four hand widths a bent arm has, at every frame of it.
+    // whole sweep outside the trunk: the arm reaches out on its own chord from the
+    // socket rather than folding around the body, so the further forward the hand is
+    // carried the less of the trunk the straight arm has to cross — and this key and
+    // the two either side of it are the window's own read, solved against the chord
+    // the driver's body carries rather than the pose's own estimate (see the first of
+    // them, 1.36).
     // The *head* does not come off the plate with the ball: the neck has held the
     // whole of the chest's turn off the look to here and it goes on holding it until
     // the ball has crossed the plate (see the look's own clock) — a seventh of a
@@ -1881,7 +2528,7 @@ const KEYS = [
     // falling over, which is a follow-through's own shape.
     t: 1.42,
     release: true, slot: 1,
-    hipYaw: 0.86, chestYaw: 1.10, lean: 0.44, leanSide: 0.0, hipY: -0.04, drive: 1.175,
+    hipYaw: 0.860, chestYaw: 1.100, lean: 0.440, leanSide: 0.0, hipY: -0.04, drive: 1.161,
     headPitch: 0.16,
     // The drive leg is *thrown* out from under the body rather than left behind: the
     // shoe is off the plate's own line and a good hand's width up, and the leg has
@@ -1895,8 +2542,8 @@ const KEYS = [
     // foot: the shoe rides higher off the dirt, which is what the swing's own width
     // wants anyway (see the swing's widest frame, whose own lift is written to match).
     pivot: { x: 0.826, lift: 0.36, z: -1.135, yaw: 0.200, bend: 0.13, hang: 0 },
-    front: { x: 0.000, lift: 0, z: -0.940, yaw: -0.860, bend: 0.26, hang: 0, cock: 0 },
-    ball: [-0.44, -0.50, -0.26], aim: [-0.58, -0.70, -0.42], curl: 0.4,
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.860, bend: 0.26, hang: 0, cock: 0 },
+    ball: [-0.3457, -0.6305, -0.6000], aim: [0.5723, -0.1908, -0.7975], curl: 0.4,
     // ...and the pole is written *down and in front of* the arm's own line, which is the
     // shape the whole follow-through is: the arm is folded again by here (the hand has
     // come off the ball and is being carried down and across the chest), so the elbow
@@ -1906,7 +2553,7 @@ const KEYS = [
     // rides the last of the turn *behind* the shoulders: measured off the realised
     // skeleton, the arm is the better part of a quarter of a rig unit behind the
     // chest's own plane at 1.40s, and what the throw leaves behind is the arm.
-    elbow: [-0.45, -0.60, -3.60],
+    elbow: [-0.5865, -0.1741, -0.1518],
     glove: [-0.300, -0.320, -0.360], gloveAim: [-0.40, -0.30, -0.87], gloveCurl: 0.3,
     gloveElbow: [-0.34, -0.14, -0.14],
     glovePalm: [0.30, -0.70, -0.65],
@@ -1919,9 +2566,11 @@ const KEYS = [
     // itself — the arm folded to five centimetres of its span and the elbow came out
     // inside the hip. So the hand is written where the sweep actually passes: down
     // and across the front of the chest, out past the midline and well below the
-    // socket, with the arm's own reach still three quarters of a span. The elbow's
-    // pole rides up and out to the throwing side with it, which is the shape the
-    // whole frame is: an elbow leading a forearm that is coming across the body.
+    // socket, with the wrist put back out on the *driver's* own chord like its two
+    // brothers' (1.12 of the span as the pose reads it, a straight arm as the body
+    // does — see the window's first key). The elbow's pole rides up and out to the
+    // throwing side with it, which is the shape the whole frame is: an elbow leading
+    // a forearm that is coming across the body.
     //
     // Every other track is written at the frame's own place between its neighbours
     // (the body's turn, its lean, the hips' travel, the glove's own arm), so the key
@@ -1932,7 +2581,7 @@ const KEYS = [
     // throwing side of the line a little longer than a step through would.
     t: 1.48,
     release: true, slot: 1,
-    hipYaw: 0.95, chestYaw: 1.350, lean: 0.37, leanSide: 0.0,    hipY: -0.07, drive: 1.255,
+    hipYaw: 0.95, chestYaw: 1.350, lean: 0.37, leanSide: 0.0,    hipY: -0.07, drive: 1.233,
     headPitch: 0.15,
     // The swing's own widest frame: the foot is as far out to the throwing side of the
     // body as it ever gets — 0.73 of a rig unit out from the hip socket it hangs from,
@@ -1964,15 +2613,50 @@ const KEYS = [
     // left behind by has to come *up* to get round, and coming up is what draws it
     // wide.
     pivot: { x: 0.596, lift: 0.39, z: -1.793, yaw: 0.550, bend: 0.11, hang: 0 },
-    front: { x: 0.000, lift: 0, z: -0.940, yaw: -0.86, bend: 0.25, hang: 0, cock: 0 },
-    ball: [-0.59, -0.77, -0.21], aim: [-0.48, -0.75, -0.44], curl: 0.35,
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.860, bend: 0.25, hang: 0, cock: 0 },
+    ball: [-0.5597, -0.7351, -0.7100], aim: [0.3498, -0.2862, -0.8921], curl: 0.35,
     // The sweep's own pole carries on down and in front of the line with it: the elbow
     // is the leading point of the arm all the way through the follow-through, which is
     // what the hand being carried across the body *is* (see the key above).
-    elbow: [-0.50, -0.70, -4.00],
+    elbow: [-0.6994, -0.2433, -0.2847],
     glove: [-0.295, -0.350, -0.340], gloveAim: [-0.37, -0.40, -0.83], gloveCurl: 0.275,
     gloveElbow: [-0.33, -0.16, -0.13],
     glovePalm: [0.40, -0.80, -0.45],
+  },
+  {
+    // The sweep's own *fastest* frames, and the one place left where the pair either
+    // side of it let the chord sag: the arm comes round a third of a right angle across
+    // the fortieth of a second between the two keys above, and the interpolator's path
+    // between two places cuts inside the circle that hard — 3 of the span's own
+    // centimetres at 1.50s, which is an elbow 36° off the straight arm the whole of this
+    // window is asking for. It is written the same way its two brothers before it are
+    // (see them for the read): the direction the frame is already carrying, with the
+    // wrist put back out on the arm's own span.
+    //
+    // Every other track is the frame's own place between its neighbours.
+    t: 1.51,
+    release: true, slot: 1,
+    hipYaw: 0.980, chestYaw: 1.450, lean: 0.345, leanSide: 0.0, hipY: -0.085, drive: 1.262,
+    headPitch: 0.145,
+    pivot: { x: 0.315, lift: 0.395, z: -1.971, yaw: 0.725, bend: 0.105, hang: 0 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.860, bend: 0.245, hang: 0, cock: 0 },
+    ball: [-0.4697, -0.7351, -0.7623], aim: [0.1908, -0.1908, -0.9629], curl: 0.325,
+    elbow: [-0.500000, -0.630000, -0.365700],
+    // ...and from here the ring's own *angle* is authored rather than read off that
+    // place (see SWEEP_VALUES): the rest of the release window is the straight arm's,
+    // and a straight arm's own place stands on the chord it is meant to be read
+    // against — the two keys on either side of this one ask for a tenth and a fifth of
+    // a right angle off it, and the interpolator's place between them cuts *inside* it,
+    // so the side the driver reads off the place is the interpolation's noise rather
+    // than the pose's. Written as the angle it is, the turn the window was always
+    // making is the frame's own: the ring comes off the release's own fall (86° off the
+    // chord at this key, from 95° at 1.45 s) and turns on into the fold's first key at
+    // -75° — the whole of it one turn, read off the keys either side instead of off a
+    // place whose own tilt has run out.
+    sweep: (-370.0 * Math.PI) / 180,
+    glove: [-0.2925, -0.365, -0.330], gloveAim: [-0.355, -0.45, -0.81], gloveCurl: 0.2625,
+    gloveElbow: [-0.325, -0.17, -0.125],
+    glovePalm: [0.425, -0.80, -0.425],
   },
   {
     // The follow-through's own middle, and the frame the lead arm's work is judged
@@ -1986,7 +2670,8 @@ const KEYS = [
     // to landing.
     t: 1.54,
     slot: 1,
-    hipYaw: 1.01, chestYaw: 1.550, lean: 0.32, leanSide: 0.0,    hipY: -0.10, drive: 1.34,
+    straight: (174.9 * Math.PI) / 180,
+    hipYaw: 1.01, chestYaw: 1.550, lean: 0.32, leanSide: 0.0,    hipY: -0.10, drive: 1.3070,
     headPitch: 0.14,
     // ...and the arc keeps coming: the leg is up and coming round the body's own line,
     // out on the circle its own length draws and still a hand's width up, with the
@@ -1998,8 +2683,8 @@ const KEYS = [
     // 0.74 of a rig unit out from the hip it hangs from through the middle of the
     // swing, against the 0.35 it drew while the leg was folding back under the body —
     // see the arc's middle key below, which is what holds it out there.)
-    pivot: { x: 0.034, lift: 0.40, z: -2.149, yaw: 0.900, bend: 0.10, hang: 0 },
-    front: { x: 0.000, lift: 0, z: -0.940, yaw: -0.86, bend: 0.24, hang: 0, cock: 0 },
+    pivot: { x: 0.034, lift: 0.40, z: -2.1610, yaw: 0.900, bend: 0.10, hang: 0 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.860, bend: 0.24, hang: 0, cock: 0 },
     // The arm's own places ride the body's travel rather than standing still in the
     // rig: the delivery is a good hand's width further down the mound by this key
     // than the keys either side were first written for (see the finish), and an arm
@@ -2013,16 +2698,50 @@ const KEYS = [
     // the whip that leaves the release is spent over the whole of the follow-through
     // and the hand arrives at the landing *slow*, still moving, and carries on into
     // the hold. What the keys are bought for is measured off the realised skeleton:
-    // the hand's own speed falls from 1.9 rig units a second across the crossing to
-    // 0.7 at the landing, and the settle carries the same fall on to nothing. A
+    // the hand's own speed falls from the better part of seven rig units a second
+    // through the swing's first frames to 3.3 at the landing, and the settle carries
+    // the same fall on to nothing across the fifth of a second after it (see the
+    // browser suite, whose own reading of the fall is taken off these frames). A
     // follow-through that ran its whole length at the speed it
     // left the hand with is a hand that arrives at the foot the body is standing on
     // at a crawl and stops there — two motions, a swing and then a settle, which is
     // not what letting a throw go looks like.
-    ball: [-0.32, 0.94, -1.52], aim: [-0.38, -0.80, -0.46], curl: 0.3,
-    elbow: [-0.22, 0.70, -1.76],
-    glove: [-0.290, -0.380, -0.320], gloveAim: [-0.34, -0.50, -0.79], gloveCurl: 0.25,
-    gloveElbow: [-0.32, -0.18, -0.12],
+    // ...and this key, and the two after it, are written a few degrees *down* from where
+    // they were: the hand-over's own height is read against the pitch, and the two frames
+    // the keys meet in disagree. Every key inside the release window is an offset from the
+    // *anchor* (see `trackRelease`), so the whole of the throw's own line rides the pitch's
+    // release height; a key outside it is a place in the rig frame, riding only the
+    // delivery's own stride. The authored delivery stands flat on the field with its
+    // release at 1.72 m, and a pitch on the mound hands the pose its release *over its own
+    // feet* — 1.53 m for a 1.78 m slot ten inches up — so between the two frames the
+    // window's last key comes down 22 cm and the fold's first key stays where it is, which
+    // is the wrist climbing into the fold on the frame the throw lets go: measured on the
+    // harness pitch, the window's end sat 4.1 cm *under* this key where the keys put it,
+    // and the climb is what a hand that has just thrown does not do. The three keys are
+    // swung about the socket they are read from rather than moved: -3.6°, -5.0° and -5.1°
+    // of their own elevation, which leaves every ask's own distance from the socket exactly
+    // what it was — and that distance is the *ramp* the whip's own release is written on
+    // (see the swing's next two keys), so a place moved down instead would shorten the ask
+    // with it and the arm's stretch would let go a frame early. Read on the pose at the
+    // harness's own slot, the wrist now falls 4 mm a key from 1.51s to 1.575s; read on the
+    // suite's own, the fold's line is the one it was (the pole's own up at the hand-over
+    // comes down a further 0.07 of a unit, which is the fall's own and inside the travel
+    // the fold is measured by), and every ask the keys carry is the length it was.
+    ball: [-0.0736, 0.3901, -3.219], aim: [0.0733, -0.2748, -0.9587], curl: 0.3,
+    // ...and the pole is written *along* the arm it is on rather than off the chord the
+    // way the straight keys above are: this is the frame the fold starts from, and the
+    // ring the driver hangs the elbow on is read from the pole's own direction — so the
+    // pole that follows it (see the key below) has to start from the arm's line here,
+    // or the elbow swings the ring's own width round between the two frames and the
+    // upper arm with it.
+    elbow: [-0.14, 0.94, -2.285],
+    // ...and the same angle for the last frame of it: the ring has come round 165° of
+    // its own circle since the key above (see that key's note), which is the turn the
+    // place asked for and the turn the driver reads off the keys here rather than off
+    // the place (see SWEEP_VALUES).
+    sweep: (-205.0 * Math.PI) / 180,
+    glove: [-0.29, -0.38, -0.332], gloveAim: [-0.34, -0.50, -0.79], gloveCurl: 0.25,
+    gloveElbow: [-0.32, -0.18, -0.132],
     glovePalm: [0.45, -0.80, -0.40],
   },
   {
@@ -2033,17 +2752,77 @@ const KEYS = [
     // cuts inside the circle the leg's own length draws about its hip: the same
     // reason the last middle key is here, one step on (see the swing's own middle).
     //
-    // Every other track is the frame's own place between its neighbours.
+    // ...and this is the frame the *fold* starts on, so it is the first key that names
+    // the arm's own bend rather than its place (see STRAIGHT_TRACK): 169° here and
+    // 167.5° at the key after it — the ask is left long of the arm (see the place below),
+    // so the driver's own stretch is what carries these two and folds them to the bend
+    // the key names — and then 159.6° at the 1.61 key, where the ask comes *inside* the
+    // arm's own reach and the places themselves take the bend over: from there down, each
+    // key's place is written at the chord of the bend it means, and the realised elbow is
+    // the law of cosines at that chord, which is the arm's own length rather than a
+    // stretched one (measured: the driver's stretch is exactly 1.000 from 1.61s on).
+    //
+    // One monotone schedule for the whole of what the elbow does while the drive leg
+    // swings past it, measured on the realised skeleton (240 Hz, 1.55s to 1.75s): 174.9°
+    // held to the release window's own last frame (1.545s — the one place in the delivery
+    // the arm is meant to be straight, and the place the browser suite's lock reading
+    // exempts), then 168.6°, 165.5°, 158.8°, 155.3°, 152.6°, 150.6°, 148.6°, 145.9° and
+    // 138.4° at the hold. Every step of it is a fall; the widest is 3.1° on the single
+    // frame the fold lets go, there is no locked window anywhere in it, and from 1.61s on
+    // every key sits on its own cap — the chase from the release is the caps' whole
+    // schedule (before the fold was re-authored off these keys the elbow held 174.9° from
+    // the release until 1.645s and then turned 23° in one frame, which is the flick the
+    // follow-through was re-authored to lose).
+    //
+    // The *place* below is the arm's line as it always was — the direction the throw
+    // already had, off the socket the pose estimates — and it is deliberately long of
+    // the arm, so the driver answers it by stretching to it and folding it to the bend
+    // this key names.
+    //
+    // ...and it is written a shade *in* along that line and a shade up — 8 mm in and 8 mm
+    // up off the line the throw's own carry runs on — because this is the one key of the
+    // fold whose own place is a local extreme of the hand's lateral: the ask runs out to
+    // here with the throw and comes back in across the body from here, and the pose's own
+    // track joins two keys component by component, so the curve leaves this key flat and
+    // then *runs* to catch the next one up. What that costs is the forearm's own direction
+    // between the two keys, which reads a fraction of a thousandth of a unit.
     t: 1.5575,
-    slot: 0.875,
-    hipYaw: 1.023125, chestYaw: 1.600, lean: 0.311, leanSide: 0.0, hipY: -0.115, drive: 1.315,
+    slot: 0.957,
+    straight: (169 * Math.PI) / 180,
+    hipYaw: 1.023125, chestYaw: 1.600, lean: 0.311, leanSide: 0.0, hipY: -0.115, drive: 1.3186,
     headPitch: 0.135,
-    pivot: { x: -0.144, lift: 0.30, z: -2.020, yaw: 1.100, bend: 0.11, hang: 0 },
-    front: { x: 0.000, lift: 0, z: -0.940, yaw: -0.86, bend: 0.23425, hang: 0, cock: 0 },
-    ball: [-0.3236, 0.9151, -1.5466], aim: [-0.3871, -0.8071, -0.4387], curl: 0.2822,
-    elbow: [-0.2271, 0.6716, -1.7938],
-    glove: [-0.28775, -0.40475, -0.311], gloveAim: [-0.34875, -0.489, -0.79425], gloveCurl: 0.254,
-    gloveElbow: [-0.3175, -0.1825, -0.1175],
+    pivot: { x: 0.050, lift: 0.30, z: -2.0400, yaw: 1.100, bend: 0.11, hang: 0 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.86, bend: 0.23425, hang: 0, cock: 0 },
+    ball: [-0.077566, 0.758828, -2.34462], aim: [0.0104, -0.2651, -0.9642], curl: 0.2822,
+    elbow: [-0.0717, 0.8386, -2.2135],
+    // ...and which way round the chord that line hangs, as an *angle* rather than as a
+    // place: the ring's own sweep about the socket-to-wrist chord, in the frame the
+    // world's own up makes with it (see SWEEP_VALUES below, and the pole the pose hands
+    // the driver). A pole is a *direction*, and a direction written as a place is
+    // carried corner to corner by the interpolator: through the crossing the ring turns
+    // most of a right angle between two keys, and the line the interpolated place
+    // writes cuts across the body instead of sweeping round it — the pose's own elbow
+    // then stands inside the trunk, where the driver answers with its clearance rule
+    // rather than with the promise, and the upper arm comes up across the drive leg in
+    // one frame (read on the realised skeleton: 20.6° of upper arm, an 11.6 cm jump of
+    // the elbow, with the bend held still). Read as the angle it is, the same fold turns
+    // its ring the way the keys turn it and the driver holds the pose's own line.
+    //
+    // ...and it is turned the better part of a tenth of a right angle further round than
+    // the crossing's own keys were first written for, which is what keeps the *upper
+    // arm's* own line falling through the frames after it: the ring's angle is where the
+    // elbow hangs about the chord, so a ring that turns *under* the line it is carrying
+    // walks the elbow back up on its way in. Read on the pose at a two hundredth of a
+    // second a frame, the upper arm's own up (the sense its travel is read in, see the
+    // arm test) turned back up by 0.0054 of a unit a frame across the hand-over with the
+    // ring at its old tilt — the flick the follow-through was re-authored to lose, this
+    // time in the *line* rather than in the bend — against the 0.0016 those frames read
+    // here; this key turned alone reads 0.0031 and the next one alone 0.0037, so the two
+    // go round together. What the key names is still the fold's own chord: the ring is
+    // where round that chord the elbow hangs, and the bend is untouched by it.
+    sweep: (-95.00 * Math.PI) / 180,
+    glove: [-0.28775, -0.40475, -0.331], gloveAim: [-0.34875, -0.489, -0.79425], gloveCurl: 0.254,
+    gloveElbow: [-0.3175, -0.1825, -0.1375],
     glovePalm: [0.418, -0.79525, -0.43375],
   },
   {
@@ -2076,18 +2855,56 @@ const KEYS = [
     // own shape across here is what the keys either side asked for and this key is the
     // leg's. The *arms* are the exception: their places here are the arm's own, on the
     // decelerating crossing the follow-through's first key above writes (see it).
+    //
+    // The arm's own place is written *in* from where the throw's line runs at this key,
+    // on the ramp the two keys either side of it sit on, and it is the fold's schedule
+    // that asks for it (see the key above, and STRAIGHT_TRACK): the pose answers an ask
+    // past the reach it holds by handing back the reach itself, so the further in the ask
+    // is written the closer that answer already is to the chord the driver will fold to,
+    // and the less of the pose's own promise the drawn ball stands off (measured on the
+    // realised skeleton: the frames across the hand-over read 4.4 to 9.4 mm off, against
+    // 5.6 to 11.0 mm with the place left on the throw's line). The *bend* is untouched
+    // either way — that is the cap track's, and the same 165.5° comes back with either
+    // place — so what the place buys is the pose's own number keeping up with the arm it
+    // is asking for, not the arm's shape.
+    //
+    // ...and the *ramp* is what that place is, so the ask's own distance from the socket
+    // is a schedule rather than a spike in one. On the throw's line this key stands 1.17
+    // of a rig unit out from the socket, where the key before it asks 0.91 and the one
+    // after it 0.70: the pose's own track interpolates a place *component by component*
+    // (see `trackAt`), so a key that is a local extreme in its own components — this one
+    // is, forward of both of its neighbours in z and below both of them in y — holds where
+    // it is and then *runs* to catch the next key up: the ask's distance fell 39 mm in one
+    // frame at 1.6083 s against 3 or 4 on the frames either side of it (measured in the
+    // pose's own units, 240 Hz), and the driver's answer to an ask past its reach is its
+    // own stretch — so the arm was stretched 1.20 to hold that ask and let go of it in
+    // three frames, which is the throwing arm's own flick up across the drive leg (read on
+    // the realised skeleton with the place on the line: the elbow 4.6 cm *up* over two
+    // frames against 1 cm around them, the hand's own fall turning over into a rise for a
+    // frame, and the hand covering 9 cm down the mound on the frame the stretch let go).
+    // Written on the ramp — 0.91 out, then 0.80, then 0.70 — the same place realises the
+    // same line: the ask is 1.25 of the span here and at the key before it, so the reach
+    // the pose promises the driver is the chord either way, and what moves is only the
+    // rate the promise's own distance leaves the line at (no hold anywhere across the
+    // crossing, and the stretch falls 1.24 to 1.00 over the fifth of a second the fold
+    // takes rather than over three frames).
     t: 1.575,
-    slot: 0.75,
-    hipYaw: 1.03625, chestYaw: 1.645, lean: 0.302, leanSide: 0.0, hipY: -0.120, drive: 1.33,
+    slot: 0.844,
+    straight: (165.0 * Math.PI) / 180,
+    hipYaw: 1.03625, chestYaw: 1.645, lean: 0.302, leanSide: 0.0, hipY: -0.120, drive: 1.3360,
     headPitch: 0.13,
     // The swing's own middle: out over the hip it hangs from with the foot still a
     // hand's width up and the leg at its length — the arc written down.
-    pivot: { x: -0.311, lift: 0.30, z: -1.970, yaw: 1.300, bend: 0.12, hang: 0 },
-    front: { x: 0.000, lift: 0, z: -0.940, yaw: -0.86, bend: 0.2285, hang: 0, cock: 0 },
-    ball: [-0.3268, 0.8924, -1.5710], aim: [-0.3936, -0.8136, -0.4192], curl: 0.2660,
-    elbow: [-0.2336, 0.6456, -1.8246],
-    glove: [-0.2855, -0.4295, -0.302], gloveAim: [-0.3575, -0.478, -0.7985], gloveCurl: 0.258,
-    gloveElbow: [-0.315, -0.185, -0.115],
+    pivot: { x: 0.070, lift: 0.30, z: -1.9970, yaw: 1.300, bend: 0.12, hang: 0 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.86, bend: 0.2285, hang: 0, cock: 0 },
+    ball: [-0.1501, 0.7846, -2.2633], aim: [-0.0825, -0.3174, -0.9447], curl: 0.2660,
+    elbow: [-0.1286, 0.8416, -2.199],
+    // ...and the ring keeps coming round on the same schedule as the key before it (see
+    // that key's own note): the two of them together are what the arm's travel is read
+    // off, and the elbow's line falls through both of them without turning back.
+    sweep: (-45.00 * Math.PI) / 180,
+    glove: [-0.2855, -0.4295, -0.329], gloveAim: [-0.3575, -0.478, -0.7985], gloveCurl: 0.258,
+    gloveElbow: [-0.315, -0.185, -0.142],
     glovePalm: [0.386, -0.7905, -0.4675],
   },
   {
@@ -2097,19 +2914,59 @@ const KEYS = [
     // foot is put down, so it is also where the leg gives up the last of its height.
     t: 1.61,
     slot: 0.5,
-    hipYaw: 1.171, chestYaw: 1.720, lean: 0.218, leanSide: 0.0, hipY: -0.105, drive: 1.334,
+    straight: (158.5 * Math.PI) / 180,
+    hipYaw: 1.171, chestYaw: 1.720, lean: 0.2107, leanSide: 0.0, hipY: -0.0952, drive: 1.3480,
     headPitch: 0.12,
     // Out to the glove side of the body's own line now, still a hand's width up and on
     // its way down, with the shoe turned well out the way the swing went and the knee
     // out beyond it — the side the swing comes round on, and the far end of it: from
     // here the foot carries *in* as it comes down, across the body's own line and on to
     // the far side of it, which is where the finish stands (see the middles below).
-    pivot: { x: -0.536, lift: 0.301, z: -1.760, yaw: 1.750, bend: 0.14, hang: 0 },
-    front: { x: 0.000, lift: 0, z: -0.940, yaw: -0.86, bend: 0.217, hang: 0, cock: 0 },
-    ball: [-0.3324, 0.8531, -1.6131], aim: [-0.4048, -0.8248, -0.3856], curl: 0.2380,
-    elbow: [-0.2448, 0.6007, -1.8779],
-    glove: [-0.281, -0.479, -0.284], gloveAim: [-0.375, -0.456, -0.807], gloveCurl: 0.266,
-    gloveElbow: [-0.310, -0.190, -0.110],
+    //
+    // ...and it is the key the fold's ask comes onto the arm's own chord on (see the
+    // fold's own note at the first follow-through key): the place below is a chord rather
+    // than a line past it, the driver's stretch is nought from here on, and the elbow the
+    // frame realises is the *cap's* own — 158.8° on the realised skeleton at this key,
+    // against the 158.5° the cap track names, with the frames either side of it reading
+    // 160.3° and 155.3°, so no frame of the fall carries a step of more than 0.9°.
+    //
+    // ...and the place is written *clear of the trunk's own clearance* as well as on the
+    // chord: an ask inside the body's own volume is answered by the driver pushing it out
+    // of it, and what the pose then promises — the place it wrote — stands off the hand
+    // the driver really carries by exactly that push. Written a shade further forward and
+    // out (on the pose's own chord place the wrist landed 6.5 mm short of the ask here and
+    // 6.3 mm at 1.62s, and the drawn ball stood that far off the promise), the two keep up
+    // with each other: 2.6 mm here and 2.0 mm at 1.62s, against the browser suite's own
+    // 5 mm reading (see its test of the promise).
+    pivot: { x: 0.100, lift: 0.301, z: -1.7950, yaw: 1.750, bend: 0.14, hang: 0 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.86, bend: 0.217, hang: 0, cock: 0 },
+    ball: [-0.332962, 0.727195, -2.043], aim: [-0.2378, -0.5511, -0.7998], curl: 0.2380,
+    // The pole is the upper arm's own line, and it stands off the chord by the angle the
+    // key's own bend puts it at: 0.056 of a unit for these 158.5° — the arm's own law of
+    // cosines, sin(10.2°) of the upper arm's length. Written closer to the chord than that
+    // (measured, 0.024 of a unit off it), the plane the driver hangs the elbow's own ring
+    // on is at the mercy of the pose's socket estimate — which stands five to a dozen
+    // centimetres from the driver's own socket across the hand-over — and the elbow swings
+    // round its chord by the ring's whole radius, the fold's own bend with it: that is what
+    // the throwing arm's flick up across the drive leg was, and it is why the pole has to
+    // name its side plainly (see the browser suite's reading of the fall, and the unit
+    // suite, which holds every pole of the delivery clear of its own chord).
+    //
+    // ...and it was half the story: the *width* of the ring is the pole's own tilt, and
+    // the *way round* the chord it hangs is this key's ``sweep`` (see the fold's first
+    // follow-through key). A place written between two keys is carried corner to corner,
+    // and the fold's own ring turns most of a right angle an eighth of a second here: the
+    // interpolated line cuts across the chest, which is a pole asking for an elbow inside
+    // the body — and the driver answers *that* with its clearance rule rather than with
+    // the promise, which is the flick the tilt alone did not stop (read on the realised
+    // skeleton with the tilt corrected and no sweep: 19.5° of upper arm and an 11.1 cm
+    // elbow jump in the one frame at 1.6125 s). Composed from the sweep, the same fold
+    // reads 5.6° and 3.7 cm at its worst, and the browser suite's own frame-by-frame
+    // reading of the arm's turn is what holds it.
+    elbow: [-0.179589, 1.06849, -1.82514],
+    sweep: 0,
+    glove: [-0.281, -0.479, -0.319], gloveAim: [-0.375, -0.456, -0.807], gloveCurl: 0.266,
+    gloveElbow: [-0.31, -0.19, -0.145],
     glovePalm: [0.322, -0.781, -0.535],
   },
   {
@@ -2121,17 +2978,33 @@ const KEYS = [
     // a track between keys a twentieth of a second apart cannot hold that many degrees
     // without running to catch up in its middle.
     //
+    // The arm's place here is its own chord (see the fold's note at the first
+    // follow-through key), and the cap track is left *wide* of it on purpose: the arc the
+    // place is written on turns hard between this key and the two below it — the hand
+    // comes in eleven centimetres of the span across them — and the curve the keys are
+    // joined on bulges *out* over that turn, so the frame between this key and the last of
+    // the fold's keys carries a wrist three and a half millimetres further out than either
+    // of them asks for. The cap is what answers it: set a degree and a half wide of the
+    // place's own chord, it takes those overshooting frames back to the schedule rather
+    // than letting them read as a straighter arm (measured on the realised skeleton: the
+    // frame at 1.62s reads 157.4°, which is this key's own schedule, against 164.4° with
+    // the cap left at its old 179°, and the frame carries no step either way).
+    //
     // Every other track is the frame's own place between its neighbours.
     t: 1.6275,
-    slot: 0.375,
-    hipYaw: 1.238, chestYaw: 1.755, lean: 0.176, leanSide: 0.0, hipY: -0.085, drive: 1.336,
+    slot: 0.316,
+    straight: (155.6 * Math.PI) / 180,
+    hipYaw: 1.238, chestYaw: 1.755, lean: 0.1549, leanSide: 0.0, hipY: -0.0742, drive: 1.3560,
     headPitch: 0.115,
-    pivot: { x: -0.364, lift: 0.255, z: -1.720, yaw: 2.050, bend: 0.16, hang: 0 },
-    front: { x: 0.000, lift: 0, z: -0.940, yaw: -0.86, bend: 0.21275, hang: 0, cock: 0 },
-    ball: [-0.3348, 0.8367, -1.6307], aim: [-0.4095, -0.8295, -0.3715], curl: 0.2262,
-    elbow: [-0.2495, 0.5819, -1.9002],
-    glove: [-0.26825, -0.49925, -0.278], gloveAim: [-0.38125, -0.442, -0.81025], gloveCurl: 0.2745,
-    gloveElbow: [-0.3075, -0.1925, -0.1075],
+    pivot: { x: 0.120, lift: 0.255, z: -1.7580, yaw: 2.050, bend: 0.16, hang: 0 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.86, bend: 0.21275, hang: 0, cock: 0 },
+    ball: [-0.423326, 0.657388, -1.8957], aim: [-0.2907, -0.7019, -0.6503], curl: 0.2262,
+    // ...and its pole stands off this key's own chord by the 0.064 of a unit the same
+    // reading asks for its 155.6° (see the note at the key above).
+    elbow: [-0.241174, 1.0576, -1.75054],
+    sweep: (8 * Math.PI) / 180,
+    glove: [-0.26825, -0.49925, -0.316], gloveAim: [-0.38125, -0.442, -0.81025], gloveCurl: 0.2745,
+    gloveElbow: [-0.3075, -0.1925, -0.1455],
     glovePalm: [0.2915, -0.76075, -0.57125],
   },
   {
@@ -2156,16 +3029,39 @@ const KEYS = [
     // Every other track is the frame's own place between its neighbours, as at the
     // first middle key — the body's turn, its lean and the hips' travel — and the arms
     // are the arm's own, as at every middle across the crossing.
+    //
+    // ...and the arm's own *place* here is written at the chord of the bend this frame
+    // means (see the fold's note at the first follow-through key): the ask is inside the
+    // arm's own reach by this point in the fall, so the driver neither stretches nor
+    // folds anything here — the elbow is the law of cosines at the place itself, and the
+    // place is what the fold's schedule is written on. Measured on the realised skeleton,
+    // this key reads a 152.6° elbow, which is the cap track's own number there, and the
+    // keys either side of it 155.3° and 150.6°, so the fall carries no step of more than
+    // 2.0° between the keys of the crossing and no frame of it rises at all.
+    //
+    // ...and the asks from here to the pause are left a few millimetres *inside* the
+    // trunk's own clearance, which is the one number of this fold that is not the pose's
+    // to settle: the driver answers such an ask by pushing it out of the body's own
+    // volume, so the pose's own promise stands off the hand it really carries by that
+    // push — 6.4 mm at 1.6625s and 4.3 mm at 1.71s, and 11.4 mm on the frames between
+    // this key and the one before it, where the interpolated ask dips deepest into it.
+    // The *hand* is the driver's own answer and is outside the body by construction; what
+    // the drift costs is only the promise's own fidelity. Moving these asks out was tried
+    // and reverted: the swing's own deceleration moves with them (it read 10.27° between
+    // 1.745s and 1.78s against 9.58° before it), and that deceleration is what this half
+    // of the follow-through is *for* (see the swing's own keys, and the unit suite).
     t: 1.645,
-    slot: 0.25,
-    hipYaw: 1.305, chestYaw: 1.785, lean: 0.134, leanSide: 0.0, hipY: -0.060, drive: 1.337,
+    slot: 0.156,
+    straight: (152.7 * Math.PI) / 180,
+    hipYaw: 1.305, chestYaw: 1.785, lean: 0.1025, leanSide: 0.0, hipY: -0.0491, drive: 1.3660,
     headPitch: 0.11,
-    pivot: { x: -0.193, lift: 0.214, z: -1.700, yaw: 2.350, bend: 0.18, hang: 0 },
-    front: { x: 0.000, lift: 0, z: -0.940, yaw: -0.86, bend: 0.2085, hang: 0, cock: 0 },
-    ball: [-0.3368, 0.8224, -1.6460], aim: [-0.4136, -0.8336, -0.3592], curl: 0.2160,
-    elbow: [-0.2536, 0.5656, -1.9197],
-    glove: [-0.2555, -0.5195, -0.272], gloveAim: [-0.3875, -0.428, -0.8135], gloveCurl: 0.283,
-    gloveElbow: [-0.305, -0.195, -0.105],
+    pivot: { x: 0.135, lift: 0.214, z: -1.7410, yaw: 2.350, bend: 0.18, hang: 0 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.860, bend: 0.2085, hang: 0, cock: 0 },
+    ball: [-0.445826, 0.709002, -1.6932], aim: [-0.3085, -0.8404, -0.4456], curl: 0.2160,
+    elbow: [-0.2715, 1.0649, -1.6612],
+    sweep: 0,
+    glove: [-0.2555, -0.5195, -0.313], gloveAim: [-0.3875, -0.428, -0.8135], gloveCurl: 0.283,
+    gloveElbow: [-0.305, -0.195, -0.146],
     glovePalm: [0.261, -0.7405, -0.6075],
   },
   {
@@ -2180,22 +3076,24 @@ const KEYS = [
     //
     // Every other track is the frame's own place between its neighbours.
     t: 1.6625,
-    slot: 0.125,
-    hipYaw: 1.373, chestYaw: 1.805, lean: 0.092, leanSide: 0.0, hipY: -0.035, drive: 1.338,
+    slot: 0.043,
+    straight: (150.6 * Math.PI) / 180,
+    hipYaw: 1.373, chestYaw: 1.805, lean: 0.0635, leanSide: 0.0, hipY: -0.0298, drive: 1.3750,
     headPitch: 0.105,
-    pivot: { x: -0.021, lift: 0.107, z: -1.578, yaw: 2.700, bend: 0.20, hang: 0 },
-    front: { x: 0.000, lift: 0, z: -0.940, yaw: -0.86, bend: 0.20425, hang: 0, cock: 0 },
-    ball: [-0.3386, 0.8101, -1.6592], aim: [-0.4171, -0.8371, -0.3487], curl: 0.2072,
-    elbow: [-0.2571, 0.5515, -1.9363],
-    glove: [-0.24275, -0.53975, -0.266], gloveAim: [-0.39375, -0.414, -0.81675], gloveCurl: 0.2915,
-    gloveElbow: [-0.3025, -0.1975, -0.1025],
+    pivot: { x: 0.145, lift: 0.107, z: -1.6220, yaw: 2.700, bend: 0.20, hang: 0 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.86, bend: 0.20425, hang: 0, cock: 0 },
+    ball: [-0.4167, 0.743779, -1.5113], aim: [-0.2811, -0.9384, -0.2009], curl: 0.2072,
+    elbow: [-0.2784, 1.0877, -1.5814],
+    sweep: (-10 * Math.PI) / 180,
+    glove: [-0.24275, -0.53975, -0.31], gloveAim: [-0.39375, -0.414, -0.81675], gloveCurl: 0.2915,
+    gloveElbow: [-0.3025, -0.1975, -0.1465],
     glovePalm: [0.2305, -0.72025, -0.64375],
   },
   {
     // The finish: upright out of the fold, the throwing arm done across the body, and
     // the *back* foot landed — the whole body's travel finishes in the feet, which is
     // what a delivery's weight going with the pitch looks like. The pelvis is a full
-    // rig unit toward the plate by here, which is 0.36 of a unit past the spot the front
+    // rig unit toward the plate by here, which is 0.41 of a unit past the spot the front
     // foot planted on and 0.16 short of where the pivot foot lands: the hips have gone
     // *through* the plant rather than stopping at it, and the pivot foot — which the
     // drive peeled off the rubber at the break — has swung round the front leg and
@@ -2217,6 +3115,36 @@ const KEYS = [
     // moved into the swing, which is what those keys' yaws are written for: a rate that
     // only falls, from the release's own peak to a tenth of it here.
     //
+    // The *travel* is written the same way, and it is why the keys from 1.54 on stand
+    // where they do. The pelvis used to reach its own place while the foot was still a
+    // hand's breadth off the ground and spend the rest of the swing shifting its last
+    // three centimetres, which reads as a stop at the plant rather than a body going
+    // over it. The keys from 1.54 to this one now carry what is left of the travel at a
+    // rate that only falls — measured on the realised spine root, 1.2 rig/s at 1.52s,
+    // 1.5 at 1.54, 1.3 at 1.56, 1.1 at 1.58, 0.8 at 1.60, 0.6 at 1.62, 0.5 at 1.64 and
+    // 0.35 at 1.66, against a crawl of 0.06 a second from 1.63 on before it — and it
+    // does *not* stop here. A delivery's weight does not stop on the frame its lead foot
+    // lands; the plant is where the body goes *over* the foot, so the drive's own keys
+    // from this one to the hold carry the last of it: 0.55 of a rig unit a second on this
+    // frame, then 0.49, 0.41, 0.38, 0.34, 0.26, 0.22 and 0.11 at 1.88s, and nought from
+    // 1.90 — one decaying run, 0.074 of a rig unit of it, where the previous authoring
+    // had the drive one number from this frame out and the pelvis dead on the spot (see
+    // the hold, and the keys between).
+    //
+    // The *plant* is what pays for it and what gives it room: the stride foot is authored
+    // a foot further down the mound than it was (0.12 of a rig unit out, 0.94 to 1.06 in
+    // the keys' own frame), so the leg the body lands over is the same leg at the same
+    // reach and the hips have somewhere to go. The mound falls away under that foot by
+    // 1.4 cm over the extra 0.12, which the placement's own step already carries (see
+    // Pitcher.jsx, which solves it off `pitcherFinish`'s feet every pitch).
+    //
+    // What the extra carry costs is paid on the other tracks of the window by the same
+    // amount: the pivot foot's own keys and the throwing arm's places stand 0.046 of a
+    // unit further toward the plate on each of them, so the leg's span and the arm's own
+    // chord are the ones they were and the pelvis is the only thing that arrives later,
+    // and past this key the arm rides the body's own travel frame by frame (see `carried`
+    // in the pose, which hands it the whole of what the pelvis spends after the plant).
+    //
     // The pelvis has come up over the feet on the way: nought of a rig unit of rise
     // across the stride's fold by 1.575 and a tenth of one by here (hipY -0.075 to
     // -0.0245 over the last tenth of a second of the swing), which is why the feet can
@@ -2229,9 +3157,9 @@ const KEYS = [
     // 25° before this was authored), so the plane the knee bends in turns out with the
     // swing instead of a shoe left pointed at the plate carrying the foot across the
     // body beneath it. What the spin does with the foot is both: round, and *on* — the
-    // landing is half a rig unit ahead of the lead foot's own place (0.515, against the
-    // 0.604 it stood at before the drive leg's plant was brought in toward that foot —
-    // see below), because what the finish has to stand on
+    // landing is half a rig unit ahead of the lead foot's own place (0.61 on the
+    // realised ankles, against the 0.604 it stood at before the drive leg's plant was
+    // brought in toward that foot — see below), because what the finish has to stand on
     // is the weight *between* the two feet, and a trail foot that comes down level with
     // the stride's plant leaves the hips' own shadow sitting over it rather than over
     // the space between the legs (see the finish below). The extra travel is the
@@ -2251,12 +3179,26 @@ const KEYS = [
     // written inside the leaning one. Both are what a follow-through does: the hand
     // comes down across the front of the body, and the elbow leads it forward, not
     // through the ribs.
+    //
+    // The arm's own *line* is still travelling on this key and the two after it: the
+    // whole arm swings on the arc the socket draws, and its travel is eased out across
+    // the swing rather than spent in the frame the fall hands it over on — the fall
+    // brings it round at several rig units a second, so a line that arrived at its own
+    // spot here would be a line the *hand* had to be stopped by, and the stop would show
+    // in the hand's own sweep: measured on the realised skeleton before the easing, the
+    // hand's own lateral step fell to 0.0001 of a unit at 1.70s and came back to -0.008
+    // on the step after it. The travel's own share is 0.45 of it here, 0.80 by 1.71s and
+    // the whole of it by 1.745s, each step smaller than the one before it, and the line
+    // is held on the spot it arrives at for the rest of the beat and out to the pause
+    // (see the fold's own keys, and the unit suite, which reads the ease, the arrival
+    // and then the hold).
     t: 1.68,
+    straight: (148.6 * Math.PI) / 180,
     // The slot's own say in the lean runs out with the follow-through: the arm's own
     // keys are still in the window, and the recovery below is not.
-    hipYaw: 1.44, chestYaw: 1.819, lean: 0.05, leanSide: 0.0, hipY: -0.0245, drive: 1.338,
+    hipYaw: 1.44, chestYaw: 1.819, lean: 0.05, leanSide: 0.0, hipY: -0.0245, drive: 1.3840,
     headPitch: 0.10,
-    // ...and it comes down half a rig unit *past* the foot the stride planted on (0.515:
+    // ...and it comes down half a rig unit *past* the foot the stride planted on (0.61:
     // past the whole of that foot and near half of another, which is a foot the hips have
     // to travel on to reach) and a tenth of one *across* it: to the throwing side of the
     // body's own line (0.150), where the swing's own arc had it two fifths of a unit out
@@ -2273,7 +3215,7 @@ const KEYS = [
     // line on this body's widest ask, against the 0.60 this foot's ankle is standing at —
     // the shoe is put down under the weight a rolled torso brings with it rather than
     // inside the line it would stand in upright. The two feet are 0.53 of a unit apart
-    // either way (0.150 across and 0.515 of the stride's own forward travel), the same
+    // either way (0.150 across and 0.61 of the stride's own forward travel), the same
     // stance an un-leaned finish would have been authored with, turned the other way about
     // the lead foot's own line: what the lean moves is *where* the finish's weight is
     // stood, and what the swing moves is the foot that is stood under it. It lands there
@@ -2286,13 +3228,116 @@ const KEYS = [
     // is where the delivery ends: the frame this foot lands in is the frame he is left
     // standing in, with nothing to settle onto it and nothing to stand up out of (see the
     // hold below).
-    pivot: { x: 0.150, lift: 0, z: -1.455, yaw: 2.900, bend: 0.50, hang: 0, flat: 1 },
+    pivot: { x: 0.150, lift: 0, z: -1.5010, yaw: 2.900, bend: 0.50, hang: 0, flat: 1 },
     glovePalm: [0.20, -0.70, -0.68],
-    front: { x: 0.000, lift: 0, z: -0.940, yaw: -0.86, bend: 0.45, hang: 0, cock: 0, flat: 1 },
-    ball: [-0.34, 0.80, -1.67], aim: [-0.42, -0.84, -0.34], curl: 0.2,
-    elbow: [-0.26, 0.54, -1.95],
-    glove: [-0.230, -0.560, -0.260], gloveAim: [-0.40, -0.40, -0.82], gloveCurl: 0.3,
-    gloveElbow: [-0.30, -0.20, -0.10],
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.86, bend: 0.45, hang: 0, cock: 0, flat: 1 },
+    ball: [-0.3718, 0.765852, -1.3527], aim: [-0.2155, -0.9747, 0.0591], curl: 0.2,
+    elbow: [-0.2711, 1.1029, -1.5101],
+    sweep: (-30.82 * Math.PI) / 180,
+    glove: [-0.23, -0.56, -0.306], gloveAim: [-0.40, -0.40, -0.82], gloveCurl: 0.3,
+    gloveElbow: [-0.3, -0.2, -0.146],
+  },
+  {
+    // The swing's own middle: every track here but the drive is the landing key's —
+    // the body is written flat across the hold, and the one thing still moving through
+    // it is the pelvis, which the drive keys carry on down from the plant to the hold
+    // (see the landing's own note) — and the throwing arm's own two places are where
+    // the realised skeleton had the arm at this frame when the key was written.
+    t: 1.71,
+    straight: (147.6 * Math.PI) / 180,
+    hipYaw: 1.44, chestYaw: 1.819, lean: 0.05, leanSide: 0.0, hipY: -0.0245, drive: 1.4000,
+    headPitch: 0.10,
+    pivot: { x: 0.150, lift: 0, z: -1.5010, yaw: 2.900, bend: 0.50, hang: 0, flat: 1 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.86, bend: 0.45, hang: 0, cock: 0, flat: 1 },
+    ball: [-0.3385, 0.8316, -1.2117], aim: [-0.0925, -0.8181, 0.5676], curl: 0.2136,
+    elbow: [-0.2603, 1.0983, -1.4795],
+    sweep: (-50.76 * Math.PI) / 180,
+    glove: [-0.226, -0.556, -0.296], gloveAim: [-0.40, -0.40, -0.82], gloveCurl: 0.3,
+    gloveElbow: [-0.286, -0.21, -0.148],
+    glovePalm: [0.20, -0.70, -0.68],
+  },
+  {
+    // The swing's own middle: every track here but the drive is the landing key's —
+    // the body is written flat across the hold, and the one thing still moving through
+    // it is the pelvis, which the drive keys carry on down from the plant to the hold
+    // (see the landing's own note) — and the throwing arm's own two places are where
+    // the realised skeleton had the arm at this frame when the key was written.
+    //
+    // The ring's own angle is the last of the fold's, and it is the one number of the
+    // swing that had to be re-solved when the finish's fold deepened (see FINISH_FOLD):
+    // the ring is read off the socket-to-wrist chord, and the deeper fold carries the
+    // socket a centimetre and a half further down and forward on every frame of the hold,
+    // so the angle that composed this key's own elbow before now composed a place 17 mm
+    // from it — a step the driver would have taken on the frame the window ended. At
+    // -61.4° the ring lands on the place the keys hold to 0.0002 of a rig unit, which is
+    // the arm's own line, unchanged from the frame the travel arrives on to the end of
+    // the beat.
+    t: 1.745,
+    straight: (147.1 * Math.PI) / 180,
+    hipYaw: 1.44, chestYaw: 1.819, lean: 0.05, leanSide: 0.0, hipY: -0.0245, drive: 1.4150,
+    headPitch: 0.10,
+    pivot: { x: 0.150, lift: 0, z: -1.5010, yaw: 2.900, bend: 0.50, hang: 0, flat: 1 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.86, bend: 0.45, hang: 0, cock: 0, flat: 1 },
+    ball: [-0.3132, 0.9136, -1.1192], aim: [-0.0043, -0.4165, 0.9091], curl: 0.2295,
+    elbow: [-0.2538, 1.0972, -1.4622],
+    sweep: (-61.4 * Math.PI) / 180,
+    glove: [-0.2234, -0.5534, -0.2903], gloveAim: [-0.40, -0.40, -0.82], gloveCurl: 0.3,
+    gloveElbow: [-0.2769, -0.2165, -0.1501],
+    glovePalm: [0.20, -0.70, -0.68],
+  },
+  {
+    // The swing's own middle: every track here but the drive is the landing key's —
+    // the body is written flat across the hold, and the one thing still moving through
+    // it is the pelvis, which the drive keys carry on down from the plant to the hold
+    // (see the landing's own note) — and the throwing arm's own two places are where
+    // the realised skeleton had the arm at this frame when the key was written.
+    t: 1.78,
+    straight: (179 * Math.PI) / 180,
+    hipYaw: 1.44, chestYaw: 1.819, lean: 0.05, leanSide: 0.0, hipY: -0.0245, drive: 1.4290,
+    headPitch: 0.10,
+    pivot: { x: 0.150, lift: 0, z: -1.5010, yaw: 2.900, bend: 0.50, hang: 0, flat: 1 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.86, bend: 0.45, hang: 0, cock: 0, flat: 1 },
+    ball: [-0.2981, 1.0049, -1.0862], aim: [0.0228, 0.0009, 0.9997], curl: 0.2455,
+    elbow: [-0.2538, 1.0972, -1.4622],
+    glove: [-0.2218, -0.5518, -0.2831], gloveAim: [-0.40, -0.40, -0.82], gloveCurl: 0.3,
+    gloveElbow: [-0.2713, -0.2205, -0.1477],
+    glovePalm: [0.20, -0.70, -0.68],
+  },
+  {
+    // The swing's own middle: every track here but the drive is the landing key's —
+    // the body is written flat across the hold, and the one thing still moving through
+    // it is the pelvis, which the drive keys carry on down from the plant to the hold
+    // (see the landing's own note) — and the throwing arm's own two places are where
+    // the realised skeleton had the arm at this frame when the key was written.
+    t: 1.82,
+    straight: (179 * Math.PI) / 180,
+    hipYaw: 1.44, chestYaw: 1.819, lean: 0.05, leanSide: 0.0, hipY: -0.0245, drive: 1.4410,
+    headPitch: 0.10,
+    pivot: { x: 0.150, lift: 0, z: -1.5010, yaw: 2.900, bend: 0.50, hang: 0, flat: 1 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.86, bend: 0.45, hang: 0, cock: 0, flat: 1 },
+    ball: [-0.2850, 0.8800, -1.1150], aim: [0.0114, -0.4000, 0.9165], curl: 0.2636,
+    elbow: [-0.2538, 1.0450, -1.4720],
+    glove: [-0.2208, -0.5508, -0.2746], gloveAim: [-0.40, -0.40, -0.82], gloveCurl: 0.3,
+    gloveElbow: [-0.2678, -0.223, -0.1422],
+    glovePalm: [0.20, -0.70, -0.68],
+  },
+  {
+    // The swing's own middle: every track here but the drive is the landing key's —
+    // the body is written flat across the hold, and the one thing still moving through
+    // it is the pelvis, which the drive keys carry on down from the plant to the hold
+    // (see the landing's own note) — and the throwing arm's own two places are where
+    // the realised skeleton had the arm at this frame when the key was written.
+    t: 1.86,
+    straight: (179 * Math.PI) / 180,
+    hipYaw: 1.44, chestYaw: 1.819, lean: 0.05, leanSide: 0.0, hipY: -0.0245, drive: 1.4510,
+    headPitch: 0.10,
+    pivot: { x: 0.150, lift: 0, z: -1.5010, yaw: 2.900, bend: 0.50, hang: 0, flat: 1 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.86, bend: 0.45, hang: 0, cock: 0, flat: 1 },
+    ball: [-0.2766, 0.8200, -1.0950], aim: [-0.0190, -0.8600, 0.5099], curl: 0.2818,
+    elbow: [-0.2538, 1.0300, -1.4800],
+    glove: [-0.2203, -0.5503, -0.2683], gloveAim: [-0.40, -0.40, -0.82], gloveCurl: 0.3,
+    gloveElbow: [-0.2661, -0.2243, -0.1375],
+    glovePalm: [0.20, -0.70, -0.68],
   },
   {
     // The hold: the frame the drive foot landed in, and the same pose nine tenths of a
@@ -2343,30 +3388,44 @@ const KEYS = [
     // are not moving on would be standing up out of its own finish rather than into the
     // set.
     //
-    // The throwing arm *lets the throw go*: the landing is the pose the pitch left it
-    // in — down across the body, the hand cocked back off a bent elbow, which is what
-    // a follow-through *is* — and what the hold stands in is the arm the throw has
-    // finished with. It hangs at the side of the body, straight and limp: the hand
-    // comes down to the thigh (a hand's width out from it, level with the knee), the
-    // elbow opens most of the way to the driver's own limit of what a bare arm may
-    // straighten to (see ELBOW_BEND_MAX), and the hand's line runs *on down the arm*
-    // instead of cocked back off it (the pose asked for 32° of wrist at the landing,
-    // which is past the 30 the driver allows, and asks for none of it here). Both of
-    // the numbers are written the way every arm place is — in the frame the body
-    // stands in — and the body is 104° round by here, so "beside the body" is most of
-    // a right angle off the plate's line: the arm hangs down and *behind* the plate's
-    // own line, on the side of him the throw came from.
+    // The throwing arm *hangs* by here. The throw's own straight line is spent with the
+    // hand-over, and what a thrown arm does once there is nothing in it is fall to the
+    // ground and stop: the upper arm has travelled on from the hand-over down its own
+    // arc — 61° under the socket on the hand-over's own frame (1.745s), 52° at the top
+    // of the settle, 65° by 1.88 and 58° through the beat — and the forearm has come
+    // down *under* it rather than folding up over the hip, from 63° below the horizon at
+    // the hand-over to 79° here. So the hand the hold is written at hangs at the thigh,
+    // 0.54 of a rig unit under the socket, with the elbow's own point just outside the
+    // ribs — the arm a body stands in after a throw, not one it is still holding out.
     //
-    // ...and it hangs *clear* of the body rather than against it. Measured off the
-    // realised skeleton, the arm's nearest approach to the trunk's own girth is 0.059
-    // of a rig unit, and the hand's own line stands 0.14 of one out from the body's
-    // centre line: an arm left to hang with less than that reads as leaning on the
-    // thigh it passes, which is not the throw letting go — it is the arm *collapsing*
-    // onto the body once the ball is gone. So the place the hand is written at is a
-    // hand's width further out than it hangs by itself — and *sideways* to the line
-    // from the socket, which is why the arm reads as straight as it did before it
-    // moved (0.581 of its 0.600 span either way, and the elbow's 151°) while the
-    // trunk's own clearance goes from 0.043 of a rig unit to 0.059.
+    // It is written as a *hang* rather than as the fold the finish used to land in, and
+    // the two places below are what decide it. The keys here used to carry the hand up at
+    // the hip — 0.20 of a unit *above* the elbow it was written off — with the forearm
+    // standing up over the joint, and the ride then lifted the whole arm as the trunk
+    // stood up under it: measured on the realised skeleton, the upper arm climbed from
+    // 61° below the horizon to 39.5° across the beat and pointed forward rather than
+    // down. What fixed it is the chord, not the pole: the driver solves the elbow on the
+    // chord the hand draws, so a hand at the hip is an elbow folded to a hundred degrees
+    // with the upper arm lying along that chord whatever the pole asks for. Put under
+    // the socket instead, the hand draws a chord the arm can nearly lie along, and the
+    // arm reads as hanging from 1.88 s to the landing frame — the hand's own line
+    // (``aim``) turned down with it, 0.86 of that line vertical here.
+    //
+    // The elbow it hangs off is a place on the body — the arm's own length out along the
+    // chest's lateral, a hand's width under its centre and a hand's own length in front
+    // of it (0.145 of a rig unit, against the 0.005 the hand-over's own elbow stands at)
+    // — and it is the chest that carries it, so what moves under the settle is the torso
+    // while the arm's own line on it holds still. The forward share is the arm's own
+    // room: an elbow left at the body's own side sends the hanging forearm through the
+    // jersey, and the arm's own depth in the trunk's volume runs 0.005 of a rig unit at
+    // its worst across the descent, against 0.008 before the carry (see the browser
+    // suite's arm test, which reads that clearance and the realised step back).
+    //
+    // ...and the pause is where that ends: the key below is these same numbers again a
+    // fifth of a second on, so nothing about the arm moves across the beat — which is
+    // what makes the recovery that follows a separate movement rather than the hang
+    // easing back out. What the *hold* stands in is the arm the throw has finished
+    // with, at his side and limp (see the key below and the recovery's own note).
     //
     // The *glove* arm settles with it, and it is its own motion rather than the
     // throwing arm's mirror. The lead arm comes through the delivery out in front of
@@ -2384,34 +3443,73 @@ const KEYS = [
     // (see the look's own clock), so what the neck held back through the throw has
     // unwound and the head looks where the body it is falling over looks.
     t: 1.90,
-    hipYaw: 1.44, chestYaw: 1.819, lean: 0.05, leanSide: 0.0, hipY: -0.0245, drive: 1.338,
+    straight: (179 * Math.PI) / 180,
+    hipYaw: 1.44, chestYaw: 1.819, lean: 0.05, leanSide: 0.0, hipY: -0.0245, drive: 1.4580,
     headPitch: 0.10,
-    pivot: { x: 0.150, lift: 0, z: -1.455, yaw: 2.900, bend: 0.50, hang: 0, flat: 1 },
-    front: { x: 0.000, lift: 0, z: -0.940, yaw: -0.86, bend: 0.45, hang: 0, cock: 0, flat: 1 },
-    ball: [-0.303, 0.70, -1.648], aim: [-0.42, -0.88, -0.24], curl: 0.3,
-    elbow: [-0.12, 0.88, -1.56],
-    glove: [-0.220, -0.550, -0.215], gloveAim: [-0.40, -0.40, -0.82], gloveCurl: 0.3,
-    gloveElbow: [-0.265, -0.225, -0.085],
+    pivot: { x: 0.150, lift: 0, z: -1.5010, yaw: 2.900, bend: 0.50, hang: 0, flat: 1 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.86, bend: 0.45, hang: 0, cock: 0, flat: 1 },
+    ball: [-0.2766, 0.8200, -1.0950], aim: [-0.019, -0.8600, 0.5099], curl: 0.3,
+    elbow: [-0.2538, 1.0300, -1.4800],
+    glove: [-0.22, -0.55, -0.265], gloveAim: [-0.40, -0.40, -0.82], gloveCurl: 0.3,
+    gloveElbow: [-0.265, -0.225, -0.135],
     glovePalm: [0.20, -0.70, -0.68],
   },
   {
-    // ...the same pose, nine tenths of a second later, to the frame: the hold. Nothing
-    // in the body has moved across it — the keys either side are the same numbers, so
-    // the track reads flat — and what that buys is the beat a delivery's own
-    // follow-through has, where nothing happens: the pitcher standing in what he has
-    // just done rather than snapping back to the rubber the moment the trail foot is
-    // down. Held
-    // to the frame rather than eased: a pose that drifted across the second would be a
-    // pitcher swaying in the hold, and what a hold is is a *stop*.
-    t: 2.80,
-    hipYaw: 1.44, chestYaw: 1.819, lean: 0.05, leanSide: 0.0, hipY: -0.0245, drive: 1.338,
+    // The pause, held to the frame: the key above's own numbers again a fifth of a
+    // second on. Written so the track *reads flat* between the two — the interpolator's
+    // tangents fall to nought where its neighbours are equal, so the arm is still to the
+    // thousandth across the beat — which is what the browser suite reads the pause off
+    // (see the arm test there), and what the request's own words ask for: the arm hangs
+    // still rather than drifting on down the body, and the delivery stands in the pose
+    // for a beat before the recovery takes it.
+    // Every track is the pause's, body for body: a shorter or a longer hold is this key
+    // moved, and nothing else.
+    t: 2.10,
+    straight: (179 * Math.PI) / 180,
+    hipYaw: 1.44, chestYaw: 1.819, lean: 0.05, leanSide: 0.0, hipY: -0.0245, drive: 1.4580,
     headPitch: 0.10,
-    pivot: { x: 0.150, lift: 0, z: -1.455, yaw: 2.900, bend: 0.50, hang: 0, flat: 1 },
-    front: { x: 0.000, lift: 0, z: -0.940, yaw: -0.86, bend: 0.45, hang: 0, cock: 0, flat: 1 },
-    ball: [-0.303, 0.70, -1.648], aim: [-0.42, -0.88, -0.24], curl: 0.3,
-    elbow: [-0.12, 0.88, -1.56],
-    glove: [-0.220, -0.550, -0.215], gloveAim: [-0.40, -0.40, -0.82], gloveCurl: 0.3,
-    gloveElbow: [-0.265, -0.225, -0.085],
+    pivot: { x: 0.150, lift: 0, z: -1.5010, yaw: 2.900, bend: 0.50, hang: 0, flat: 1 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.86, bend: 0.45, hang: 0, cock: 0, flat: 1 },
+    ball: [-0.2766, 0.8200, -1.0950], aim: [-0.019, -0.8600, 0.5099], curl: 0.3,
+    elbow: [-0.2538, 1.0300, -1.4800],
+    glove: [-0.22, -0.55, -0.265], gloveAim: [-0.40, -0.40, -0.82], gloveCurl: 0.3,
+    gloveElbow: [-0.265, -0.225, -0.135],
+    glovePalm: [0.20, -0.70, -0.68],
+  },
+  {
+    // The recovery: the body is the pause's to the frame — nothing above the legs has
+    // moved since the landing, so the tracks read flat across the whole of it (see the
+    // pause above) — and what *does* move is the throwing arm letting the throw go. The
+    // fold's own swing is spent with the pause, so what is left is the fall to the side:
+    // the hand comes down to the thigh (a hand's width out from it, level with the knee),
+    // the elbow opens most of the way to the driver's own limit of what a bare arm may
+    // straighten to (see ELBOW_BEND_MAX), and the hand's line runs *on down the arm*
+    // instead of cocked back off it (the pose asked for 32° of wrist at the landing,
+    // which is past the 30 the driver allows, and asks for none of it here). Both of the
+    // numbers are written the way every arm place is — in the frame the body stands in —
+    // and the body is 104° round by here, so "beside the body" is most of a right angle
+    // off the plate's line: the arm hangs down and *behind* the plate's own line, on the
+    // side of him the throw came from.
+    //
+    // ...and it hangs *clear* of the body rather than against it. Measured off the
+    // realised skeleton, the arm's nearest approach to the trunk's own girth is 0.059
+    // of a rig unit, and the hand's own line stands 0.14 of one out from the body's
+    // centre line: an arm left to hang with less than that reads as leaning on the
+    // thigh it passes, which is not the throw letting go — it is the arm *collapsing*
+    // onto the body once the ball is gone. So the place the hand is written at is a
+    // hand's width further out than it hangs by itself — and *sideways* to the line
+    // from the socket, which is why the arm reads as straight as it did before it
+    // moved (0.581 of its 0.600 span either way, and the elbow's 151°) while the
+    // trunk's own clearance goes from 0.043 of a rig unit to 0.059.
+    t: 2.80,
+    hipYaw: 1.44, chestYaw: 1.819, lean: 0.05, leanSide: 0.0, hipY: -0.0245, drive: 1.4580,
+    headPitch: 0.10,
+    pivot: { x: 0.150, lift: 0, z: -1.5010, yaw: 2.900, bend: 0.50, hang: 0, flat: 1 },
+    front: { x: 0.000, lift: 0, z: -1.060, yaw: -0.86, bend: 0.45, hang: 0, cock: 0, flat: 1 },
+    ball: [-0.303, 0.7, -1.694], aim: [-0.42, -0.88, -0.24], curl: 0.3,
+    elbow: [-0.12, 0.88, -1.606],
+    glove: [-0.22, -0.55, -0.265], gloveAim: [-0.40, -0.40, -0.82], gloveCurl: 0.3,
+    gloveElbow: [-0.265, -0.225, -0.135],
     glovePalm: [0.20, -0.70, -0.68],
   },
   {
@@ -2456,6 +3554,11 @@ const KEYS = [
 ]
 
 const TIMES = KEYS.map((key) => key.t)
+// One key by its own clock. The keys below are added and re-timed as the delivery
+// is authored, so the moments that read one (the plant's fold, the drive's own full
+// lean) are named by the clock they stand on rather than by an index that would
+// move under them.
+const KEY_AT = (t) => KEYS[TIMES.indexOf(t)]
 
 // The release key's own hips: where the anchor's shoulder is (see pitcherRelease).
 // Read off the keys rather than repeated, so the two cannot drift.
@@ -2780,7 +3883,15 @@ export function pitcherProfile({
     // `pitcherPlacement`) — and negative where the slot is *under* the arm's own lowest
     // reach at that stature, which is the one direction a body cannot fold any further
     // out of.
-    heightShortfall: slot - scale * anchor.y,
+    // Snapped to nought below a nanometre: the two answers this is the gap between
+    // agree exactly at the ceiling (see above), and a subtraction of two answers that
+    // agree leaves its own last bit behind — measured at 2e-16 of a metre on the
+    // staff's own number 2, which is the arithmetic's own noise and not a gap the
+    // body could stand up out of.
+    heightShortfall: (() => {
+      const gap = slot - scale * anchor.y
+      return Math.abs(gap) < 1e-9 ? 0 : gap
+    })(),
     // ...and what the arm's own *lateral* reach could not hold, in world metres, in
     // the rig's own x: nought for every release the body's tilt and the arm's cone
     // together cover, positive where the ball comes off its own lateral line on the
@@ -2947,17 +4058,70 @@ const FOOT_FLAT_TRACKS = FEET.map((_, index) => FOOT_FLAT.map((shares) => shares
 // so it is refused here rather than drawn.
 const CLASP_KEYS = KEYS.map((key) => !!key.clasp)
 const HAS_CLASP = CLASP_KEYS.some(Boolean)
+// ...and the key the hands are let go on: a `part` key is written the way a clasp key
+// is — the ball is still in the mitt on that frame, so its place and the throwing
+// hand's line are the glove's own (see claspTracks) — but the hands are no longer one
+// hand *past* it, so what the pose mixes the two forms by begins its walk to nought
+// there (see CLASP_TRACK). It is what lets the swing start at the top of the lift
+// rather than three frames into the fall.
+const PART_KEYS = KEYS.map((key) => !!key.part)
+// The keys `claspTracks` seeds: the hands are together on the clamp's own keys and on
+// the frame they let go on, and nowhere else.
+const SEED_KEYS = CLASP_KEYS.map((clasp, i) => clasp || PART_KEYS[i])
 for (const key of KEYS) {
-  if (!key.ball && !key.clasp) {
+  if (!key.ball && !key.clasp && !key.part) {
     throw new Error(`pitcherSequence: the key at ${key.t}s carries neither a ball nor a clasp`)
   }
   // The same promise about the *trail* arm: a pole is authored per key, or taken
-  // from a clasped key's own glove (see mirrorTracks). A key with neither would
-  // pose the throwing arm's elbow at the rig's own origin, so it is refused here.
-  if (!key.elbow && !key.clasp) {
+  // from the lead arm's own glove — which is the clasp's shape on the keys the hands
+  // are together on *and* on the frame they let go on, where the two arms are still
+  // one shape for the half-frame the mix takes to come apart (see mirrorTracks). A
+  // key with neither would pose the throwing arm's elbow at the rig's own origin, so
+  // it is refused here.
+  if (!key.elbow && !key.clasp && !key.part) {
     throw new Error(`pitcherSequence: the key at ${key.t}s carries neither an elbow nor a clasp to mirror it from`)
   }
 }
+
+// The upper arm's own rule: it is never carried above the plane the two shoulder
+// sockets draw. The plane is the sockets' own — square to the chest's up axis, tilted
+// with whatever fold the trunk is standing in — and the elbow's place is turned about
+// the arm's chord until its own rise over that plane is nought, which keeps the elbow
+// on the ring its two bones draw (the fold and the stretch are untouched) and only
+// decides *which way round* the arm is: the ring's high side gives way to the socket's
+// own level. It is the rule a low arm slot is read by — a sidearmer's upper arm sweeps
+// under the shoulder line rather than over it — and it binds from the set, through the
+// whole of the windup and the cock.
+//
+// The throw hands it back across the frames from the cock's own key to the
+// come-through's, and the reason is the drag rather than the release: over the last
+// hundredths of a second before the ball goes the chest turns out from under the arm it
+// laid back on (see the trail reading), and an elbow left *behind* a chest folded
+// thirty-odd degrees stands above that chest's transverse plane by plain geometry — its
+// drag times the fold's own sine, 0.21 × 0.53 = 0.11 of a span on the 3/4 harness pitch —
+// without the arm being lifted at all. Held past that the clamp answers by turning the
+// elbow round its chord to the *front*, which is the drag the whole throw is read by
+// (measured: held on through the come-through's own key the elbow is dragged only 0.03 of
+// a span behind the plane there, against the 0.21 it is left with once the fade has run
+// out). So it is off from the cock's own key on, where the
+// chest is still closed over that arm; from the release on the ball is above the shoulder
+// on every slot above a submarine's anyway (the wrist is on the release point, and the
+// upper arm is the first half of a straight line to it), so the arm's last frames *are*
+// above the plane and cannot be anything else. Measured, the arm never stands above 0.03
+// of a span anywhere the cap binds, on either slot.
+const SHOULDER_PLANE_IN = 1.00
+const SHOULDER_PLANE_FULL = 1.02
+// ...and what the rule hands back, and over how long: from the cock's own key rather
+// than from the frame before the come-through. Handed over in the last hundredth of a
+// second before that key, the rule was still folding the elbow under the plane while
+// the authored pole beside it had already turned the arm up and back — so the two
+// answers crossed inside one frame, and the upper arm swung 60° and back again on the
+// frames either side of 1.28 s. Spread over the 0.04 s between the cock and the
+// come-through it is the same hand-over the throw makes: the elbow comes off the plane
+// as the chest turns out from under it, and the pole's own turn either side of PS-8 is
+// one direction.
+const SHOULDER_PLANE_OUT = KEY_AT(1.26).t
+const SHOULDER_PLANE_END = KEY_AT(1.30).t
 
 // The two tracks the clasp writes over, seeded from the numbers the keys carry so
 // that a key with its own keeps them (a key with neither is caught above).
@@ -3129,6 +4293,568 @@ const SLOT_TRACK = KEYS.map((key) => key.slot ?? 0)
 // apart (see the arm output's own note on RELEASE_ELBOW).
 export const AUTHORED_SLOT_END = KEYS[SLOT_TRACK.lastIndexOf(1)].t
 
+// ...and the frames the *trunk's* own fall is handed over on, which is a longer window
+// than the arm's: the slot track's ramp spans the three frames between the plant and the
+// high cock, and a trunk coming out of an arch takes the whole of the whip to come over
+// the foot it is thrown from — the arch is a *place* the delivery stands in for the
+// length of the back leg's fire (see the plant key's own lean), not a curl spent on the
+// way to the cock (see its note). Written as a share of the posture's own fold like the
+// walk, so a submarine's arch and an over-the-top arm's are the same shape on different
+// bodies (see LEAN_IN_TRACK).
+//
+// It is the share the fold is read through where the two overlap — the slower of the two
+// — and the slot track is what it is everywhere else: before the plant this one is
+// nought, and from the come-through on it is whole, so what the *recovery* reads is
+// still the slot's own ease-out.
+// ...and the arch is *held* to the top of the cock, which is where the reference's own
+// back bows over the rubber (PS-8) rather than where it comes undone: the fold waits
+// until the arm has finished loading and only then comes over the front foot, so the
+// pocket the forearm is laid back into is a *back-arched* one for the whole of the cock.
+// The window below therefore starts past the plant and ends on the release itself, and
+// what the whip spends is the whole of the arch's depth in the last tenth of a second
+// before the ball — the fold that launches the trunk over the plant, rather than one
+// spread across a cock that is then thrown off a body already half-way over.
+const FOLD_ARRIVE = [[KEY_AT(1.20).t + 0.04, 0], [KEY_AT(1.30).t, 1]]
+const FOLD_ARRIVE_TIMES = FOLD_ARRIVE.map(([t]) => t)
+const FOLD_ARRIVE_TRACK = FOLD_ARRIVE.map(([, v]) => v)
+
+// ...and the *finish's* own share of the fold, which is the extra the delivery carries
+// after the ball has gone: the trunk does not stop at the posture it threw from, it goes
+// on over the front foot and folds the body up behind the arm, which is what a pitch is
+// read as — the whole body launched, and the throw the last thing in it rather than a
+// thing the body stops at. It is added as a share of a track rather than as keyed angles:
+// nought through the ball, so the release itself is the pitch's own posture, and back to
+// nought by the landing, so the stance the clip ends in is the stance it began in (see the
+// loop's own reading).
+//
+// Written as one number for every slot for the same reason the walk is: a submarine's
+// finish is already folded most of a right angle at the release (49.5° on the submarine
+// harness slot) and a three-quarter slot's is 32°, so the same 0.36 of a radian — 20.6° —
+// is two fifths of the one and two thirds of the other.
+//
+// It is *carried* off the ball rather than eased in from it, and that is the difference
+// between momentum and a body that stops and leans a second time. Written as the keyed
+// ramp this was first (0, then 0.30 at 1.345, ...), the trunk stood dead still for five
+// frames on the frames the ball went — measured on the realised skeleton, 32.04° at
+// 1.3017, 1.3058, 1.3100, 1.3142 and 1.3183 s, then 111°/s — because a pin's first key
+// leaves at rest unless a key before it says otherwise, and there is no key before the
+// release that may say so (the fold's own *value* is the pitch's posture on the ball, and
+// the frames in front of it are the gather's, see FINISH_RIP_LEAD). So the carry is
+// written as a decay rather than as a ramp: it leaves the release at the rate the fall
+// arrived with and its own rate falls continuously to nought.
+//
+// The shape it is spent in is the finish's own, and it is one shape for both clocks (see
+// below): the carry leaves the release at 462°/s — the 350 the power it used to be left at,
+// through a sharper shape — is within a tenth of it on the 1.40 frame (98°/s against 106) and
+// is one and a third times faster by 1.48 (8.6 against 3.7). So what the trunk does with the
+// 20.6° is come over it where the whip is and keep the last of it for the frames the front
+// foot is still reaching for, rather than standing still for five frames and then finding
+// 0.26 rad somewhere to put.
+//
+// This is the bump the *keys* were authored against — the arm's places through the fold
+// were measured on a body carrying it (see HOLD_FOLD, which is the fold the finish is now
+// stood in and is the only part of it the arm's places are turned by).
+const FINISH_TILT = 0.36
+// ...the halfway of the follow-through proper: the ball has gone at the release and the
+// body lands on the finished stance at 1.68, so halfway is the average of the two.
+const FINISH_CARRY_END = (AUTHORED_RELEASE_TIME + KEY_AT(1.68).t) / 2
+
+// ...and the *shape* the two of them spend their distances in — the carry above and the
+// rip below — which is one shape for both: a rate that is at its highest on the frame the
+// ball leaves, a carry under it through the middle of the follow-through, and the brake in
+// the last of it. Both halves of what the finish is asked for are answered here and neither
+// of them for free, because the distance is the same 44.7° of fold either way (see
+// FINISH_FOLD): the *max speed at the release* is what the frame the ball goes is handed,
+// and the *deceleration moved later* is how much of that distance is still being spent a
+// fifth of a second after it. Measured on the pose, against the cubic this replaces: 984°/s
+// on the release's own frame against 834, 1160 on the finest frame after the ball (1.3225 s)
+// against 913, the rate 93°/s against 92 by 1.43 — the one frame the two agree on — then 63
+// at 1.45 against 58, 32 at 1.48 against 25 and 17 at 1.50 against 11, with nought
+// reached on the crossing rather than a fifth of a second early. What it *costs* is the
+// middle of the sweep, and that is measured too: the fold is 194°/s there at 1.39 against
+// 222, and 161 at 1.40 against 179, while its *value* never leaves the cubic's by more than
+// two fifths of a degree before 1.39 (52.7° against 53.1° at 1.40) — the same fold on the
+// same clock, spent the other way round.
+//
+// Written as the sum of two powers of the fraction of the own clock that is left — the
+// snap's fast decay and the carry's slower one under it, `A·(1 - u)^p + w·(1 - u)^q` with `A`
+// read off the normalisation `A/(p + 1) + w/(q + 1) = 1` — rather than as a spline, because
+// the share's own integral is then closed form and the two ends of a hand-off can be matched
+// to the radian (`holdShareAt`'s gather hands this rate over on the release's own frame, and
+// `finishTiltAt` opens on it). The *weight* `w` is the whole of the choice: at nought every
+// share is the snap's and the release is left at eleven shares a second with the distance
+// spent by the third frame, and at `q + 1` every share is the carry's and the release is left
+// at 2.4 of the sweep's mean — a trunk that eases over rather than one that is thrown. 2.05
+// is where the two asks are held together, and the exponents are what make each of them a
+// movement of its own: ten for the snap makes it a frame rather than a slope on the release's
+// own two (which is what the suite's "the fold's fastest frame after the ball is the first
+// one" reads), and one and a half for the carry leaves 42 per cent of the peak on the halfway
+// frame. A single power cannot do both — a `(1 - u)^p` that leaves the release faster than
+// the cubic's also brakes earlier, because the distance is spent over the same span either
+// way and the two asks pull at the same area.
+const FINISH_SNAP_POWER = 10
+const FINISH_SPEND_CARRY = 1.5
+const FINISH_SPEND_WEIGHT = 2.05
+
+/**
+ * The finish's own rate at a frame, as a share of the distance a *second*... read on the
+ * fraction of its own clock the frame stands at: nought at the release and one at the top.
+ *
+ * Normalised so that its integral over the sweep is one, which is what makes the two ends
+ * of the two clocks meet: the rate the rip leaves the release at is this value over the
+ * rip's own span, and it is that number the gather's Hermite is handed (see `holdShareAt`).
+ *
+ * @param {number} u the share of the clock spent, nought to one
+ * @returns {number} the rate, in shares of the distance a second of the sweep
+ */
+function finishSpendRate(u) {
+  const snap = (FINISH_SNAP_POWER + 1) * (1 - FINISH_SPEND_WEIGHT / (FINISH_SPEND_CARRY + 1))
+  return snap * (1 - u) ** FINISH_SNAP_POWER
+    + FINISH_SPEND_WEIGHT * (1 - u) ** FINISH_SPEND_CARRY
+}
+
+/**
+ * The share of the finish's own distance a frame has spent: the rate above, integrated —
+ * nought at the release, one at the top, and monotone between them.
+ *
+ * @param {number} u the share of the clock spent, nought to one
+ * @returns {number} the share of the distance, nought to one
+ */
+function finishSpent(u) {
+  const snap = (FINISH_SNAP_POWER + 1) * (1 - FINISH_SPEND_WEIGHT / (FINISH_SPEND_CARRY + 1))
+  return 1
+    - (snap * (1 - u) ** (FINISH_SNAP_POWER + 1)) / (FINISH_SNAP_POWER + 1)
+    - (FINISH_SPEND_WEIGHT * (1 - u) ** (FINISH_SPEND_CARRY + 1)) / (FINISH_SPEND_CARRY + 1)
+}
+
+/**
+ * The finish's own share of the fold at a frame: nought through the ball, one at half-way
+ * through the follow-through, and back to nought by the frame the body lands on its stance
+ * (see FINISH_TILT for the decay and why it is not a keyed ramp).
+ *
+ * @param {number} t the authored clock
+ * @returns {number} the share, nought to one
+ */
+function finishTiltAt(t) {
+  if (t <= AUTHORED_RELEASE_TIME) return 0
+  if (t <= FINISH_CARRY_END) {
+    return finishSpent((t - AUTHORED_RELEASE_TIME) / (FINISH_CARRY_END - AUTHORED_RELEASE_TIME))
+  }
+  const landed = KEY_AT(1.68).t
+  if (t >= landed) return 0
+  // ...and the recovery puts it back, off the top's own stillness: the carry arrives at
+  // nought rate and the body comes up out of the fold with the same ease at either end.
+  const u = (t - FINISH_CARRY_END) / (landed - FINISH_CARRY_END)
+  return 1 - u * u * (3 - 2 * u)
+}
+
+// ...and the fold the *finish* is stood in, which is the whole of what the trunk does with
+// the follow-through: the keys' own lean has spent itself by 1.68 (0.05 rad, the finish's
+// stand) and the bump above is spent by then too, so a delivery that stops there is a body
+// that has given the fold back on the frames it lands on — 23.5° over its hips at the
+// plant, against the 39° its deepest frame had a fifth of a second before. What the request
+// asks for is the fold thrown rather than reached: the trunk comes over the front foot with
+// the whip, is deepest on the frame the back foot sweeps across the line toward the plate on,
+// and is standing back up out of it from that frame on — the body's own momentum spent, and
+// spent while the foot it was thrown off is still coming round.
+//
+// So the pose's fold is *lerped* from the keys' own path to this one: nought of it at the
+// release (the frame is the pitch's own posture, to the radian), the whole of it on the
+// crossing, and out again from there over the rest of the beat and the recovery — which is
+// where FINISH_STAND_FROM and FINISH_STAND put the stand. A lerp rather than a sum
+// because the sum is what a plain additive share is, and a sum over a decay sagged the trunk
+// back upright before the shoe landed (measured: 58° at 1.48, 39° at the landing, 20° at the
+// hold — a fold, a partial unfold and a second fold); the lerp has one deep end whatever the
+// keys do underneath it.
+//
+// 1.05 of a radian is 60.2° over the hips at the plate — twenty-one degrees past the deepest
+// frame the delivery used to reach, and two and a half times what it arrived at — and it is
+// one number for every slot, like the walk: every pitcher's finish is the same fold because
+// it is the same movement, and what the slot changes is where he threw *from* rather than
+// where he ends.
+//
+// A fold this deep is a fold the legs have to be able to stand in. The pelvis is the whole
+// block the driver leans, so the rotation that carries the chest over the front foot carries
+// the two hip sockets with it — one up and one down, by the sine of the fold through the
+// sockets' own half-width — and the socket that *rises* is the stride side's, the leg that is
+// already standing at the length of its own shin and thigh with the shoe rolled onto its toe.
+// At 0.85 rad it lifted the front socket 0.082 of a rig unit and the front leg read 0.923 at
+// the landing against a 0.9205 budget (its own 0.8506 plus the 0.0699 the roll is worth); a
+// fifth of a radian more asks it for another 0.014 it does not have. So the fold is paid for
+// the way a body pays for one: the *hips sink* as the trunk comes over (FINISH_SINK), which
+// is the knee giving under the weight of the trunk — the trade a squat makes — and it lands
+// the front socket back where the stance had it. Measured on the pose at the landing, the
+// front leg reads 0.893 and the drive leg 0.749, both inside the same budget and neither of
+// them standing on its toe at rest.
+const FINISH_FOLD = 1.05
+// ...and the hip the fold is paid out of, in rig units, on the frame the fold is whole:
+// nought anywhere the fold is nought, and eased with the fold's own schedule so the knee
+// gives as the trunk comes over it rather than a step arriving with the foot.
+const FINISH_SINK = 0.032
+// ...and how long before the ball goes the fold's own clock is already *running*, in
+// seconds: the hand-off is a hand-off rather than a starting gun, so the trunk is moving on
+// the frames the release is read on instead of standing still on them and setting off when
+// the ball has gone.
+//
+// It is spent as a *gather* and not as an early rip, and that is the whole of why it is
+// shaped the way it is: the release's own frame has to carry the pitch's posture — the arm's
+// window places are authored round the release point, and the socket they hang from is a
+// function of the fold (a few tenths of a degree of fold is a millimetre of socket at the
+// socket's own radius, and a millimetre of chord is degrees of elbow here, see
+// RELEASE_ELBOW) — so a trunk already folded *past* the posture when the ball goes is a ball
+// thrown off an arm the release's own chord no longer fits. What the lead is, then, is the
+// trunk easing the last degree or two *off* the posture it is held at and gathering, so that
+// the rip's own rate is the rate it crosses the release point at rather than the rate it
+// sets off from: the share below leaves the release with the same rate the rip is thrown at
+// (see the shape's own note) and arrives at nought-fold exactly on the ball's own frame, so
+// the fold's value there is the posture's to the decimal while its *rate* is the whip's.
+// Measured on the pose, the fold's rate across 1.30-1.32 s runs nought, then -310°/s at
+// 1.3075 as the gather opens, back through nought at 1.314, and 922°/s on the release's own
+// frame — the rip's own rate with the gather's return on top of it — where before this the
+// same two hundredths of a second read nought on every frame of them. The gather is deeper
+// than it was for the same reason the rip is faster: its depth is *set* by the rate it hands
+// over rather than chosen, so this one dips 2.4° under the posture where the 701°/s cubic's
+// dipped 1.8.
+const FINISH_RIP_LEAD = 0.02
+
+// ---------------------------------------------------------------------------
+// ...and the turn's own clock, which is the same lead spent the other way round: the
+// chest's *turn* is the one clock of the whip the keys cannot hand over on the ball.
+//
+// A monotone curve through keys has no crest *on* a key anywhere: its rate is a quadratic
+// on each span, and where that quadratic tops out is set by the two spans' own mean slopes
+// rather than by anything the keys can say — with the come-through at 1.30 and the release
+// at 1.32 the crest came out at 1.310, a hundredth before the ball, with the turn already
+// braking *into* the release and a second crest behind it as the next span's mean took
+// over. Measured on the pose — the keys' own track, the clock taken off — the chest's own
+// rate ran 990 on the come-through's own window, **1187 at 1.310** and 1174 at 1.315 — a
+// monotone curve's crest sits *inside* a span — then **863 on the ball**, 910 and 706
+// behind it, so the turn braked into the release and set off again behind it. Every re-fit
+// of the two keys moves that crest
+// around (and a scan of them all puts it anywhere but on the ball), which is what the
+// clock below is for.
+//
+// What a throw does with the last of its turn is the opposite of that shape: the chest is
+// *thrown* through the ball, and the ball is the fastest frame of it. So the turn is given
+// the fold's own treatment (see FINISH_RIP_LEAD and `holdShareAt`, its mirror on this
+// side): the last two hundredths gather the chest a degree or two *back* off the keys'
+// track — the coil carried closed while the pelvis runs on under it, which is the dip the
+// delivery's own note reads the smaller ramp by — and hand it over on the release's own
+// frame at `TURN_SNAP`. A Hermite on the lead's own span, so the two clocks meet in value
+// (both nought, which is what keeps the release frame's own chest to the keys' decimal —
+// the torso squared to the plate, and with it every place the window's arm was authored in
+// the chest's frame, moves by nothing at all) and hand over with no step on either side of
+// the ball.
+//
+// The snap is a rate and not a distance, like the rip's: what the gather spends is set by
+// the rate it hands over rather than chosen — four twenty-sevenths of the lead at that
+// rate, three degrees for the thousand below — and the delivered rate on the ball is the
+// keys' own crossing rate *plus* this one. 1012°/s is most of twice what the keys crossed
+// at on their own (608): the turn is handed the ball at 1619°/s instantaneous, of which
+// the pose's own five-millisecond window reads 1432 on the ball's frame, and every frame
+// behind it is slower than it — 910 on the frame after the ball (where the keys' own window
+// crosses at 863), 706 the next, 447 by 1.345 where the finish's own key takes the turn up
+// again — which is the brake the request is about: *behind* the ball, not in front of it.
+const TURN_GATHER_LEAD = 0.02
+// ...the rate the gathered turn is handed over at, in degrees a second (the depth below is
+// derived from it, so this is the number to move).
+const TURN_SNAP = 1012
+
+/**
+ * How much of the turn the chest is carrying off the keys' own track at a frame: nought
+ * until the lead opens, deepest two thirds of the way through it — where the keys' own span
+ * is at its own crest, so the two shapes cancel rather than add — and handed back to nought
+ * *at the snap's own rate* on the release's own frame.
+ *
+ * @param {number} t the authored clock
+ * @returns {number} the share, in radians: negative (the coil carried closed) through the
+ *   lead and nought on the frame the ball goes
+ */
+function turnGathered(t) {
+  if (t <= AUTHORED_RELEASE_TIME - TURN_GATHER_LEAD) return 0
+  if (t >= AUTHORED_RELEASE_TIME) return 0
+  const v = (t - (AUTHORED_RELEASE_TIME - TURN_GATHER_LEAD)) / TURN_GATHER_LEAD
+  return ((TURN_SNAP * Math.PI) / 180) * TURN_GATHER_LEAD * v * v * (v - 1)
+}
+
+/**
+ * How much of the finish's fold the pose is carrying at a frame: nought on the ball's own
+ * frame (the release is the posture's, and the frame either side of it is the gather above),
+ * the whole of it on the frame the back foot sweeps across the line toward the plate on, and
+ * back to nought by the frame the stand has him up (see FINISH_STAND_FROM and FINISH_STAND).
+ *
+ * The schedule is the fold's own clock, and the hips' sink is read off it as well as the fold
+ * is, so the two move as one movement: the trunk comes over and the hips give under it. The
+ * *arm* is read off the fold's depth instead (see FINISH_RIDE): it rides the trunk through
+ * the stand and is handed back on the keys' own clock, because what it is held against is the
+ * folded chest the keys drew the places for rather than the pace the fold comes off at — and
+ * it rides the *gather* the same way, which is what keeps the window's places on the chord
+ * they were authored at (see the note below).
+ *
+ * @param {number} t the authored clock
+ * @returns {number} the share, a degree or two negative just before the release and nought to
+ *   one after it
+ */
+function holdShareAt(t) {
+  if (t <= AUTHORED_RELEASE_TIME - FINISH_RIP_LEAD) return 0
+  if (t < AUTHORED_RELEASE_TIME) {
+    // The gather: the share comes back off nought, eases out to its own depth two thirds of
+    // the way through the lead, and is handed back to nought *at the rip's own rate* on the
+    // release's frame — a Hermite on the lead's own span, so the two clocks meet in value and
+    // in slope and the fold has no step and no rate on the frame the ball goes.
+    // Its depth is set by the rate rather than chosen: the steeper the rip, the deeper the
+    // gather that hands it over (see the note above, and `FINISH_FOLD` for the distance the
+    // share is spent over).
+    const v = (t - (AUTHORED_RELEASE_TIME - FINISH_RIP_LEAD)) / FINISH_RIP_LEAD
+    const slope = finishSpendRate(0) / (FINISH_STAND_FROM - AUTHORED_RELEASE_TIME)
+    return slope * FINISH_RIP_LEAD * v * v * (v - 1)
+  }
+  if (t === AUTHORED_RELEASE_TIME) return 0
+  if (t <= FINISH_STAND_FROM) {
+    // Front-loaded out of the release and carried behind it (see the shape's own note): the
+    // fold is *thrown* through the release point — the fastest frame after the ball is the
+    // first one — and what is behind that is the second half of the request, a movement that
+    // is still spending itself on the frames the stand is waiting for. A smoothstep instead
+    // is at rest on both ends, which is the shape of a movement that starts after the pitch
+    // has gone: measured on the pose, the fold's rate fell from 626°/s at 1.278 to 44 at 1.303
+    // and nought on the release's own two frames, then picked back up at 356°/s — so the
+    // trunk *stopped* at the release and started a second movement after it, which is the one
+    // thing a throw does not do. What the fold is by the crossing is the same FINISH_FOLD
+    // either way; only the order the distance is spent in has changed.
+    return finishSpent((t - AUTHORED_RELEASE_TIME) / (FINISH_STAND_FROM - AUTHORED_RELEASE_TIME))
+  }
+  if (t >= FINISH_STAND) return 0
+  // ...and it is stood out of from that frame on rather than *held* there: the frame the fold
+  // tops out on is the last frame of the fold, and the stand leaves it at the fastest rate the
+  // stand has. A squared fall rather than a smoothstep, because a smoothstep leaves the top at
+  // nought rate — which is the trunk standing in its deepest fold for a fifth of a second while
+  // the shoe comes round: measured on the pose, 59.9° at 1.60 s against the crossing's 60.2°,
+  // so it had not begun to come up at all by the frame after the top, and what it did come up
+  // at afterwards was half the stand's own mean rate. Squared, the top is a corner in *rate*
+  // and nothing else — the stand leaves at two and a half times the rate it did (see
+  // STAND_PACE), under two degrees of fold on the very next frame at 120 fps — and the rate
+  // falls to nought at the far end, so the keys' own standing body takes the trunk back with
+  // no step and no rate on the frame it does.
+  //
+  // Measured, the trunk is 60.2° on the crossing (1.54), 33.7° at the landing, 8.5° at
+  // 1.90 s, and the keys' own 2.9° at the pause by the time the stand is over at 2.06. At
+  // the keys' own pace the same schedule read 48.7°, 32.1° and 20.5° — the stand is the same
+  // movement spent in two fifths of the time, so every frame of it carries the fold out at
+  // two and a half times the rate.
+  const u = (t - FINISH_STAND_FROM) / (FINISH_STAND - FINISH_STAND_FROM)
+  return (1 - u) * (1 - u)
+}
+
+/**
+ * How far the fold is *held* past what the keys' own path has it at a frame: the share above
+ * times the distance from the keyed path to FINISH_FOLD, in radians.
+ *
+ * It is also the number the *arm's* places are turned by, which is why it is this distance
+ * rather than the fold outright: the keys' places were written on a body carrying the bump
+ * above, so the part of the fold they do not know about is exactly this.
+ *
+ * @param {number} keyed the fold this frame's own keys, the window and the bump ask for
+ * @param {number} t the authored clock
+ * @returns {number} the fold to add to it, in radians
+ */
+function holdFoldAt(keyed, t) {
+  return (FINISH_FOLD - keyed) * holdShareAt(t)
+}
+
+// ...and the frame the fold tops out on — the frame the stand *starts* from. It is the frame
+// the back (drive) foot sweeps across the body's line toward the plate on: read off the keys
+// as the pivot foot's own place furthest toward the zone through the follow-through (the
+// arc's key at 1.54, written as "the pivot foot crossing in front of the front one on its way
+// to landing"). The trunk is thrown over the hips *onto* that frame and turns over out of it
+// while the shoe is still out on its arc, which is the order a delivery does it in: the whip
+// spends the fold and the stand is what the whip leaves, so the two are one movement with its
+// top on the crossing rather than a fold held and a stand bolted on after the beat. Read off
+// the keys rather than listed, so a re-drawn arc carries the fold's own top with it.
+const FINISH_STAND_FROM = (() => {
+  const landing = KEY_AT(1.68).t
+  let frame = KEY_AT(1.54).t
+  let reach = Infinity
+  for (const key of KEYS) {
+    if (key.t <= AUTHORED_RELEASE_TIME || key.t > landing) continue
+    if (!key.pivot || key.pivot.z >= reach) continue
+    reach = key.pivot.z
+    frame = key.t
+  }
+  return frame
+})()
+
+// ...and the frame it is stood back up by: the recovery's own key — where the keys' body is
+// the standing one again and the walk back to the rubber begins — *paced* onto this
+// delivery's own clock. The stand is the delivery's longest movement (the whole beat and the
+// recovery together), and its pace is a choice rather than a key: STAND_PACE of 2.4 brings
+// the trunk out of the fold two and a half times as fast as the keys' own tail would, which
+// is what a stand that begins on the crossing has to be — at the keys' pace it was still
+// carrying 20.5° of fold at the pause, a third of the way into the beat, and did not reach
+// the standing body until the walk back. Paced, it is the keys' own 2.9° at the pause and the
+// keys' body from 2.06 s on. The 20 per cent over the old two is read through the finish's
+// whole shape: the crossing's top is spent a little sooner, so the landing frame stands in
+// 33.7° of fold where it stood in 38.7°, and the arm the finish carries is that much nearer
+// the standing body's by the pause (see the pose's own readings).
+//
+// The fold and the hips' sink it is paid out of are read on this one clock, so the pace is one
+// number for the two of them and the knee gives as the trunk comes over at whatever pace the
+// trunk takes. The *arms* keep the keys' own windows (see FINISH_RIDE). Read off the keys
+// rather than listed, so a clip with a longer beat still stands up over a longer tail rather
+// than into its hold.
+const STAND_PACE = 2.4
+const FINISH_STAND = FINISH_STAND_FROM + (KEY_AT(2.80).t - FINISH_STAND_FROM) / STAND_PACE
+
+// ...and the frame the *arms'* own clocks end on: the keys' standing key, where the recovery's
+// places are the standing body's and the walk back begins. The two arm clocks — the throwing
+// arm's ride and the glove's swing — are owed against how *deep* the fold is rather than how
+// fast it comes off, so they keep the keys' own window while the trunk's schedule is paced:
+// the ride is a turn of the arm by the stand since the crossing, and what it holds the arm
+// against is the distance the keys' places are from the folded chest. Handed back on the
+// stand's own paced clock instead (measured) the arm comes up out of the hold and crosses the
+// trunk while it is still settling — the driver's clearance rule folds the arm for three
+// frames at 2.15 s (a 20 mm shortfall and a 7° fold), which is a twitch on the very arm the
+// eye is on. On the keys' clock it unwinds over the recovery, as it did before the stand was
+// paced, and the arm's own shape is the delivery's while the trunk it hangs from is not.
+const FINISH_RIDE = KEY_AT(2.80).t
+
+
+// The frames the delivery holds the *throw's own line* on, and the frame it stops
+// holding it at: the ball goes at the release frame, and the arm goes on being the
+// throw's own line through the whole of the fold — to its *last* key, the one the
+// upper arm is *held* across the body on and the forearm swings on about the elbow
+// from (see the fold's keys). Read off the keys rather than listed, like the window's
+// own end above, so the two cannot drift apart.
+//
+// The fold's keys are on that line too, and this is what the sweep is for there: what
+// their *places* author is the direction the throw already had, and the *reach* the arm
+// answers them with is the fold's own schedule (see STRAIGHT_TRACK) — so the place's
+// own distance from the socket is not part of the delivery's shape at all, and reading
+// it puts the between-keys part of the track into the bend. Read on the realised
+// skeleton with the fold's keys out of the sweep, the elbow steps 5 to 8 degrees on the
+// frames either side of a key and 2 on the keys themselves (1/240 s through the
+// crossing, 1.6492 to 1.6750, against the 0.7 the same frames read on the fall above):
+// a place's components are interpolated one at a time, so the track between two keys
+// crosses the turn's own chord, and the chord stands a millimetre or two inside the arc
+// the wrist travels — which a folded arm reads as the elbow's own step, and a *line*,
+// named to the driver, reads as nothing at all.
+//
+// On these frames the arm's place is a *line* rather than a place: the pose writes it
+// from the socket it estimates, and the body's own socket stands five to a dozen
+// centimetres from that estimate on the frames right after a throw — a gap a folded
+// arm forgives and a straight one cannot. So the frames are named to the driver (see
+// the arm output's ``sweep``), which puts the wrist out on that line at the arm's own
+// length instead of folding to hold a place a few centimetres inside it: measured on
+// the realised skeleton with the places alone, a frame meaning a 168° arm came back
+// 118° at 1.37 s — the elbow folding on the very frames the throw is thrown on.
+const SWEEP_IN_TIME = AUTHORED_RELEASE_TIME
+// The throw window's own sweep, eased in across the break (the clasp's own last key,
+// 1.05, and the first key of the arm free of the mitt, 1.12 — the same span the
+// hands part over): from the raise's first frame the arm is held to its own shape
+// (see the sweep note in the pose assembly), and the clasp before it keeps the
+// glove's own mirror and its fold untouched.
+const SWEEP_WINDOW_IN = 1.05
+const SWEEP_WINDOW_END = 1.12
+// ...and the fold's own end: the last key that names a bend of its own (see
+// STRAIGHT_TRACK), which is where the arm stops being written on the throw's line and
+// the places below take the reach over again. Read off the keys, like the two ends
+// above, so the window and the fold cannot drift apart.
+const AUTHORED_FOLD_END = KEYS[
+  KEYS.findLastIndex((key) => (key.straight ?? Math.PI) < Math.PI * 0.99)
+].t
+const SWEEP_OUT_TIME = AUTHORED_FOLD_END
+// ...and the couple of frames it takes to hand the line over at each end: the release
+// frame keeps the anchor's own place bit-exact (it is the frame the body is *placed*
+// by, see pitcherPlacement), and the fold's own first frame is answered by the bend
+// its key authors rather than by the sweep (see STRAIGHT_TRACK).
+const SWEEP_IN_HANDOVER = 0.02
+// The hand-over into the fold is the long one, and it is the *ask's* own length rather
+// than the driver's: from the crossing on, the pose's own places start folding the wrist
+// in — read on the realised skeleton with the sweep taken out of the answer, its ask
+// runs 0.93 of the chord at 1.5383, 0.89 by 1.5467 and 0.73 by 1.5717 — and the line
+// has to be handed over across those same frames. Held for a couple of frames and then
+// dropped, the fold arrives as one frame's work: an arm still 174.9° at 1.53 s and
+// 143.3° by 1.5467, an elbow travelling a third of a right angle in a single frame,
+// which is the snap this length is bought against. Faded across the frames the ask
+// itself folds on, the same elbow walks 175° to 152° to 144° to 131° to 113° to 99°
+// across the twentieth of a second the fall takes and lands on the fold's own 90°.
+// The *elbow* the hand-over is read off — the unit suite's held place, and this file's
+// own keys — is a direction off the socket rather than a place on the arm, so the length
+// above is the driver's alone: what the pose promises is where the upper arm *points*
+// from the crossing on, and it points there whatever the fingers of the fold are.
+const SWEEP_OUT_HANDOVER = 0.06
+// ...and the couple of frames the elbow's *pole* takes to hand the ring over to the place
+// the keys hold (see the pose's own note). Two hundredths of a second is a third of a
+// frame of the depth of the step it is bought against — the fold's last key is 17 mm from
+// the place the ring composes on a body carrying the finish's own fold — and it is read at
+// 240 Hz, where the same 17 mm spent on one frame is a visible step in a hold that is
+// otherwise dead still.
+const SWEEP_POLE_HANDOVER = 0.02
+
+// How far into the jersey the release's own arm may sit, in a rig unit, and the frames
+// either side of it the allowance is spent over.
+//
+// The release point is the pitch's, not the body's: the ball's flight is drawn from it,
+// and a hand a centimetre off it is a pitch a centimetre off. A cross-body delivery is
+// exactly the delivery whose arm has nowhere to go but past the chest — a left-hander's
+// release on a right-hander's line of the mound crosses 0.53 of a rig unit to get there,
+// and a straight arm that far across has its chord through the trunk however the elbow
+// is held. The driver's own rules answer that by folding the reach (a real arm folds) and
+// by pushing a hand asked inside the body back out of it, and what the fold costs is the
+// release point itself: measured on the harness's pitch, a lefty's ball 4 cm short of
+// the point the pitch is thrown to, and 1 cm more from the hand's own push.
+//
+// So the frames round the release are allowed to *give*: the arm may sit this deep for a
+// couple of hundredths either side of the ball's going, spent smoothly so that no frame
+// steps. What it buys is the pitch; what it costs is a sleeve a couple of centimetres
+// into a chest on the one frame the ball is gone from — which is the frame nobody reads.
+const RELEASE_GRAZE = 0.045
+const RELEASE_GRAZE_IN = 0.04
+const RELEASE_GRAZE_OUT = 0.04
+
+// The *last* key the release window hands over to the fold on — the first key after the
+// window's own end that names a bend of its own (see STRAIGHT_TRACK, and
+// AUTHORED_SLOT_END above for the window's end). Read off the keys rather than listed,
+// like every other end in this file, so the schedule below cannot drift from them.
+const AUTHORED_FOLD_FIRST = KEYS.find(
+  (key) => key.t > AUTHORED_SLOT_END && (key.straight ?? Math.PI) < Math.PI * 0.99,
+).t
+// ...and the *stretch* the ask is answered at, frame by frame: the release window's own
+// share of the span (see ARM_STRETCH_MAX), handed back to the arm's own length by the
+// fold's first key.
+//
+// The window's keys are authored *long* of the arm on purpose (see the arm output's own
+// note on the release window, and ``pitcherRelease``'s grip): an ask past the span is a
+// wrist the driver carries out to the chord the frame's bend allows, which is what keeps
+// the throw's own line — and its straight, 174.9° arm — through the whole window. What
+// the ask's *distance* does on the frames after the window is not part of the delivery's
+// shape at all (see SWEEP_IN_TIME): the keys there author the direction the throw already
+// had, and it is this schedule, and the bend, that the arm's own length is read off.
+// Without it the reach is read off the *ask* — the clamp below spends the ask down to
+// whatever chord the two reads meet on, and the two meet where the ask itself crosses
+// that chord: on the last window's own keys the ask runs 1.30 of the span at 1.54 s and
+// the fold's first key is written 0.60 of it, so the chord the clamp holds the hand on
+// falls 0.75 to 0.60 *on the frames the ask crosses it* — read on the realised skeleton
+// at 240 Hz, the wrist 0.11 of a rig unit in one frame and the elbow 0.067 with it, the
+// whole arm snapping in as the bone-length the driver was stretching goes back to one.
+// That is the flick this schedule is bought against: the same wrist read with the reach
+// handed back on its own frames moves 0.03 at its fastest, and the elbow 0.02, which is
+// what the fold's own frames beside it already read.
+//
+// The three middles are the window's own end and the hand-over's own middle, and the
+// values are the corners of an ease rather than a line: the fall starts on the window's
+// last frames (0.06 of the span across the 19 ms the window still runs for) so that the
+// hand-over's own two frames are not asked to carry all of it, and it lands on the fold's
+// key at the arm's own length with no slope left at all — a chord that arrives still
+// moving is a chord the first fold's frame has to stop, which is the step this is
+// avoiding in the first place.
+const STRETCH_TIMES = [
+  AUTHORED_RELEASE_TIME,
+  AUTHORED_SLOT_END,
+  AUTHORED_SLOT_END + (AUTHORED_FOLD_FIRST - AUTHORED_SLOT_END) * 0.5,
+  AUTHORED_FOLD_FIRST,
+]
+const STRETCH_TRACK = [1.25, 1.18, 1.08, 1]
+
 // ...and the arm's own *straightness* through that window, key by key: the release's
 // own chord on every frame the pitch is thrown on (see RELEASE_ELBOW), and the *cock's*
 // own fold wherever a key authors one. A cocked arm is a folded arm — the elbow is most
@@ -3148,20 +4874,76 @@ export const AUTHORED_SLOT_END = KEYS[SLOT_TRACK.lastIndexOf(1)].t
 // The windup and the recovery keep the release's own chord as theirs, for the reason
 // the whole hand-off exists: an ask is an upper *limit*, and the hand the windup holds
 // near the body never reaches it.
+//
+// ...and the *follow-through* is where that limit is the delivery's own instrument
+// rather than a default, because what the arm does after the crossing is fold, and a
+// fold is the one shape a *place* cannot ask for. What an elbow is, is the chord its
+// wrist sits at — a chord at the span is a straight arm, and every centimetre inside it
+// is an angle — and near the straight end that reading is flat enough to be no use as a
+// place at all: the whole of the fall's own fold, 175° to 145°, is two and a bit
+// centimetres of chord, so a hand written a centimetre from the one that was meant is
+// an elbow eleven degrees from the bend that was meant, and the socket the pose measures
+// its place off is itself a couple of centimetres from the one the driver hangs the arm
+// from. So from the hand-over on the *limit* is the pose's schedule and the places are
+// the arm's: the fold's own keys name the bend they mean — 168°, 163°, 158°, 154° and
+// 150° down the fall, with the last of them (1.6625s) a shade *looser* again, since by
+// there the asks have come back inside the chord (0.96 of the span with the driver's own
+// stretch nought) and the bend is theirs: a limit below them would only spend the body's
+// own whisker on the fold and land it two degrees deeper than the hold's own keys carry
+// on from — and the places stay *long* of the arm, exactly as the release window's own
+// keys do: the driver answers a long ask by stretching to it and then folding it back to
+// the bend the frame names, so the bend is the pose's promise wherever the ask is
+// outside the chord, and the wrist rides at the chord the frame's own bend holds. That
+// is what makes the hand come *in* as the arm folds, rather than the fold being an elbow
+// the hand's own millimetres — a track's interpolation is worth a millimetre or two of
+// radial travel a frame — walk around once the two are inside a degree of one another.
+//
+// Measured on the realised skeleton, the elbow folds 174.9° at the crossing through
+// 168.3°, 163.2°, 158.7°, 152.9°, 150° and 145.5° and lands on the hold's own 147.9° —
+// one movement, the hold's keys carrying the same rate on from there (142.5° at 1.71s)
+// — where the previous authoring's own two keys dipped to 168° and 158.5° and the three
+// after them asked for the release's own chord again: the elbow *straightened* back
+// through 174.9° across the middle of the fall, so the arm unfolded and folded again
+// while the drive leg swung past it, and the hand's own height, which rides the fold,
+// came down on the frames either side of it (measured 23 mm against the 11 mm of the
+// frames around them).
 const STRAIGHT_TRACK = KEYS.map((key) => key.straight ?? RELEASE_ELBOW)
 
 // The key the delivery lands in — the first after the release that stands on both
 // feet — and the last key of the hold it is left standing in. Read off the keys
 // rather than listed, so a re-timed delivery carries its own landing with it: the
-// hold is the run of keys the landing's own drive is still written on (the recovery
-// below it is not, and neither is the set).
+// hold is the run of keys the finish is still written on, and it is the *feet* that
+// name it rather than the pelvis' own travel — since the stride's plant was lengthened
+// the pelvis goes on driving through the follow-through, so the drive is no longer one
+// number from the landing out (see the landing key), and what the hold is the run of
+// is the frames both shoes are still on the dirt (the recovery below lifts them, and
+// the set is not standing in the finish).
 const STANDING = (key) => key.pivot.lift === 0 && key.front.lift === 0
 const LANDING_KEY = KEYS.findIndex((key) => key.t > AUTHORED_RELEASE_TIME && STANDING(key))
-const HOLD_KEY = KEYS.filter((key, index) => (
-  index >= LANDING_KEY && STANDING(key) && key.drive === KEYS[LANDING_KEY].drive
-)).pop()
+// ...and the hold runs to the last key *before* the recovery lifts a shoe: the set the
+// clip comes home to is standing too, so it is the run starting at the landing that is
+// read rather than every standing key in the file.
+const FIRST_LIFTED = KEYS.findIndex((key, index) => index > LANDING_KEY && !STANDING(key))
+const HOLD_KEY = KEYS[(FIRST_LIFTED < 0 ? KEYS.length : FIRST_LIFTED) - 1]
 const LANDING_TIME = KEYS[LANDING_KEY].t
 const HOLD_END_TIME = HOLD_KEY === undefined ? LANDING_TIME : HOLD_KEY.t
+
+/**
+ * The frame the fold's *hold* ends and the stand's last stretch begins: the pause's own key,
+ * paced onto the stand's clock (see STAND_PACE).
+ *
+ * The two things that are *owed* for the fold — the glove's swing out of the chest and the
+ * throwing arm's ride — are held whole to this frame and let out over what is left of the
+ * stand: the swing because the fold it answers is coming off, the ride because the recovery's
+ * keys are drawn for a body standing up and take the arm back as the stand ends. Paced with
+ * the stand as well, so neither of them is still being let out after the trunk has stood.
+ */
+
+// ...and the pelvis' own travel on the frame the delivery lands in: the number the
+// stride foot's authored place is pinned against (see `plantZ` in the pose) and the one
+// a foot the dirt is holding stops taking the delivery's stride-scaling from.
+const LANDING_DRIVE = KEYS[LANDING_KEY].drive
+
 
 // The frame the delivery lands in, in the authored clock — the one the ``settle``
 // below reaches its whole depth at, and so the frame a caller solves the body's own
@@ -3180,29 +4962,47 @@ export const AUTHORED_LANDING_TIME = LANDING_TIME
 // reach; see `pitcherRelease`, which solves the angle): nought at the set — the stance
 // the clip opens and closes in is the stance the profile reads, and a pitcher in the set
 // stands on his own two feet rather than out over the rubber's own edge — and then the
-// whole of it out with the *drive*, in one motion rather than two: the fall is the frame
-// the kick is stood and the back leg starts to carry the body, the plant is the frame the
-// stride is out and the front foot has landed, and the roll is complete between them (see
-// TILT_DRIVE_TIME and TILT_FULL_TIME, which are those two frames).
+// whole of it out over the *kick*, in one motion rather than two: the roll begins on the
+// rocker, the frame the weight goes back onto the pivot foot and the leg comes up over it,
+// and it is standing by the plant, the frame the stride is out and the front foot has
+// landed (see TILT_START_TIME and TILT_FULL_TIME, which are those two frames).
 //
-// The drive and not the kick, and the difference is what the tilt *is*: the body standing
-// over the leg the back leg has driven it across. A kick is the front knee coming up over
-// a back leg that has not moved the body yet, so a trunk rolled on those frames is a trunk
-// leaning off a leg that is still plumb under it — and the roll is not free, because the
-// body's own sideways metres are the drive leg's own angle: the pelvis carries the socket
-// the leg hangs from across a planted ankle, and a leg is a rigid span, so what crosses
-// the pelvis takes off the vertical is the leg's (`stanceDip` is the same triangle read
-// the other way — the pelvis comes down by exactly what the slant takes off the span,
-// which is what leaves the leg a straight rod rather than a folded one). Measured on the
-// game's own wide pitch, taking the roll and the step out of the kick is what stops the
-// drive leg swinging: the sidestep had already carried 0.28 m of the 0.45 m it ends on by
-// the balance — most of it, on a motion no drive had asked for — and 0.28 m across a
-// 0.85 m leg is the better part of twenty degrees off the vertical, at a frame the front
-// knee is only coming up. Out with the drive instead, the tilt is one motion with the
-// stride: the back leg carries the pelvis forward and across, the front foot goes where
-// the body goes (see the step below), and the trunk standing over the leg that carried it
-// is the roll. It is complete by the plant, so the anchor the pitch is placed by is built
-// on the whole of it.
+// The kick and not the drive, because the roll is *reach* before it is anything else. A
+// pitch's lateral is spent on the arm's own cone first and on the body's two levers after
+// (see `pitcherRelease`): the roll is what carries the socket the throw hangs from across,
+// and the throw is *drawn back* off that socket — the cock is the arm up and behind a
+// trunk that has already come across, so a socket that arrives late is a socket the arm
+// reaches off, on the one window a throw is laid back folded in. Out over the kick
+// instead, the roll is one motion with the leg: the weight goes back onto the drive leg,
+// the knee comes up over it, and the trunk comes across over it while it does. It is under
+// way well before the head comes off the line it stands in, which is the *look's* own
+// clock and not this track's (see LOOK_PIN): the eyes sweep from
+// AUTHORED_LOOK_SWEEP_TIME and lock on the zone before the drive fires, and the body they
+// stand over is already coming across on the frames before the sweep.
+//
+// What the kick's frames pay for the roll is height rather than the drive leg's own line,
+// and that is what makes them free: a roll turns the whole upper body about the body's own
+// midline — the pelvis tips with the trunk — so the socket the drive leg hangs from comes
+// *down* by a hip half-width of roll read along the pelvis' *own* lateral, and `rollLift`
+// stands the pelvis back up by exactly that, which leaves the drive socket where the stance
+// put it and the leg under it neither stretched nor folded (see `rollLift`, which is that
+// geometry and nothing else). The pelvis' own turn is what the half-width is read along,
+// and that is the whole of the windup's difference: square on the plate — the release
+// window — a socket stands the half-width *across* the roll's own axis and pays nearly the
+// whole of the sine, where a pelvis coiled a hundred degrees round the pitch's line lays
+// its two sockets most of the way *along* that axis and pays for the roll in twist rather
+// than in height. Measured on the game's own
+// wide pitch: the drive socket stands still to a tenth of a millimetre through the whole of
+// the kick with most of the roll out (46% of it at the gather, 80% at the fall), so a lift
+// charged at the bare sine is a pelvis standing two and a half centimetres above the leg
+// that has to reach the rubber — and what the driver's leg solve answers with is the shoe
+// rolled up onto its toe (see its own give). What the same lift
+// leaves the *kicking* leg is that much slack again, on the frames the leg is up in the air
+// and bent under the body anyway (see TRUNK_TILT_MAX). The *carry* is the
+// delivery's other lever and it stays where it was: the metres the roll cannot reach go
+// out with the drive (see the step below), because the front foot is what pays for them and
+// the front foot is on the dirt by the plant. Both are complete by the plant, so the anchor
+// the pitch is placed by is built on the whole of the body's answer to the ask.
 //
 // ...then it is held through the whole window the ball rides the release anchor on (see
 // AUTHORED_SLOT_END): the anchor's own place is the tilted one, so the body cannot unwind
@@ -3245,8 +5045,8 @@ export const AUTHORED_LANDING_TIME = LANDING_TIME
 // walk-back, and the body comes across with them, so the delivery comes home to the
 // stance it left with the metres it spent still under it rather than out in front of it.
 const STEP_TRACK = (() => {
-  const from = KEYS[4].t   // the fall: the kick is stood, and the back leg drives the body out
-  const full = KEYS[6].t   // the plant: the stride is out, and the foot is where the body is going
+  const from = KEY_AT(1.05).t   // the fall: the kick is stood, and the back leg drives the body out
+  const full = KEY_AT(1.20).t   // the plant: the stride is out, and the foot is where the body is going
   return KEYS.map((key) => {
     if (key.t <= from) return 0
     if (key.t < full) return (key.t - from) / (full - from)
@@ -3275,14 +5075,37 @@ const STEP_TRACK = (() => {
 // place: the trunk is a body the front leg is carrying forward, so it comes onto the foot
 // over the whole of the kick and the balance rather than arriving on the last of the
 // stride — half the lean a third of the way in, and the rest of it over the frames the
-// body is turning down onto the plant — and it arrives whole at the frame the ball goes,
-// so the last of the lean-in is the release's own (see the pose's own read of it).
+// body is turning down onto the plant.
+//
+// It is *withdrawn* at the plant rather than arriving there: the back leg's fire puts the
+// trunk back over the drive foot first (see the drive keys), so the plant's own key is left
+// holding the walk's share at nought and the window's slot track carries the fold from there
+// (see SLOT_TRACK) — the fall over the foot is the pitch's, and the delivery's own part in it
+// is where it comes rather than how deep it is.
 const LEAN_IN_START_TIME = KEYS[1].t   // the rocker: the last frame the stride foot is on the dirt
 const LEAN_IN_TRACK = KEYS.map((key) => {
   if (key.t <= LEAN_IN_START_TIME) return 0
   if (key.t >= AUTHORED_RELEASE_TIME) return key.slot ?? 0   // ...and the window's own share from there on
-  const through = (key.t - LEAN_IN_START_TIME) / (AUTHORED_RELEASE_TIME - LEAN_IN_START_TIME)
-  return through * through
+  // The *fall*: withdrawn here, so the key's own lean is what the body carries from the
+  // moment the weight goes forward — the trunk tilted *back* over the drive foot as the
+  // back leg fires (see the drive keys). The withdrawal is at the fall rather than at the
+  // plant, because the reference's own back-tilt begins as early as the body's forward
+  // fall does: the stride is thrown with the trunk already leaning back over the rubber
+  // (see the PS reference's own first frames), so the walk's forward share is off from
+  // here and the arch is the fall's, the break's and the plant's together.
+  if (key.t <= 1.26) {
+    // ...and it stays withdrawn to the top of the cock: the arch is the body's *shape*
+    // for the whole of the load, so what carries the fold from the cock to the ball is
+    // the fall over the front foot — the last sixty milliseconds, squared, into the
+    // release — rather than a walk already half-way over the rubber at the cock (which
+    // is what the half-share here used to be, and what tipped the shoulder line forward
+    // out from under the layback before the arm had finished loading).
+    if (key.t >= 1.05) return 0
+    const through = (key.t - LEAN_IN_START_TIME) / (AUTHORED_RELEASE_TIME - LEAN_IN_START_TIME)
+    return through * through
+  }
+  const late = (key.t - 1.26) / (AUTHORED_RELEASE_TIME - 1.26)
+  return late * late
 })
 
 // The frame the stride foot's own turn stops being the keys' and becomes the ground's: the
@@ -3291,29 +5114,73 @@ const LEAN_IN_TRACK = KEYS.map((key) => {
 // the boot is left standing on the dirt by (the stretch's own ``lift`` reaches nought
 // there, see the key's own note). Read off the keys rather than listed, so a delivery
 // whose stride lands on another frame carries its own plant with it.
-//
-// What it is read *for* is the shoe's own pivot: a shoe the dirt is holding turns about
-// its own heel rather than about its ankle, so from this frame on the pose carries the
-// ankle round the arc the shoe's own turn sweeps (see the ``leg`` solve below) — a tenth
-// of a rig unit of arc rather than the nought the keys' own place would spend.
-const FRONT_HEEL_SWEEP = KEYS[10]
-const FRONT_HEEL_SWEEP_TIME = FRONT_HEEL_SWEEP.t
+const FRONT_PLANT = KEYS.find((key) => key.t > AUTHORED_RELEASE_TIME && key.front.lift === 0)
+const FRONT_PLANT_TIME = FRONT_PLANT.t
 // ...and how much of that turn the *ground* is holding, key by key: all of it from the
 // plant through the finish, and nought by the clip's own end, because the finish is a
 // stance the shoe is stood *out* of — the delivery comes home to the set over the
 // walk-back, and the shoe comes up out of the finish and steps back with the body rather
 // than being dragged round the dirt on the way (the clip ends in the set it began in, see
-// the last key). Shared rather than switched, like every other window here, so the arc the
-// ankle is carried round is handed back over the recovery's own frames.
-const FRONT_HEEL_TRACK = KEYS.map((key) => {
-  if (key.t < FRONT_HEEL_SWEEP_TIME) return 0
+// the last key). Shared rather than switched, like every other window here, so the angle is
+// handed back to the keys over the recovery's own frames.
+const FRONT_PLANT_HOLD = KEYS.map((key) => {
+  if (key.t < FRONT_PLANT_TIME) return 0
   if (key.t <= HOLD_END_TIME) return 1
   if (key.t >= AUTHORED_CLIP_END) return 0
   return (AUTHORED_CLIP_END - key.t) / (AUTHORED_CLIP_END - HOLD_END_TIME)
 })
 
-const TILT_DRIVE_TIME = KEYS[4].t   // the fall: the kick is stood, and the back leg drives
-const TILT_FULL_TIME = KEYS[6].t    // the plant: the stride is out, and the tilt is standing
+// ...and the lead shoe's own turn once the dirt has it: the *body's* whole turn through
+// the pitch, from the release rather than from the plant, and off the trunk rather than off
+// the pelvis.
+//
+// Off the trunk because a foot the ground is holding comes round as the body standing over
+// it does, and the body standing over it is the trunk: locked to the pelvis instead, the
+// shoe inherits a turn that is not smooth through the follow-through — the hips' keyed yaw
+// stands at 1.0231 rad across 1.54-1.5575 and then takes 0.135 in the next thirty-two
+// thousandths, so the shoe turned 8.3°, 9.1° and 9.5° on three frames and then 11.1°, 15.3°,
+// 19.3°, a stall and a snap, which is the one thing a shoe on the ground cannot do. The
+// trunk's turn is the pitch's own curve — up to 300°/s by 1.46 s and down to 46°/s on the
+// landing frame — and it is the angle the leg above the shoe turns by too, the knee's plane
+// being the shoe's own line (see the knee's own note in the driver).
+//
+// Read as a *track* of its own rather than as the trunk's angle off the pose: the shoe's
+// turn leaves from rest (the delivery's own rule is that a thing handed from one owner to
+// another starts where it was left, and the plant is a frame of its own), where the chest's
+// own interpolated curve leaves the plant at the whipping rate the trunk turns at there.
+// Written this way the shoe picks the turn up over two frames, and every key of the window
+// still lands on the trunk's own angle to the decimal — the track's values *are* the trunk's
+// turn at the keys, times the share below.
+//
+// ...and the share is the whole of the body's turn *through the pitch*, not the part that
+// falls after the plant. The chest comes round 101.9° between the release and the landing
+// (0.04 rad to 1.819), and 61.0° of that is spent before the shoe is down (0.04 → 1.10 on
+// the plant's own key). A shoe handed only the trunk's turn from the plant's own frame takes
+// 41.2° of the 101.9 and leaves the lead foot standing in a finish the body has come most of
+// the way round over: the trail shoe spins 155° through the same frames, and the lead one,
+// on the same dirt, turned less than a third of that and stopped pointing a hand's width off
+// the plate's line while the chest was square to it. What the shoe is handed instead is the
+// body's turn from the *release*, spent over the frames it has on the dirt after the plant:
+// 101.9° of pivot in the trunk's own shape — one decay, out of rest at the plant and back
+// into it on the landing key, never a step — at 2.474 times the trunk's own rate over those
+// frames. The share is read off the keys rather than listed, so a delivery re-timed or
+// re-authored carries its own plant, release and landing with it.
+//
+// Where it pivots is *not* where the trail shoe does (see the ``leg`` solve below): 101.9° on
+// the heel would sweep 0.155 of a rig unit of ankle travel across the dirt, and the front leg
+// — which stood at 101 per cent of its own length on the landing under the 41.2° it used to
+// turn — had 0.070 of it to give.
+const RELEASE_KEY = KEYS.find((key) => key.t >= AUTHORED_RELEASE_TIME)
+const FRONT_SHOE_TURN_SHARE = (KEYS[LANDING_KEY].chestYaw - RELEASE_KEY.chestYaw)
+  / (KEYS[LANDING_KEY].chestYaw - FRONT_PLANT.chestYaw)
+const FRONT_SHOE_TURN = KEYS.map((key) => (
+  key.t < FRONT_PLANT_TIME ? 0 : (key.chestYaw - FRONT_PLANT.chestYaw) * FRONT_SHOE_TURN_SHARE
+))
+
+
+const TILT_START_TIME = KEYS[1].t   // the rocker: the kick's own first frame, and the last one the stride shoe is on the dirt
+const TILT_DRIVE_TIME = KEY_AT(1.05).t   // the fall: the kick is stood, and the back leg drives
+const TILT_FULL_TIME = KEY_AT(1.20).t    // the plant: the stride is out, and the tilt is standing
 // What the follow-through leaves of the roll by the frame the back foot lands in: the
 // finish's own lean, held for the whole of the hold and given up over the walk-back (see
 // the tilt's own note above). It is a share rather than an angle, because what it is a
@@ -3324,36 +5191,57 @@ const TILT_FULL_TIME = KEYS[6].t    // the plant: the stride is out, and the til
 // more and the finish is a body still out over its front foot rather than one standing on
 // it, and nought is a landing that stood up out of its own follow-through on a frame.
 export const TILT_LANDING_SHARE = 0.10
-const TILT_TRACK = (() => {
-  return KEYS.map((key) => {
-    if (key.t <= TILT_DRIVE_TIME) return 0
-    if (key.t < TILT_FULL_TIME) {
-      return (key.t - TILT_DRIVE_TIME) / (TILT_FULL_TIME - TILT_DRIVE_TIME)
-    }
-    if (key.t <= AUTHORED_SLOT_END) return 1
-    // ...and then the body's own follow-through spends it: the arm comes across, the chest
-    // goes on round and the trunk comes up out of the lean it threw from, so what the roll
-    // is worth decays across the frames the swing is landing on rather than being dropped
-    // on one of them.
-    if (key.t < AUTHORED_LANDING_TIME) {
-      const through = (key.t - AUTHORED_SLOT_END) / (AUTHORED_LANDING_TIME - AUTHORED_SLOT_END)
-      // ...and *eased* onto the finish rather than run straight into it: the last of the
-      // roll is given up on the frames the swing is settling on, so a decay with a
-      // constant rate would still be spending it at full speed on the frame the shoe
-      // touches — a body standing up out of its follow-through as it lands. What is left
-      // at the landing is the finish's own share either way (see TILT_LANDING_SHARE); the
-      // ease is what makes the *arrival* at it a settling rather than a stop.
-      const eased = through * through * (3 - 2 * through)
-      return 1 + (TILT_LANDING_SHARE - 1) * eased
-    }
-    // ...and what is left of it is the finish: held to the frame for the whole of the hold
-    // (nothing above the legs moves in a hold — see the landing's own note), and then eased
-    // out as the delivery turns and steps back into the set it began in.
-    if (key.t <= HOLD_END_TIME) return TILT_LANDING_SHARE
-    if (key.t >= AUTHORED_CLIP_END) return 0
-    return TILT_LANDING_SHARE * (AUTHORED_CLIP_END - key.t) / (AUTHORED_CLIP_END - HOLD_END_TIME)
-  })
-})()
+// The roll's own share, key by key, from the frame it is handed in on: up in one motion,
+// standing by the plant, held for the whole window the ball rides the anchor on, spent by
+// the follow-through and left standing for the finish (see the tilt's own note above). One
+// shape and two clocks, because the roll and the *height* it costs the legs are two
+// promises: the body's roll comes out with the kick (TILT_TRACK), and the pelvis' own lift
+// follows the drive (TILT_LIFT_TRACK).
+const tiltRamp = (from) => KEYS.map((key) => {
+  if (key.t <= from) return 0
+  if (key.t < TILT_FULL_TIME) {
+    return (key.t - from) / (TILT_FULL_TIME - from)
+  }
+  if (key.t <= AUTHORED_SLOT_END) return 1
+  // ...and then the body's own follow-through spends it: the arm comes across, the chest
+  // goes on round and the trunk comes up out of the lean it threw from, so what the roll
+  // is worth decays across the frames the swing is landing on rather than being dropped
+  // on one of them.
+  if (key.t < AUTHORED_LANDING_TIME) {
+    const through = (key.t - AUTHORED_SLOT_END) / (AUTHORED_LANDING_TIME - AUTHORED_SLOT_END)
+    // ...and *eased* onto the finish rather than run straight into it: the last of the
+    // roll is given up on the frames the swing is settling on, so a decay with a
+    // constant rate would still be spending it at full speed on the frame the shoe
+    // touches — a body standing up out of its follow-through as it lands. What is left
+    // at the landing is the finish's own share either way (see TILT_LANDING_SHARE); the
+    // ease is what makes the *arrival* at it a settling rather than a stop.
+    const eased = through * through * (3 - 2 * through)
+    return 1 + (TILT_LANDING_SHARE - 1) * eased
+  }
+  // ...and what is left of it is the finish: held to the frame for the whole of the hold
+  // (nothing above the legs moves in a hold — see the landing's own note), and then eased
+  // out as the delivery turns and steps back into the set it began in.
+  if (key.t <= HOLD_END_TIME) return TILT_LANDING_SHARE
+  if (key.t >= AUTHORED_CLIP_END) return 0
+  return TILT_LANDING_SHARE * (AUTHORED_CLIP_END - key.t) / (AUTHORED_CLIP_END - HOLD_END_TIME)
+})
+
+// The body's own roll, on the *kick's* own clock: out from the rocker, standing by the
+// plant.
+const TILT_TRACK = tiltRamp(TILT_START_TIME)
+// ...and the *height* the same roll costs the legs, on the *drive's* clock: nought through
+// the kick — the windup's pelvis is coiled most of the way round the pitch's own line, so
+// its two sockets lie along the roll's own axis and what the roll does to them is twist the
+// pelvis rather than drop it, and there is nothing for a lift to pay. Measured on the game's
+// own wide pitch with the roll most of the way out (46% of it at the gather, 80% at the
+// fall): the drive socket stands still to a tenth of a millimetre, and a lift charged over
+// the kick instead is a pelvis standing two and a half centimetres above the leg that has to
+// reach the rubber — which the driver's leg solve answers by rolling the shoe up onto its
+// toe (see its own give, and the browser suite's reading of the kick). From the fall on the
+// two clocks are one motion: the pelvis is coming square under the roll as the back leg
+// carries it, the socket takes the roll's own sine, and the heights the delivery's own keys
+// were authored with are the ones the lift pays for (see `rollLift`).
+const TILT_LIFT_TRACK = tiltRamp(TILT_DRIVE_TIME)
 
 // ...and which frames the *back* foot's own place stops being the rubber's and becomes the
 // body's. A pitcher's feet are authored where they are in the frame he stands in — his
@@ -3390,15 +5278,31 @@ const SETTLE_TRACK = (() => {
     return 0
   })
 })()
-// Which frames the hands are together on: the same ``clasp`` the two tracks above
-// are built from, read as a weight, so the correction below is full while they are
-// clasped and eases out with the break that parts them.
-const CLASP_TRACK = KEYS.map((key) => (key.clasp ? 1 : 0))
+// Which frames the hands are together on: the clasp's own keys *and* the one it lets
+// go on (see PART_KEYS), read as a weight, so the correction below is full while they
+// are clasped — and on the frame the swing begins from, where the ball is still in the
+// mitt — and eases out across the five frames that follow, while the arm's own track
+// takes the hand over.
+const CLASP_TRACK = KEYS.map((key) => (key.clasp || key.part ? 1 : 0))
+// The frame the hands let go on, and how long the pose goes on reading them as one
+// hand past it. The ball is still in the mitt on that frame (see PART_KEYS), so the
+// hand-over is a mix of two places that agree to within the centimetre the chest's
+// estimate is worth — but spread across the five frames to the fall it spends the
+// first of the swing's motion dragging the ball out of a mitt that has already let
+// it go, which is the pause the delivery is being fixed for. Two frames is a let-go;
+// after them the throwing hand is the arm's own track and nothing else. (A *third* of
+// a hundredth of a second, not two frames at a hundred-and-twentieth: the window is
+// written in the delivery's own clock, so it is two frames at any frame rate the
+// renderer happens to be drawing.)
+const PART_INDEX = PART_KEYS.indexOf(true)
+const PART_TIME = PART_INDEX < 0 ? null : KEYS[PART_INDEX].t
+const HAS_PART = PART_TIME != null
+const PART_FADE = 0.03
 // Which frames the trail arm is the *lead* arm's own mirror on: a key that leaves
 // the elbow number out is one the arm is not doing its own work on, read as a
 // weight — full through the clasped windup and eased out across the segment that
-// ends at the balance key, which is the elbow raise (see `mirrorTracks` and the
-// correction below).
+// ends at the balance key, which is where the swing leaves the clasp's shape (see
+// `mirrorTracks` and the correction below).
 const MIRROR_TRACK = KEYS.map((key) => (key.elbow ? 0 : 1))
 const VECTOR_TRACKS = PLAIN_VECTORS.map((name) => ({
   key: name,
@@ -3429,11 +5333,555 @@ const ELBOW_TRACK = KEYS.map((key) => key.elbow ?? [0, 0, 0])
 // from that key's own glove, rather than derived from the interpolator's answer at
 // the frame being posed, for the same reason the clasp's two tracks are seeded: a
 // key that named its own elbow keeps it, and the two forms interpolate as places.
+// ...and the same pole read as the *angle* it hangs at, on the keys that author one (see
+// the note at the fold's first follow-through key): which way round the socket-to-wrist
+// chord the elbow's own ring stands, in the frame the world's up makes with that chord —
+// lateral = chord × up, and the ring's own up = lateral × chord, so a sweep of nought is
+// the elbow out on the throwing side of the chord and a right angle is it hanging under
+// it. The series is *unwrapped* — it is one angle that turns, not an angle per key — so a
+// fold whose ring comes round past the world's own -z carries on climbing rather than
+// winding back, and the interpolator between the keys is a smooth turn the whole way.
+// The pose composes the pole from this angle and the place's own along/tilt below (see
+// `poleOut`), which is what keeps the driver's clearance rule out of a promise the fold
+// makes about its own plane.
+const SWEEP_KEYS = KEYS.filter((key) => key.sweep != null)
+const SWEEP_TIMES = SWEEP_KEYS.map((key) => key.t)
+const SWEEP_VALUES = SWEEP_KEYS.map((key) => key.sweep)
+
 const GLOVE_ELBOW_TRACK = KEYS.map((key) => key.gloveElbow ?? [
   key.glove[0] * 0.5 - 0.18,
   key.glove[1] * 0.5,
   key.glove[2] * 0.35 + 0.14,
 ])
+
+// The *throwing* hand's own palm, where a key authors one: which way the ball is
+// turned as the arm comes up behind the shoulder — the pitcher's own back, which is
+// what a windup shows a camera at the plate — and what the throw then brings round to
+// the plate (see the keys' own ``palm``, and `palmAt` below). A key that names none is
+// asked for the pitch's own *bearing* instead, which is where the throw's frames
+// either side of the release want it, so the two facings are one ask rather than a
+// hand that is asked for nothing outside the keys that name one.
+const HAND_PALM = KEYS.map((key) => (key.palm ? key.palm.slice() : null))
+// ...and how much of that ask the frame is turned to, key by key: nought through the
+// windup, where the hand rides the delivery's own rest and then the mitt it is holding
+// (the clasp's share of the turn is read beside this one, see the arm output's
+// ``palmMix``), and one from the reach through the whole of the throw — the layback
+// turns the ball to the back and the come-through brings it round to the zone — before
+// the fold takes the share back with the arm (see the hand-over's own end below).
+const PALM_ASK = [
+  [1.20, 1],
+  [AUTHORED_SLOT_END, 1],
+  [AUTHORED_FOLD_FIRST, 0],
+]
+const PALM_ASK_TIMES = PALM_ASK.map(([t]) => t)
+const PALM_ASK_TRACK = PALM_ASK.map(([, v]) => v)
+// One key's own ask per axis, for the read below.
+const _palmAxis = KEYS.map(() => 0)
+// ...and the *hold*: how much of that ask rides the arm's own frame rather than standing
+// still in the rig's. A wrist does not re-turn itself as the arm swings — it keeps its own
+// angle and the ball in the hand goes where the arm carries it — while a facing written in
+// the rig's frame is one the wrist has to keep chasing down the swing: measured on the
+// realised skeleton, the layback's own facing took a 30° turn of the wrist between the cock
+// and the come-through over and above the arm's own travel. Nought through the windup,
+// where the palm is a question about the mitt the hand is in and the keys' own facing is
+// what answers it, one from *the frame the hands part on* — and from there the *forearm* is
+// what rolls: the hand comes out of the glove on the plate's bearing and turns over the
+// whole of the down-swing as one joint, so that by the frame the arm is at the pitcher's
+// side (1.11-1.16 s) the palm is square to first base, which is the back he is turned to
+// with (see the break key's own ``palm``, and HOLD_ROLL's own angles) —
+// rather than a wrist re-pointing itself at every facing the swing passes through, to the
+// come-through, where the hold is let go: the arm is
+// straightening there (a hundred and fifty-eight degrees of elbow at 1.29 s, and the plane
+// the hold is written in is the elbow's own, so it is going thin), and the throw's own
+// bearing is what the ask wants on the frames the ball leaves on (see the pose's
+// ``handPalm`` and, below it, `PALM_ASK`).
+//
+// Starting it at the *separation* rather than after the break is the other half of the same
+// point, and it is what the *fall* needs rather than the cock. A facing named in the rig's
+// frame through the down-swing is one no roll can answer for a third of it: the hand's own
+// line turns end over end as the arm comes down (the wrist cock runs the fingers back off the
+// forearm and the arm swings through it), so on the frames where the line points at the
+// plate or at first base the ask is a direction *along* the hand — measured 0.90 of the way
+// down it at 1.08 s — and the driver squares it up to nothing and rolls the wrist to
+// whatever is left: read on the realised skeleton, that left the palm 64° off the ask a
+// frame and then snapped it 77° in the frame after. A held joint has no such frame: it is
+// always square to the line by construction, so the fall turns over as one motion instead of
+// arriving at the last frame.
+const PALM_HOLD = [
+  [1.00, 0],  // the hands part: the mitt's own facing is still the one answering
+  // ...and handed over across the fast part of the drop rather than in two frames. In two
+  // frames the hand-over lands on the one frame the hand's own line swings fastest (the hand
+  // coming down past the chest), and the two turns add: 56.9° of palm in a frame of a
+  // hundred-and-twentieth, against the 55° a hand leaving a mitt is allowed. Across four it is
+  // 52.6°, and the wrist the drop leaves is the hold's from 1.04 s on either way.
+  [1.04, 1],
+  [1.28, 1],
+  [1.30, 0],
+]
+const PALM_HOLD_TIMES = PALM_HOLD.map(([t]) => t)
+const PALM_HOLD_TRACK = PALM_HOLD.map(([, v]) => v)
+// The wrist's own angle, as the layback leaves it: the facing the keys author there (the
+// ball turned to the pitcher's own back, which is what a camera at the plate sees of a
+// cocked arm), written in the arm's own frame rather than in the rig's, so that what the
+// hold keeps is a *joint* rather than a direction in the world. Two numbers and not three,
+// because a palm is a direction *square to the hand's own line* by construction — the line
+// is the axis the wrist's one free turn is about (see the driver's ``palmFacing``, whose
+// roll is taken about exactly that axis), so the part of a facing written along it is a
+// part no wrist can answer and the driver squares up out of the ask. Written as the two
+// the turn is in: across the plane the elbow hangs off, and level within it. Read off the
+// realised skeleton at the layback (1.20 s: 0.000, 0.339, -0.941), where the keys' own
+// facing stands — a wrist most of the way through the arm's own plane, which is the
+// reference pitch's own layback — and it is the same angle the *down-swing* is asked for:
+// what the hold keeps from the break on is one joint, so the roll the swing makes of the
+// hand is the forearm's rather than a wrist re-turning to each facing in the rig's frame.
+//
+// The reference pitch does not carry *one* angle down the swing: the forearm and the palm
+// roll together as the torso falls forward, the hand turning over the whole of the
+// down-swing — through the sky, then down at the ground, then out to the pitcher's own
+// back — and arriving at the layback's angle as the cock folds. A single held angle is a
+// wrist frozen mid-roll: measured on the realised skeleton, the constant ask left the palm
+// wandering across the fall with no roll to call its own (the turn about the hand's line
+// read 145°, -131°, 59° across 1.16-1.30 — no direction at all, the hand re-pointing to
+// whichever rig facing the swing happened to pass). What is held now is a joint that
+// *turns*: `HOLD_ROLL` is the wrist's angle about the hand's line, swept from the break's
+// own angle — the one that stands the palm square to first base — to the layback's across
+// the fall, so the palm rolls through the sky and the ground to the back as one forearm
+// rather than a hand chasing the rig's facings.
+// The layback's own angle as the two the hold is written in: read off the realised
+// skeleton at the layback (1.20 s: 0.000, 0.339, -0.941), where the keys' own facing stands
+// — a wrist most of the way through the arm's own plane, which is the reference pitch's own
+// layback. atan2 of the pair is the single angle that pair names about the hand's line,
+// which is what the roll below settles on and holds through the cock.
+const HOLD_PALM = [-0.0500, -0.9990]
+const HOLD_ROLL_END = Math.atan2(HOLD_PALM[1], HOLD_PALM[0])
+// The angles below are the ones that stand the palm on **first base** with the arm where it
+// actually is on each frame — read off the pose's own hand line and elbow (the frame the hold
+// is written in) at the frame in question, not guessed from a key: while the arm swings, its
+// own roll about the hand's line carries the facing a few degrees a frame, so one angle does
+// not serve two frames. Read on the realised skeleton with these in place, the palm is within
+// 5° of the base on every frame from 0.97 s to 1.02 s — the frames the arm is at the pitcher's
+// side and the ball is being shown to the infield — and the ask is the plate's bearing at the
+// gather (0.80 s, 90° away), with no frame of a hundred-and-twentieth turning it more than 26°.
+//
+// The keys from 1.03 s on are read off the arm the *lift* now has (see the swivel's window):
+// with the elbow opening out of the hang from 1.06 s the hand's own frame turns over faster,
+// so the wrist's angle has to give way with it — 1.10 at 1.05 s, nought at 1.07 s — and the
+// track runs *down* from the side's angle to the layback's own -92.9° instead of up past it.
+// Written the other way (the layback's angle wound on past a half turn, which is what the
+// track did while the arm hung four frames longer) the wrist would have to unwind backwards
+// through most of a turn to arrive where the arm already is.
+const HOLD_ROLL = [
+  [1.00, 2.110],  // the arm reaches his side: the palm square to first base, the ball shown
+  [1.03, 1.702],  // ...and held there while the arm hangs (the lift is not yet begun)
+  [1.05, 1.100],  // ...and again as the arm starts up the back (its roll has moved)
+  [1.07, -0.100],
+  [1.09, -0.600],
+  [1.11, -1.150],
+  [1.13, HOLD_ROLL_END],  // turned over onto the ground as the elbow opens (PS-2), and
+  [1.30, HOLD_ROLL_END],  // held there: one forearm rolling, no wrist chasing the swing
+]
+const HOLD_ROLL_TIMES = HOLD_ROLL.map(([t]) => t)
+const HOLD_ROLL_TRACK = HOLD_ROLL.map(([, v]) => v)
+
+// The throwing arm's own pole, where a key authors a *direction* rather than a place.
+//
+// A key's ``elbow`` is a place, and the driver reads the arm's side off the direction
+// from the socket to it — which is the same thing while the arm is held out and the
+// hand is somewhere else, and is *not* while the hand swings past the place itself.
+// The fall is exactly that case: the hand leaves the chest and drops beside the hip,
+// and the set's own pole stands above and behind the chest, so somewhere in the
+// middle of the drop the hand's line runs through it. On the frame it does, the place
+// names no side at all: the elbow's ring has no near point to hang on, the driver
+// squares the ask up to whatever is left, and the arm turns over as the hand goes by
+// — measured on the realised skeleton, 55° of upper arm and 76° of forearm between
+// two frames of a hundred-and-twentieth in the fall, with the palm swept 35° with
+// them. Written as a direction, the side the elbow hangs on is a setting the hand's
+// own travel cannot re-answer: what the frames between two of them do is walk round
+// the sphere between two sides, which is the drop that is being authored.
+//
+// Authored for the right hand and mirrored on the way out, like the keys' own places
+// (see `trackRelease`). Its own clock rather than the keys': what it is for is the
+// *frames between* them — the place of the fall is a place, and where the side turns
+// over inside a segment is the one thing a key cannot say.
+//
+// Read off the pitch: the elbow hangs out to the throwing side and level while the hands are
+// together (at the gather, 0.80), falls under the arm as it drops, and is under it by the
+// frame the hand reaches the hip (the balance, 1.00) — the reference pitch's own PS-2 into
+// PS-3, where the arm is thrown down at the ribs before the elbow goes anywhere. That is the
+// whole of what this track owns: the *lift* out of the hang is the swivel's (see its window),
+// written as a turn about the socket so that the arm can be paced through it, and from there
+// to the cock the swivel is the only clock.
+//
+// Its times moved with the swing: the drop is the gather-to-balance's own now rather than the
+// balance-to-break's, so the same four directions are walked over 0.80-1.00 instead of
+// 1.00-1.12 — twenty hundredths of a second where the arm falls, against twelve before, and
+// the swivel's lift then has the whole of the rest of the windup to bring the upper arm level.
+// The directions are the ones the old drop was authored with, unchanged: an arm dropped
+// beside the body is the same plumb shape whichever key's clock it is on.
+const POLE_TRACK = [
+  [0.80, [0.6512, -0.7547, 0.0800]],
+  [0.86, [0.8000, -0.4200, -0.4000]],
+  [0.92, [0.7400, -0.6428, -0.1982]],
+  [1.00, [0.4924, -0.8660, 0.0868]],
+  // The cock's own key, kept for the swivel to arrive on and the whip to leave from: the
+  // frames between it and the break's own key are the swivel's (see `swivelAt`), never read
+  // as a line between two places.
+  [1.26, [0.9600, -0.3400, 0.0200]],
+]
+const POLE_TIMES = POLE_TRACK.map(([t]) => t)
+const POLE_DIRS = POLE_TRACK.map(([, v]) => v)
+const POLE_FIRST = POLE_TIMES[0]
+// ...the last frame the *place* track owns. The swivel owns everything from here to the
+// cock's own key (see `SWIVEL_FROM`), so this is the balance: the frame the hand is at the
+// bottom of its swing and the arm starts up the back.
+const POLE_LAST = 1.00
+// How long the track takes over from the key's own place on its first frames: two at
+// a hundred-and-twentieth, which is a wrist turning over rather than a snap.
+const POLE_HANDOVER = 0.02
+const _poleAxis = POLE_TIMES.map(() => 0)
+const _placeDir = [0, 0, 0]
+const _poleOut = [0, 0, 0]
+const _poleEnd = [0, 0, 0]
+const _poleStart = [0, 0, 0]
+/**
+ * The pole's own direction at a frame, in the frame the keys are authored in: the
+ * keys' own directions, mixed as directions (each axis separately and the answer
+ * squared back up), so what the frames between two of them walk is the short way
+ * round the sphere — the same interpolation the palm's facings are read with.
+ *
+ * @param {number} t the authored clock
+ * @param {number[]} out a scratch triple
+ * @returns {number[]} ``out``
+ */
+function poleAt(t, out) {
+  for (let axis = 0; axis < 3; axis += 1) {
+    for (let i = 0; i < POLE_DIRS.length; i += 1) _poleAxis[i] = POLE_DIRS[i][axis]
+    out[axis] = trackAt(_poleAxis, POLE_TIMES, t)
+  }
+  return out
+}
+const _poleDir = [0, 0, 0]
+
+// The swivel's own clock, in the rig frame: the throwing upper arm's *bearing* about its
+// socket (degrees, 0 = straight back along the body, +90 = the throwing side) and its *rise*
+// below the shoulder line (degrees, positive down). It is written as the two angles rather
+// than as a place because what is being paced is the *turn*: a bearing read off a place
+// cannot be told to accelerate, and a bearing read off a distance along the sphere can.
+//
+// The window is the throw's own three movements:
+//
+//   * the lift — the arm drawn up out of the windup onto the hold: it leaves the pole track's
+//     own arm on the *balance*'s frame (1.00 s), where the drop has put the hand at the
+//     pitcher's side and the arm hangs sixty-two degrees under its socket on the realised
+//     skeleton, and it comes up over ten frames onto a hold that is *parallel to the ground*.
+//     It starts there — with the hand, rather than four frames later — because the forearm is
+//     already rising by 1.09 s and the windup's own swing is the two of them as one motion:
+//     the upper arm opening *back and up* under the elbow while the hand draws up behind it.
+//     Read on the realised skeleton it is 62° under the socket at 1.08 s, 56° at 1.117, 49° at
+//     1.133, 35° at 1.15, 18° at 1.167 and level at 1.183 — some six hundred degrees a second
+//     at its fastest frame over the whole of it, where the same rise spread over four frames
+//     was 47° of upper arm in one;
+//   * the hesitation — three frames stood on that arm at 1.178-1.202 s: the upper arm parallel
+//     to the ground (realised: 0.6°, 2.0° and 1.1° off the level on its frames) with the elbow
+//     out toward first base, which is the frame a hitter reads the arm's side out of and the
+//     frame this throw is loaded from;
+//   * the turn — from rest, one accelerating turn round the shoulder that carries the elbow
+//     *down* (fifty degrees under the socket by 1.2325 s) and round under the arm, and that
+//     comes back up into the plane the shoulders draw as the chest turns out from under it,
+//     arriving on the cock's own arm at 1.26 s. The drop is not a movement of its own laid
+//     inside this one: it is walked on the turn's own travel (see `SWIVEL_RISE_PATH`), so the
+//     arm leaves the hold slowly and is one motion from the level arm to the cock.
+//
+// The lift can go no earlier than the balance: while the arm is at the side it is straight, so
+// the wrist has no roll of its own to hold and the palm's facing is the elbow's to carry. The
+// lift's own keys in `HOLD_ROLL` are read off the arm each frame has, and read on the realised
+// skeleton the palm is within 5° of first base from 0.97 s to 1.02 s and turns away as the hand
+// comes up the back. A lift begun while the hand is still on its way down — any frame between
+// the gather and the balance — asks the elbow to open out of an arm that has not finished
+// falling, which leaves the palm 21° off the base as the arm arrives: a ball shown to the
+// infield a beat late. The window starts on the frame the arm reaches the side.
+//
+// The rise and the bearing walk *together* on the way up (one smoothstep each, see
+// `swivelAt`'s lift): that is the shape being asked for — one arm swinging back and up — and
+// it is why the window starts at the break. Trailed behind the bearing instead (two and a half
+// powers of the same walk, which is what this window used to do) the elbow stays under the
+// arm while the hand has begun to rise, and the arm arrives at the hold in two frames rather
+// than six.
+//
+// The rise is its own small track rather than one curve, because the *shape* is the point:
+// the elbow drops away from the hold, hangs under the arm while it comes round, and lifts
+// back into the plane only at the end.
+const SWIVEL_FROM = 1.00
+const SWIVEL_HOLD_FROM = 1.155
+const SWIVEL_HOLD_TO = 1.212
+const SWIVEL_END = 1.26
+// The hold's own two angles: five degrees under the socket line on the pose's own clock,
+// which the driver realises at zero to within a degree and a half — the upper arm *parallel to
+// the ground*, with the elbow out toward first base.
+const SWIVEL_BEARING_HOLD = -25
+const SWIVEL_RISE_HOLD = 5
+// ...and the arm is held *still* across them, which takes one small counter-drift: an arm
+// written motionless in the rig is not motionless on the screen, because the trunk is turning
+// out from under it through the hesitation at some three hundred and fifty degrees a second
+// and carries the elbow round and *down* with it. Measured on the realised skeleton before
+// this line was here: the hold's frames read a rise of 0.9°, 1.1°, 3.2° and 6.9° — the
+// horizontal arm sagging six degrees over the two frames, which is exactly what made a pause
+// read as a slow collapse. The number below is that carriage written back with the other
+// sign; measured again, the same frames read 0.9°, -0.7°, -0.9° and -0.3°: a level arm held
+// level for the whole hold.
+//
+// Only the rise can be held this way. The elbow's *bearing* through the hold is the driver's
+// own answer — the ring about the shoulder-to-hand chord, kept clear of the trunk — and it
+// does not follow the pose's pole there: a counter-turn written into the arm (5.6°, then 20°,
+// then the arm asked straight back along the body) moved the realised bearing not at all,
+// while the same frames moved 6.0° on their own (-35.7° to -41.7°) — the trunk's own turn,
+// which the arm is carried with. What the hesitation promises is therefore that the arm stops
+// *lifting and dropping* while the shoulders go on turning under it; taking the bearing back
+// as well would mean stopping the delivery's turn, which is not the pause's to stop.
+const SWIVEL_HOLD_DRIFT_RISE = -6.0
+const SWIVEL_RISE_HELD = SWIVEL_RISE_HOLD + SWIVEL_HOLD_DRIFT_RISE
+// ...and the drop, as a *path* through the rise rather than a track on the clock:
+// [share of the turn's own walk, degrees under the shoulder line]. It is written this way —
+// against the turn's travel rather than against the clock — because the drop is not a second
+// movement laid inside the turn; it is *part* of it. Walked on the clock (which is what this
+// window used to do: its own keys, each segment eased out of rest and into it) the descent
+// snapped the arm 7,355°/s on the frame after the hold, crawled at 1,000-1,600°/s through the
+// come-through while it waited to be started again, and stalled at 149°/s on the cock's own
+// frame. Read on the turn's own travel, the two joints share one pace: measured on the same
+// skeleton, the upper arm now leaves the hold at 582°/s, 979°/s and 2,439°/s and is still
+// turning at 2,653°/s as the ball goes.
+const SWIVEL_RISE_PATH = [
+  [0, SWIVEL_RISE_HELD],
+  // ...fifty degrees under the socket line by half the turn (1.2325 s on the clock), which is
+  // the frame the suite reads "the elbow hangs under the arm" on, and held there while the
+  // shoulder carries it round. It is put *late* on the path on purpose: the descent's own rate
+  // is this path's slope times the turn's pace, so a bottom at half the travel is a drop that
+  // creeps out of the hold and is still finding its speed where the shoulder is already turning
+  // — the arm comes round with the elbow still near the level rather than diving first.
+  [0.5, 50],
+  [0.6, 50],
+  // ...and up into the plane as the chest turns out from under it, on the cock's own arm.
+  [1, 20],
+]
+// The arms either side of the window, read off the pole track itself: the lift starts on the
+// track's own arm at the break — the hang the drop left — and the turn ends on the cock's own,
+// which is the arm the pose has always stood there. Neither hand-over is a seam, and neither is
+// read as a *place* on the socket — which is what made the arm jump thirty degrees of rise on
+// one frame when the socket moved under a place that had been standing still.
+const _swivelHold = [0, 0, 0]
+const _swivelCock = [0, 0, 0]
+poleAt(SWIVEL_FROM, _swivelHold)
+poleAt(SWIVEL_END, _swivelCock)
+const SWIVEL_BEARING_FROM = bearingOf(_swivelHold)
+const SWIVEL_RISE_FROM = riseOf(_swivelHold)
+const SWIVEL_BEARING_COCK = bearingOf(_swivelCock)
+const SWIVEL_RISE_VALUES = SWIVEL_RISE_PATH.map(([, v]) => v)
+// The turn's own slopes at its two ends: it leaves the hold from rest, and it arrives on the
+// cock at about the speed the trunk is turning at — which is the speed the whip then picks up
+// (see `whipPole`). Arriving at full pace instead (1.05) the turn is still at 2,918°/s on the
+// frame before the cock and the arm reads 149°/s on the frame after it: the throw stops in the
+// middle. Measured with 0.6, the hand-over runs 699°/s into 320°/s — a soft corner rather than
+// a stop, which is what the arm's own arrival at the cock is.
+const SWIVEL_LEAVE = 0
+const SWIVEL_ARRIVE = 0.6
+let SWIVEL_SPAN_BEARING = SWIVEL_BEARING_COCK - SWIVEL_BEARING_HOLD
+// The bearing's own branch: a turn past a hundred and eighty is either way round, and the
+// short one is the way the arm goes.
+while (SWIVEL_SPAN_BEARING > 180) SWIVEL_SPAN_BEARING -= 360
+while (SWIVEL_SPAN_BEARING < -180) SWIVEL_SPAN_BEARING += 360
+// The two arms at the ends of the turn, as directions, so the *rate* it arrives at can be
+// named: `SWIVEL_ARRIVE` is a slope along the bearing, and the hand-over it has to meet is an
+// angle on the socket's own sphere.
+const armDirection = (bearing, rise) => {
+  const b = (bearing * Math.PI) / 180
+  const r = (rise * Math.PI) / 180
+  return [Math.sin(b) * Math.cos(r), -Math.sin(r), Math.cos(b) * Math.cos(r)]
+}
+const SWIVEL_TURN_SPAN = (() => {
+  const hold = armDirection(SWIVEL_BEARING_HOLD, SWIVEL_RISE_HELD)
+  const cock = armDirection(SWIVEL_BEARING_COCK, SWIVEL_RISE_VALUES[SWIVEL_RISE_VALUES.length - 1])
+  const dot = hold[0] * cock[0] + hold[1] * cock[1] + hold[2] * cock[2]
+  return (Math.acos(Math.max(-1, Math.min(1, dot))) * 180) / Math.PI
+})()
+// ...the turn's own arrival rate, in degrees a second, which is the pace the whip starts at.
+const SWIVEL_ARRIVE_RATE = (SWIVEL_ARRIVE * SWIVEL_TURN_SPAN) / (SWIVEL_END - SWIVEL_HOLD_TO)
+
+/** The angle of a direction's sideways turn, in degrees, and its rise below the level. */
+function bearingOf(dir) { return (Math.atan2(dir[0], dir[2]) * 180) / Math.PI }
+function riseOf(dir) { return (Math.asin(-dir[1]) * 180) / Math.PI }
+
+/** The cubic that walks nought to one between two slopes: a value, its rate at each end. */
+const hermite = (u, m0, m1) => -2 * u * u * u + 3 * u * u
+  + (u * u * u - 2 * u * u + u) * m0
+  + (u * u * u - u * u) * m1
+
+/**
+ * The rise the swivel's path names at a share of the turn's own travel.
+ *
+ * A cubic through the keys with the tangents the keys either side give it, so the path turns
+ * no corners: the elbow's drop, the arm's carry under the trunk and its lift back into the
+ * plane are one curve, and the rate the frames take out of it is the turn's pace times this
+ * curve's own slope — nought at the hold, and still rising when the cock is reached.
+ *
+ * @param {number} travel the turn's paced share, nought on the hold and one on the cock
+ * @returns {number} degrees under the shoulder line
+ */
+function swivelRiseAt(travel) {
+  const keys = SWIVEL_RISE_PATH
+  const last = keys.length - 1
+  if (travel <= keys[0][0]) return keys[0][1]
+  if (travel >= keys[last][0]) return keys[last][1]
+  // The key's own slope, read off the keys either side of it (the secant of the neighbours, so
+  // a level stretch is level and a peak is not a corner). The *first* end is flat: the drop
+  // leaves the hold at rest, so the elbow's descent is not begun with a jerk but grows out of
+  // the hold's stillness — and the turn's first frames are the shoulder's own, with the elbow
+  // still level under it. The last end keeps its own segment's slope, because the cock is a
+  // hand-over and not a place the arm comes to rest on: the lift is still moving when the whip
+  // takes the arm on.
+  const slope = (i) => {
+    if (i <= 0) return 0
+    if (i >= last) return (keys[last][1] - keys[last - 1][1]) / (keys[last][0] - keys[last - 1][0])
+    return (keys[i + 1][1] - keys[i - 1][1]) / (keys[i + 1][0] - keys[i - 1][0])
+  }
+  for (let i = 1; i <= last; i += 1) {
+    if (travel > keys[i][0]) continue
+    const u0 = keys[i - 1][0]
+    const u1 = keys[i][0]
+    const h = u1 - u0
+    const s = (travel - u0) / h
+    const s2 = s * s
+    const s3 = s2 * s
+    return (2 * s3 - 3 * s2 + 1) * keys[i - 1][1]
+      + (s3 - 2 * s2 + s) * h * slope(i - 1)
+      + (-2 * s3 + 3 * s2) * keys[i][1]
+      + (s3 - s2) * h * slope(i)
+  }
+  return keys[last][1]
+}
+
+/**
+ * The throwing upper arm's own direction on a frame of the swivel.
+ *
+ * Read as a bearing and a rise, every frame is one place on the socket's own sphere: the
+ * elbow sweeps the ring the arm is hinged on rather than being carried across it, which is
+ * what a place read off two keys a hand's width apart does once the socket travels between
+ * them.
+ *
+ * @param {number} t the authored clock
+ * @param {number[]} out a scratch triple
+ * @returns {number[]} ``out``
+ */
+function swivelAt(t, out) {
+  let bearing = SWIVEL_BEARING_HOLD
+  let rise = SWIVEL_RISE_HOLD
+  if (t <= SWIVEL_HOLD_FROM) {
+    // The lift: the track's own arm drawn up onto the hold, out of rest, at the pace the
+    // window has room for (see the window's own note on why it cannot start earlier).
+    const u = clamp((t - SWIVEL_FROM) / (SWIVEL_HOLD_FROM - SWIVEL_FROM), 0, 1)
+    const travel = hermite(u, 0, 0)
+    // ...and the rise walks with the bearing (see the window's own note): one arm swinging
+    // back and up out of the hang, rather than an elbow turning while the arm stays low.
+    const travelRise = travel
+    bearing = SWIVEL_BEARING_FROM + (SWIVEL_BEARING_HOLD - SWIVEL_BEARING_FROM) * travel
+    rise = SWIVEL_RISE_FROM + (SWIVEL_RISE_HOLD - SWIVEL_RISE_FROM) * travelRise
+  } else if (t <= SWIVEL_HOLD_TO) {
+    // The hesitation: the arm's own aim held while the trunk goes on turning under it (see
+    // the window's own note on the drift), which is the pause — the level is held for the two
+    // frames the hold is worth, and the turn leaves it from rest.
+    const u = clamp((t - SWIVEL_HOLD_FROM) / (SWIVEL_HOLD_TO - SWIVEL_HOLD_FROM), 0, 1)
+    rise = SWIVEL_RISE_HOLD + (SWIVEL_RISE_HELD - SWIVEL_RISE_HOLD) * u
+  } else {
+    // The turn: off the hold's stillness, one turn round the shoulder that leaves from rest
+    // and accelerates all the way to the cock — with the elbow held under the arm on the way
+    // round and lifting back into the plane at the end (see `SWIVEL_RISE_PATH`).
+    const u = clamp((t - SWIVEL_HOLD_TO) / (SWIVEL_END - SWIVEL_HOLD_TO), 0, 1)
+    // One pace for both joints (see the path's own note): the bearing turns on it and the
+    // elbow's drop rides *in* it, so the arm is one movement out of the hold rather than a
+    // turn with a drop laid inside it.
+    const travel = hermite(u, SWIVEL_LEAVE, SWIVEL_ARRIVE)
+    bearing = SWIVEL_BEARING_HOLD + SWIVEL_SPAN_BEARING * travel
+    rise = swivelRiseAt(travel)
+  }
+  const b = (bearing * Math.PI) / 180
+  const r = (rise * Math.PI) / 180
+  out[0] = Math.sin(b) * Math.cos(r)
+  out[1] = -Math.sin(r)
+  out[2] = Math.cos(b) * Math.cos(r)
+  return out
+}
+
+/** A cross product into a scratch triple: the third axis of a frame built from two. */
+const crossOut = (a, b, out) => {
+  out[0] = a[1] * b[2] - a[2] * b[1]
+  out[1] = a[2] * b[0] - a[0] * b[2]
+  out[2] = a[0] * b[1] - a[1] * b[0]
+  return out
+}
+const _holdPlane = [0, 0, 0]
+
+/**
+ * The direction a frame's palm is asked for: the keys' own facing (the pose hands it in as
+ * ``given``) or, while the cock holds it, that facing *carried with the arm*.
+ *
+ * The frame it is carried in is the hand's own: the *line* the hand runs along (the axis
+ * the wrist's one free turn is taken about — see the driver's ``palmFacing``) and the plane
+ * the elbow hangs off, squared up out of that line. `HOLD_PALM` is the wrist's own angle in
+ * that pair, so the facing travels with the arm and the wrist is asked for nothing while the
+ * arm cocks — where a facing written in the rig's frame is one the wrist has to keep chasing
+ * down the swing.
+ *
+ * Everything is read in the numbers the keys are authored in and mirrored back out again (a
+ * lefty's arm is the mirror of this one, which is what ``s`` does on the way in and on the
+ * way out). The share is what hands the ask back to the keys: at one it is the held facing
+ * outright, at nought it is ``given``, and between them the two are mixed as *directions*,
+ * the way the keys' own facings are (see `palmAt`) — so the hand-over the arm's own
+ * straightening forces is a wrist turning over a frame or two rather than a snap.
+ */
+function heldPalm(given, share, roll, socket, line, pole, s) {
+  if (!(share > 0)) return given
+  const hand = normalize(line, s)
+  const elbow = normalize([
+    pole[0] - socket[0], pole[1] - socket[1], pole[2] - socket[2],
+  ], s)
+  const plane = normalize(crossOut(hand, elbow, _holdPlane), 1)
+  const side = crossOut(hand, plane, [0, 0, 0])
+  // The roll is one angle about the hand's own line: ``across`` the elbow's plane and
+  // ``level`` within it, which is the pair HOLD_PALM is written in — so the sweep below is
+  // the forearm turning over, and the layback's own numbers are one frame of it.
+  const across = Math.cos(roll)
+  const level = Math.sin(roll)
+  const held = normalize([
+    across * plane[0] + level * side[0],
+    across * plane[1] + level * side[1],
+    across * plane[2] + level * side[2],
+  ], s)
+  return normalize([
+    given[0] + (held[0] - given[0]) * share,
+    given[1] + (held[1] - given[1]) * share,
+    given[2] + (held[2] - given[2]) * share,
+  ], 1)
+}
+
+/**
+ * The direction the throwing hand's palm is asked for at a frame, in the frame the
+ * keys are authored in: the keys' own facings, mixed the way every other clasp track
+ * is (see `trackAt`), with the pitch's own bearing standing in on the keys that name
+ * none (see HAND_PALM). Read as a direction rather than as a place, so what
+ * interpolates between two keys is the *turn* of the wrist rather than a place it has
+ * to pass through — the two facings either side of the throw are most of a right angle
+ * apart, and a wrist handed from one to the other in the frame a key is left would
+ * snap.
+ */
+function palmAt(t, bearing) {
+  const out = [0, 0, 0]
+  for (let axis = 0; axis < 3; axis += 1) {
+    for (let i = 0; i < KEYS.length; i += 1) {
+      _palmAxis[i] = HAND_PALM[i] ? HAND_PALM[i][axis] : bearing[axis]
+    }
+    out[axis] = trackAt(_palmAxis, TIMES, t)
+  }
+  return out
+}
 
 // Scratch for one clasp key's own wrist, in the chest's frame (see claspTracks).
 const _claspWrist = [0, 0, 0]
@@ -3488,7 +5936,7 @@ function claspTracks(rig, tilt = 0) {
   const carry = releaseCarry(rig, 'R')
   const halfWidth = rig.shoulder.halfWidth
   for (let i = 0; i < KEYS.length; i += 1) {
-    if (!CLASP_KEYS[i]) continue
+    if (!SEED_KEYS[i]) continue
     const key = KEYS[i]
     // The key's own share of the delivery's tilt (see TILT_TRACK): the clasped hands are
     // one body with the chest they are held in front of, so a chest rolled out over the
@@ -3598,7 +6046,7 @@ const _releaseAt = [0, 0, 0]
 // place outside the release window is held to when the delivery is thrown at another
 // stride.
 const DRIVE_KEYS = KEYS.map((key) => key.drive ?? 0)
-function trackRelease(values, release, s, t, out, stride, shift = null) {
+function trackRelease(values, release, s, t, out, stride, shift = null, keys = null) {
   _releaseAt[0] = release.x
   _releaseAt[1] = release.y
   _releaseAt[2] = release.z
@@ -3623,6 +6071,7 @@ function trackRelease(values, release, s, t, out, stride, shift = null) {
       const carried = RELEASE_KEYS[i] ? 0 : shift ? shift[axis] : 0
       const carry = axis === 2 && !RELEASE_KEYS[i] ? -(stride - 1) * DRIVE_KEYS[i] : 0
       _axis[i] = hand * values[i][axis] + (RELEASE_KEYS[i] ? _releaseAt[axis] : 0) + carry + carried
+      if (keys) keys[i][axis] = _axis[i]
     }
     out[axis] = trackAt(_axis, TIMES, t)
   }
@@ -3643,13 +6092,23 @@ const RELEASE_KEY_INDEX = TIMES.indexOf(AUTHORED_RELEASE_TIME)
  * track is read, like the clasp's own two, and for the same reason: the line is the
  * pitch's own release point's rather than the key's.
  */
-function writeReleaseArm(release, s) {
+function writeReleaseArm(rig, release, s) {
   const aim = release.aim
   const index = RELEASE_KEY_INDEX
   // The key's own aim, as authored: what the pole's own side is read against below.
   // The track is authored for the right hand and mirrored on the way out (see
   // `normalize`), so a lefty's line is stored the other way round its own lateral axis.
-  const authored = [_claspAim[index][0], _claspAim[index][1], _claspAim[index][2]]
+  //
+  // Read off the key every call rather than off the track it is stored in: the write
+  // below replaces that key's entry with the pitch's own line, and the key is not a
+  // clasp key (the hands are apart at the release), so `claspTracks` does not put the
+  // authored aim back — reading the track would hand the *first* frame of a session the
+  // authored aim and every frame after it the line the first frame wrote, which makes
+  // the release pole depend on which frame the reader started from (measured: the
+  // pose's own elbow 1.2 of a rig unit across the body on the one frame, and the
+  // release window's whip reading as a flick on a sweep that began mid-delivery).
+  const { turn } = chestFrameAt(rig, KEYS[index], index, s * release.tilt)
+  const authored = turnVector(turn, normalize(KEYS[index].gloveAim, 1), [0, 0, 0])
   // ...and the pitch's own line in the same frame the tracks are stored in (the pose
   // multiplies a track's lateral axis by the hand on the way out, see trackRelease).
   const line = [s * aim[0], aim[1], aim[2]]
@@ -3688,10 +6147,107 @@ function writeReleasePole(release, s, authored) {
   }
 }
 
+// The whip: the arm's last sixty milliseconds of turn, from the arm the swivel hands over on
+// (1.26 s, the cock's own key) to the direction the release key draws. It walks the span the
+// two arms make over the window, evenly: the arm is not sped up and not eased down inside the
+// whip, and nothing is turned back about the chord — the arm used to be held through these
+// frames while the hand laid itself back, and that hold is the pause the throw had in it.
+//
+// What is *not* spent through it is the turn the old place track drew: read off the keys the
+// two arms stand 45° apart on the socket's own sphere (the release's own direction is the
+// cock's carried up and round by the chest's turn), so the whip's own travel is forty-five
+// degrees in sixty milliseconds. The rest of the throw's turn is spent before the cock, which
+// is why the swivel is written as one accelerating turn and this is its settling half: an
+// upper arm that had kept accelerating at the swivel's 2,600°/s would have run out of ring
+// before 1.28 s and stood still through the ball.
+//
+// A place is only a direction as seen from the socket it hangs off, and through the whip the
+// socket travels most of a stride while the keys' places stand a hand's width apart: the line
+// between two of them cuts across the chord instead of sweeping round it, and the pole it
+// names walks down the chord's own line — which is the one place the ring has no side to be
+// read on. `forearmOf` fades its side there and the elbow it hangs still flips: measured on
+// the realised skeleton, the hand jumped 0.45 of a rig unit on two frames a five-thousandth of
+// a second apart at 1.288 s, and the same seam showed as a 0.24 of a unit step of the drawn
+// ball at 1.279 s. Read as a turn between two unit triples there is no line to cut: the arm
+// goes from one direction to the other the short way round its own sphere.
+
+/** One place's direction off the socket it hangs from, as a unit triple. */
+function directionOf(place, socket, out) {
+  const dx = place[0] - socket[0]
+  const dy = place[1] - socket[1]
+  const dz = place[2] - socket[2]
+  const length = Math.hypot(dx, dy, dz) || 1
+  out[0] = dx / length
+  out[1] = dy / length
+  out[2] = dz / length
+  return out
+}
+
+// Scratch for the turn: the elbows the keys draw (the hold's, the cock's and the release's),
+// and the answer.
+const _swivelPlace = [0, 0, 0]
+const _swivelRelease = [0, 0, 0]
+const _whipPlace = [0, 0, 0]
+const _whipAt = [0, 0, 0]
+
+/**
+ * Reads the throwing arm's pole through the whip as a turn from one arm to the other.
+ *
+ * The two ends are directions off the shoulder — the arm the swivel hands over on its last
+ * frame, and the arm the release key draws — and the frames between them are the short way
+ * round the socket's own sphere, at a rate that leaves the swivel's and rises.
+ *
+ * @param {number[]} out the elbow's pole place, in the rig frame (written in place)
+ * @param {number[]} socket the shoulder the arm hangs from, in the rig frame
+ * @param {number} t the authored clock
+ * @param {number[]} from the swivel's own last arm, in the rig frame
+ * @param {number[]} to the pole's direction the release key draws, in the rig frame
+ * @returns {number[]} ``out``
+ */
+function whipPole(out, socket, t, from, to) {
+  // Where the frame stands in the whip's own window: nought on the cock, one on the release.
+  const share = clamp((t - SWIVEL_END) / (AUTHORED_RELEASE_TIME - SWIVEL_END), 0, 1)
+  // The arm's own travel: the shortest turn from the direction the swivel left it in to the
+  // direction the release key draws. Both are arms the pose already stands the upper arm in —
+  // the swivel's last frame and the key's own — so the frames between them are the arm going
+  // from one to the other and nothing else.
+  const dotFT = clamp(from[0] * to[0] + from[1] * to[1] + from[2] * to[2], -1, 1)
+  const span = Math.acos(dotFT)
+  // ...and the travel is walked at the pace the turn handed over: the whip picks up the speed
+  // the swivel arrived at and accelerates from it, so the arm's rate rises all the way from
+  // the hold to the release and is at its highest as the ball goes — rather than arriving at
+  // the cock fast and restarting the throw at a walking pace (see `SWIVEL_ARRIVE`). The walk
+  // is `a·u + (1-a)·u³`: unit slope at nought is `a` and at one it is `3-2a`, so a hand-over at
+  // `a` leaves the whip at `3-2a` times the window's mean, which is the keys' to slow down.
+  const spanDeg = (span * 180) / Math.PI
+  const meanRate = spanDeg / (AUTHORED_RELEASE_TIME - SWIVEL_END)
+  const handOver = Math.max(0.05, Math.min(1, SWIVEL_ARRIVE_RATE / meanRate))
+  const travelled = share * (handOver + (1 - handOver) * share * share)
+  const sinSpan = Math.sin(span)
+  let ahead = 1 - travelled
+  let behind = travelled
+  if (sinSpan > 1e-6) {
+    ahead = Math.sin((1 - travelled) * span) / sinSpan
+    behind = Math.sin(travelled * span) / sinSpan
+  }
+  _whipAt[0] = from[0] * ahead + to[0] * behind
+  _whipAt[1] = from[1] * ahead + to[1] * behind
+  _whipAt[2] = from[2] * ahead + to[2] * behind
+  const unit = Math.hypot(_whipAt[0], _whipAt[1], _whipAt[2]) || 1
+  for (let axis = 0; axis < 3; axis += 1) {
+    out[axis] = socket[axis] + (_whipAt[axis] / unit) * POLE_REACH
+  }
+  return out
+}
+
 const _ball = [0, 0, 0]
 const _elbow = [0, 0, 0]
+// ...and the place the fold's own ring composes, beside the keyed one it is handed over from
+// (see the pole's own note in the pose).
+const _composed = [0, 0, 0]
 const _pinned = [0, 0, 0]
 const _stance = [0, 0, 0]
+const _spin = [0, 0, 0]
 
 /**
  * The pose of one frame of the delivery.
@@ -3738,6 +6294,19 @@ export function pitcherPose(t, ctx) {
     side = null,
   } = ctx
   const s = hand === 'L' ? -1 : 1
+  // The ring's own side starts this frame empty: `forearmOf` carries the side it read
+  // off the ball's own chord into the wrist's second pass, and that is the same *frame's*
+  // pair — a side left over from the frame before is a feedback rather than a read, and
+  // where the pole lies near the chord it answers on alternate frames: measured, the
+  // hand standing 0.45 of a rig unit apart on two frames a five-thousandth of a second
+  // apart at 1.288 s, which is the step the whip's own frames were showing. It is also
+  // what keeps the pose a function of its arguments: read off the frame before, the same
+  // clock drawn twice answers two ways (measured, the hand's line 5e-4 of a rig unit
+  // apart on a repeat call), and a mirror of the delivery is then only as exact as the
+  // order the two hands happened to be drawn in.
+  _ringSide[0] = 0
+  _ringSide[1] = 0
+  _ringSide[2] = 0
   // The authored clock is the release-to-set one; a tuning that moves the release
   // moves the whole delivery by the same factor, so the release still lands on
   // the clock the app syncs the pitch to.
@@ -3760,11 +6329,11 @@ export function pitcherPose(t, ctx) {
     side,
   })
   // The body's own carry of that line, on the clip's own clock, in the delivery's two
-  // levers: the tilt the anchor solved is handed in over the back leg's *drive* (see
-  // TILT_TRACK) and what it could not reach goes out with the *step* (see STEP_TRACK), on
-  // the same window — the trunk comes out over the rubber as the back leg carries the body
-  // out, the front foot comes with the body it is on, and the two stay there through the
-  // throw. The *sink* is the pair's own geometry rather than a number of its own (see
+  // levers: the tilt the anchor solved is handed in over the *kick* (see TILT_TRACK) — the
+  // trunk comes across over the leg the weight is on as the knee comes up over it — and
+  // what it could not reach goes out with the *step* (see STEP_TRACK), on the drive's own
+  // window: the back leg carries the body out and the front foot comes with the body it is
+  // on, and the two levers are both standing through the throw. The *sink* is the pair's own geometry rather than a number of its own (see
   // `rollLift` and `stanceDip`): the pelvis comes up by what the roll carries the drive
   // socket down by and down by what the carry takes off the drive leg's own span, so the
   // drive leg stays a straight rod at every metre of it — slanted and nothing else, which
@@ -3777,16 +6346,31 @@ export function pitcherPose(t, ctx) {
   // sink carried through it would land him folded.
   const tiltTrack = trackAt(TILT_TRACK, TIMES, authored)
   const tilt = release.tilt * tiltTrack
+  // ...and the roll the *pelvis' own height* is paid for, which is the same angle on the
+  // drive's own clock (see TILT_LIFT_TRACK): the body rolls with the kick, and what the
+  // legs are charged for it starts with the drive, so the two numbers part company over
+  // the windup and are one from the fall on.
+  const liftTilt = release.tilt * trackAt(TILT_LIFT_TRACK, TIMES, authored)
   const stanceTrack = trackAt(STEP_TRACK, TIMES, authored)
   const stanceAcross = release.stance * stanceTrack
   const ride = trackAt(PIVOT_RIDE_TRACK, TIMES, authored)
-  const sink = stanceDip({ rig, lean: Math.abs(stanceAcross) }) * (1 - ride) - rollLift({ rig, tilt })
+  // ...and the *sink* the pair of them costs the legs, which is the two levers' own
+  // geometry: the carry takes the drive leg's span off the vertical and the lift stands
+  // the pelvis back up by what the roll carried the drive socket down by (see `stanceDip`
+  // and `rollLift`, the second of them on the drive's own clock — see TILT_LIFT_TRACK).
+  const sink = stanceDip({ rig, lean: Math.abs(stanceAcross) }) * (1 - ride)
+    - rollLift({ rig, tilt: liftTilt })
   // ...and both of them in the rig's own x, which is the frame the places *outside* the
   // release window are written in and so have to be carried by (see `trackRelease` below).
   const leanAcross = stanceAcross + release.tiltX * tiltTrack
 
   const at = {}
   for (const track of NUMBER_TRACKS) at[track.key] = trackAt(track.values, TIMES, authored)
+  // ...and the *turn's* own clock on the chest's key: the trunk, the socket the arms hang
+  // from, the shoulder plane and every place the keys wrote in the chest's frame read the
+  // turn off this one number, so the gather lands in a single place rather than on each of
+  // them (see TURN_GATHER_LEAD, and the note there for why the keys cannot hand it over).
+  at.chestYaw += turnGathered(authored)
   // The pitch's own posture, applied to the release-window lean: the slot track says
   // which frames the pitch's own release has a say in — nought until the arm is
   // cocked, all of it from the cock through the follow-through, and eased back out
@@ -3804,25 +6388,71 @@ export function pitcherPose(t, ctx) {
   // (see LEAN_IN_TRACK): it comes out of the rocker rather than out of the cock, so the
   // fold the pitch is thrown from is walked onto the front foot across the whole of the
   // delivery's front half. The share the fold is read through is the greater of the two —
-  // a frame is either inside the release window, or inside the walk, and the walk is the
-  // longer of them.
+  // a frame is either inside the release window, or inside the walk — and the two hand over
+  // at the plant, where the walk is withdrawn and the back leg's own tilt is what the fold
+  // holds (see the walk's own note).
   const leanIn = trackAt(LEAN_IN_TRACK, TIMES, authored)
-  const foldShare = slot > leanIn ? slot : leanIn
+  // ...and the *fold's* own arrival, which the slot track's own ramp is the arm's side
+  // of (see FOLD_ARRIVE): a trunk the plant left arched comes forward over the whole of
+  // the whip rather than in the three frames between the plant and the cock, which is
+  // what keeps the arch a shape the delivery stands in and the fall over it a motion the
+  // throw is *made* of. The window it is read through is the slower of the two shares,
+  // so nothing outside the fall moves.
+  const arrive = trackAt(FOLD_ARRIVE_TRACK, FOLD_ARRIVE_TIMES, authored)
+  const handed = slot < arrive ? slot : arrive
+  const foldShare = handed > leanIn ? handed : leanIn
   // The arm's own straightness this frame, off the keys' own folds (see STRAIGHT_TRACK):
   // the release's chord across the window, and the cock's right angle at the top of it,
   // with the frames between them the ramp the throw straightens on.
   const armStraight = trackAt(STRAIGHT_TRACK, TIMES, authored)
+  // ...and how much of the *sweep* this frame is on (see SWEEP_IN_TIME): the frames
+  // the arm's own place is the throw's line rather than a place, handed to the driver
+  // so that a line written off the pose's own estimate of its socket is realised at
+  // the arm's own length rather than folded into it (see the arm output's ``sweep``).
+  // The throw window is on the same terms from its very first frame — the arm raising
+  // off the belt is the arm's own shape and not the ball's own place's: the frame's
+  // ``straight`` ramps the elbow's fold down from its own 180° to the cock's right
+  // angle (see STRAIGHT_TRACK), and a chord left to the ball's place instead would
+  // fold the arm past that ramp mid-swing and open it again — measured before this,
+  // the elbow bent to 94° at 1.17 s and came back to 82° at the plant, against a
+  // ramp asking 53° and 80°. The line through the window is still the pose's own
+  // (the ball's place, the pole's, the hand's own line): only the *length* is the
+  // arm's.
+  const sweepWindow = clamp((authored - SWEEP_WINDOW_IN) / (SWEEP_WINDOW_END - SWEEP_WINDOW_IN), 0, 1)
+  const sweep = Math.max(
+    clamp((authored - SWEEP_IN_TIME) / SWEEP_IN_HANDOVER, 0, 1),
+    sweepWindow,
+  ) * clamp((SWEEP_OUT_TIME - authored) / SWEEP_OUT_HANDOVER, 0, 1)
+  // ...and how far the body gives the arm on the frames the ball is the pitch's (see
+  // RELEASE_GRAZE): the allowance ramps up to the release's own frame and back down
+  // after it, so the fold and the hand's own push come back in as the arm swings on.
+  const graze = RELEASE_GRAZE
+    * clamp((authored - (AUTHORED_RELEASE_TIME - RELEASE_GRAZE_IN)) / RELEASE_GRAZE_IN, 0, 1)
+    * clamp((AUTHORED_RELEASE_TIME + RELEASE_GRAZE_OUT - authored) / RELEASE_GRAZE_OUT, 0, 1)
   // The trunk's own fold at the plate, as the pose holds it, beside the *lateral* the
   // pelvis carries (see ``leanAcross`` above): the two are different levers, and the
-  // pose is the one place they meet.
-  let fold = at.lean + foldShare * (release.lean - at.lean)
+  // pose is the one place they meet. The finish's own share is read on its own, because
+  // it is the part of the fold the *keys* were written without and so the part the arm's
+  // places below have to be carried by (see the carry's own note).
+  const keyedFold = at.lean + foldShare * (release.lean - at.lean)
+    + FINISH_TILT * finishTiltAt(authored)
+  const finishFold = holdFoldAt(keyedFold, authored)
+  let fold = keyedFold + finishFold
+  // ...and the hip the held fold is *paid* out of (see FINISH_SINK): the pelvis' own height
+  // comes down with the share the fold is held at, so the knee gives under the trunk as it
+  // comes over the foot rather than the sockets riding up off the legs the stance planted.
+  // Nought wherever the fold's own share is — including the gather before the release, which
+  // is the fold coming *off* the posture rather than a depth being carried, and so is a hip
+  // the knee is standing on and not one it is giving up.
+  const finishShare = holdShareAt(authored)
+  const foldSink = FINISH_SINK * Math.max(0, finishShare)
   // ...and the share of the chest's own turn the head takes off its look (see
   // LOOK_PIN, which is read on its own clock).
   const look = trackAt(LOOK_TRACK, LOOK_TIMES, authored)
   // The release frame's own hand line is the *arm's*, written from the anchor rather
   // than authored: a straight arm's hand runs on down the line the arm reaches along
   // (see `writeReleaseArm`).
-  const releaseArm = writeReleaseArm(release, s)
+  const releaseArm = writeReleaseArm(rig, release, s)
   for (const track of VECTOR_TRACKS) {
     at[track.key] = track.values[0].map((_, axis) => (
       trackAt(track.values.map((v) => v[axis]), TIMES, authored)
@@ -3850,10 +6480,10 @@ export function pitcherPose(t, ctx) {
   // mirrored the same way (see `leg`), like the stride foot's.
   const pivotFoot = { ...foot.pivot, x: foot.pivot.x + s * stanceAcross * ride }
   // ...and the lead shoe's own plant, read with this pitch's numbers at the frame the shoe
-  // goes down (see FRONT_HEEL_SWEEP): what the body had come by on that frame is part of
+  // goes down (see FRONT_PLANT): what the body had come by on that frame is part of
   // where the shoe was put, and the sweep below anchors its arc on that place rather than
   // on this frame's, so the foot is not carried out with the body a second time.
-  const plantAcross = release.stance * trackAt(STEP_TRACK, TIMES, FRONT_HEEL_SWEEP_TIME)
+  const plantAcross = release.stance * trackAt(STEP_TRACK, TIMES, FRONT_PLANT_TIME)
   // The clasp's own two tracks (see claspTracks), and the trail arm's own mirror of
   // the lead arm's elbow (see mirrorTracks), are written before they are read: they
   // are places in the rig frame like every other target, and the rig is what turns
@@ -3870,9 +6500,80 @@ export function pitcherPose(t, ctx) {
   // Without it the arm reaches back across the lean to a place the body has left —
   // measured at the landing, with the lean held: 1.25 of the arm's own span, which the
   // driver answers by pulling the shoulder out of its socket.
-  const carried = [leanAcross, 0, 0]
+  //
+  // ...and the *follow-through's* own travel is the same kind of shift and is paid the
+  // same way: the keys' arm places are places in the rig, written for a body that came to
+  // rest on the frame it landed in — the drive used to be one number from the landing
+  // out — and since the stride's plant was lengthened the pelvis goes on driving through
+  // the follow-through (see the landing key and the hold's own keys). An arm asked for a
+  // place the body has gone past is the hand left behind the chest it is falling over, so
+  // the whole of the keys' own travel past the landing is handed to the tracks here, on
+  // the same track the pelvis rides: a place outside the window is carried by what the
+  // body has come by since it landed, and the arm keeps the shape the keys gave it while
+  // the body goes on moving under it. (Not the *stride's* scaling — that is the `carry`
+  // inside `trackRelease`, which is the delivery's own length; this is the follow-through
+  // alone, and it is nought on every frame up to and including the landing.)
+  //
+  // ...and the *finish's* own fold is a carriage of its own, and it is paid here for the
+  // same reason: the arm's places are places in the rig, and the whole of what the finish
+  // does that the keys do not know about is the trunk turning over its hips by up to a
+  // radian (see holdFoldAt). A place handed over as a *shift* travels with the socket and
+  // goes on pointing where it pointed, so an arm carried that way stands in the world while
+  // the chest turns under it: across the stand the glove's upper arm trails the chest by
+  // 0.16 of its own direction between 1.9 s and the pause, and the trunk sweeps through the
+  // mitt where the two cross — 17 mm inside it at 1.96 s against the driver's 12 mm bound,
+  // with the ring's own clearance rule spent answering it (see the pose's glove pole below,
+  // which is where the turn is paid).
+  //
+  // ...and the *turn* is a different carriage from the shift, and it is the one a *pole*
+  // takes whole (see `rideShape`): a pole is a direction on the body the keys drew, so it
+  // is turned from the turn that body stands at to the turn this frame's does, on every
+  // frame the finish's fold is on.
+  //
+  // ...and the throwing arm takes it too, but on the *stand's* own clock rather than the
+  // fold's (see `standShare` at the hand-over below): turned across the whole of the finish
+  // it would carry the throw's own sweep off the frames it was authored on — measured, the
+  // arm goes from 0.29 to 0.68 of its own travel between two frames of the fold's hand-over
+  // and the crossing at 1.52 s moves 32 mm off the plate's line the keys draw it on. The
+  // frames the arm's places are authored on are the *throw*, and what the ride is for is the
+  // stand: from the crossing (1.54 s) out, the trunk rises under an arm the keys have already
+  // thrown, and the arm rides it there.
+  const followRide = Math.max(0, at.drive - LANDING_DRIVE) * stride
+  const foldRide = finishFold === 0 ? [0, 0, 0] : (() => {
+    const joint = torsoPivot(rig)
+    // ...the *throwing* socket's own offset from the joint, lateral and all: the fold is taken
+    // at the plate's line, so a socket a shoulder's half-width out from the midline does not
+    // ride the same arc the midline point does once the body is a quarter-turn round.
+    const offset = [s * rig.shoulder.halfWidth, rig.shoulder.y - joint.y, rig.shoulder.z - joint.z]
+    const socketOf = (lean) => {
+      const trunkAt = trunkLean(s * at.chestYaw, lean, s * at.leanSide + tilt)
+      return turnVector(upperTurn(s * at.chestYaw, -trunkAt.leanX, -trunkAt.leanZ), offset)
+    }
+    const folded = socketOf(fold)
+    // ...and the socket the driver builds hangs off a pelvis that has given up FINISH_SINK of
+    // its height to stand the fold in (see the pose's own ``offsetY``): the arm rides that
+    // with the rest of the body rather than standing out of the trunk it hangs from.
+    folded[1] -= foldSink
+    const flat = socketOf(fold - finishFold)
+    return [folded[0] - flat[0], folded[1] - flat[1], folded[2] - flat[2]]
+  })()
+  // The turn the *keys'* body stands at, against this frame's own (see `rideShape`): the
+  // frame every place they wrote was written in, and the pose's fold is the whole of what it
+  // adds to a body it did not author.
+  const keyedTrunk = trunkLean(s * at.chestYaw, fold - finishFold, s * at.leanSide + tilt)
+  const keyedTurn = upperTurn(s * at.chestYaw, -keyedTrunk.leanX, -keyedTrunk.leanZ)
+  // Scratch for the ride below: the one direction it is read through, the two offsets the
+  // hand-over blends between, and the answer it writes.
+  const _rideAt = [0, 0, 0]
+  const _rideRidden = [0, 0, 0]
+  const _rideKeyed = [0, 0, 0]
+  const _rideDir = [0, 0, 0]
+  const carried = [
+    leanAcross + foldRide[0],
+    foldRide[1],
+    -followRide + foldRide[2],
+  ]
   trackRelease(BALL_TRACK, release, s, authored, _ball, stride, carried)
-  trackRelease(ELBOW_TRACK, release, s, authored, _elbow, stride, carried)
 
   // The idle's own breath, under the delivery: it fades out as the windup takes
   // over rather than being switched off, so a pitcher waiting on the rubber is
@@ -3897,8 +6598,15 @@ export function pitcherPose(t, ctx) {
   const reachGive = straightChord(rig.arm.upper, rig.arm.fore, armStraight)
     - straightChord(rig.arm.upper, rig.arm.fore)
   const handCarry = carry - reachGive * slot
-  const aim = normalize(at.aim, s)
-  const gloveAim = normalize(at.gloveAim, s)
+  // `let` because the hand's own line is settled onto the forearm's own once the
+  // socket is known (see below): the keys author it, and what the driver builds
+  // the arm from is that line read down the forearm the hand hangs on, cocked
+  // about the palm's own normal by the wrist's own schedule (WRIST_COCK).
+  let aim = normalize(at.aim, s)
+  // `let` because the glove's line is *carried by the lean's own turn* below (see the
+  // note where it is written): the authored line is the chest's, and what the mitt
+  // shows the plate is that line with the fold's tilt taken back off it.
+  let gloveAim = normalize(at.gloveAim, s)
   // The glove's palm, as the direction it faces rather than the line the hand runs
   // along: the one turn of a hand a place and a line leave free, and the one the
   // delivery is read by (see the keys' own ``glovePalm``).
@@ -3922,19 +6630,28 @@ export function pitcherPose(t, ctx) {
   // field its release point sits: the lateral is the anchor's own, and the depth is the
   // plate's (see RELEASE_TO_PLATE). The two hundredths of a rise in it are the strike
   // zone's own centre over that distance — a hand's width up from the ball's own height.
-  const plateBearing = normalize([-release.x, 0.02, -RELEASE_TO_PLATE], 1)
-  // ...asked for as the clasp's palm *eased* into the pitch's across the release window,
-  // on the same share the arm's own reach is handed over by (see SLOT_TRACK): the hands
-  // part with the wrist still turned into the mitt it was holding, and the twist comes
-  // round to the throw over the frame or two the arm is coming over. The mitt's own
-  // facing and the plate's bearing are a dozen degrees apart on the slotted delivery, so
-  // what crosses over is a wrist's own small turn rather than a snap.
+  //
+  // The share of it this frame is turned to is the clasp's own or the keys' — the hand is
+  // turned to one facing or the other, never half of neither (see the output's
+  // ``palmMix``). The keys' facings are written for the right hand like the rest of the
+  // table, so the bearing is carried back into that frame to stand beside them and the
+  // answer is mirrored out again: that is the ``s`` the ``thrownPalm`` below is read
+  // with, and why the bearing is written there and not here.
+  const palmAsk = trackAt(PALM_ASK_TRACK, PALM_ASK_TIMES, authored)
+  const thrownPalm = normalize(
+    palmAt(authored, normalize([-release.x, 0.02, -RELEASE_TO_PLATE], s)), s,
+  )
+  // ...asked for as the clasp's palm *eased* into the ask across the frames the two
+  // are handed over on: the hands part with the wrist still turned into the mitt it
+  // was holding, and the twist comes round to the throw over the frame or two the arm
+  // is coming over. The means of the two are what the ask is written on rather than
+  // either place, so what crosses over is a wrist's own small turn and not a snap.
   const handPalm = normalize([
-    glovePalm[0] + (plateBearing[0] - glovePalm[0]) * slot,
-    glovePalm[1] + (plateBearing[1] - glovePalm[1]) * slot,
-    glovePalm[2] + (plateBearing[2] - glovePalm[2]) * slot,
+    glovePalm[0] + (thrownPalm[0] - glovePalm[0]) * palmAsk,
+    glovePalm[1] + (thrownPalm[1] - glovePalm[1]) * palmAsk,
+    glovePalm[2] + (thrownPalm[2] - glovePalm[2]) * palmAsk,
   ], 1)
-  const ball = [_ball[0], _ball[1], _ball[2]]
+
 
   // The elbows are authored, like the ball, as *places* in the rig frame (see the
   // driver's open-arm solve: a pole reads only the direction from the shoulder to
@@ -3946,6 +6663,93 @@ export function pitcherPose(t, ctx) {
   // shoulder, moved by the pelvis' own height and its drive).
   const trunk = trunkLean(s * at.chestYaw, fold, s * at.leanSide + tilt)
   const turn = upperTurn(s * at.chestYaw, -trunk.leanX, -trunk.leanZ)
+  /**
+   * A direction of the *keys'* body, turned onto this frame's (see the ride's own note at
+   * the fold below): the turn the keys' body stands at is undone and this frame's put on,
+   * which is the chest's own rotation over the hold and nothing else. Nought of it while the
+   * two turns are one — the whole of the delivery up to the point the finish's fold lifts —
+   * so nothing the keys authored through the fall is touched.
+   *
+   * @param {number[]} dir a direction or an offset in the rig frame (written in place)
+   * @returns {number[]} ``dir``
+   */
+  const rideShape = (dir) => {
+    if (finishFold === 0) return dir
+    unturnVector(keyedTurn, dir, _rideAt)
+    turnVector(turn, _rideAt, dir)
+    return dir
+  }
+  // ...and the glove arm *carried by the lean's own turn*: its place and its line are
+  // authored in the chest's frame (``local``/``aimLocal`` below) and the palm in the
+  // rig's — where the pitch goes — so the fold turns the whole arm by the lean's own
+  // degrees while the palm stands still, and a palm can only be rolled about the hand's
+  // own line. Two promises spend each other here: the mitt shows the plate (the line
+  // square to the facing asked for, so the roll can reach it) and the palm is *rolled*
+  // onto the plate rather than the wrist *pointed* at it (the line still hangs off its
+  // own forearm). Carrying the line alone turned the hand to the plate by bending the
+  // wrist off its forearm (measured: 72° — the palm pointed, not rolled). So the whole
+  // arm rides the lean's own fold taken back off it — place and line together, the
+  // inverse of the two folds ``turn`` carries, yaw and everything else untouched — and
+  // the forearm turns with the line, which keeps the hand's roll relationship to it
+  // while the trunk folds under a mitt that stays turned to the hitter. This is what
+  // lets a way-more-obvious arch and a plate-facing mitt coexist rather than one
+  // spending the other.
+  // ...carried by a *share* of that fold, not the whole of it: the three promises the
+  // suite reads on a mitt — the palm on the plate, the palm *rolled* there rather than
+  // the wrist pointed, and the roll reaching the facing the pose asked for — pull the
+  // hand's line two ways. Carrying the fold off the arm all the way turns the mitt square
+  // to the plate but carries it past the authored ask (the roll's floor is the ask's own
+  // angle to the hand's line, and squaring the line to the plate lifts that angle out of
+  // the palm's reach: measured 42° short at the whole carry, against 18° at none). The
+  // share below is where all three read under their bounds together — the plate within
+  // the palm's reach, the wrist still rolled rather than pointed, and the ask still on
+  // the palm's own roll-circle — on a trunk that keeps the deep arch under all of it.
+  // ...carried only once the break has parted the hands: while they are clasped the ball
+  // sits in the mitt and the two hands are one place, so turning the glove's line to the
+  // plate would drag its palm off the ball the clasp is holding (see the clasp's own read).
+  // The carry is therefore inert through the clasp and eases in across the break, where the
+  // mitt is free to turn to the hitter under a trunk that keeps the deep arch.
+  const GLOVE_LEAN_CARRY = 1
+  // ...but only *after* the break, and only while the ball is *out* of the mitt: through
+  // the clasp and the whole of the windup the carry is inert (the two hands are one grip
+  // and the ball is in the mitt — moving the glove's frame then would lift the ball out of
+  // it and lift the glove with the elbow, see the windup's own rise read), and it walks in
+  // over 1.13-1.18 so that by the plant, where the lean is deepest, the carry is whole and
+  // the roll has its room back. The ``1 - claspShare`` is what closes the *loop*: the clip
+  // ends in the set it began in, the ball back in the mitt, so a carry that stayed lit to
+  // the end would leave the hand (and the ball it holds) half a lean off the place the set
+  // wrote — the delivery would snap back into its stance between pitches (see the unit
+  // suite's own loop read, ``close.ball`` against ``open.ball``).
+  const carryShare =
+    GLOVE_LEAN_CARRY * clamp((authored - 1.13) / 0.05, 0, 1) *
+    (1 - trackAt(CLASP_TRACK, TIMES, authored))
+  const leanCarry = upperTurn(0, -carryShare * trunk.leanX, -carryShare * trunk.leanZ)
+  const carryByLean = (v) => unturnVector(leanCarry, v)
+  gloveAim = carryByLean(gloveAim)
+  const gloveLocal = carryByLean([s * at.glove[0], at.glove[1], at.glove[2]])
+  // ...and swung out of the chest by the width the deeper fold takes away (see
+  // GLOVE_SWING): spent as a turn about the chest's own forward axis, so the arm keeps
+  // its reach while the ring gets its clear arc back. Its own clock walks in across the
+  // whip and *holds* the whole of the pause, rather than decaying with the fold: what it
+  // answers is a body folded over a mitt, so it is owed for as long as the fold is held —
+  // and a swing still easing out through the hold is the arm still settling (measured,
+  // 2.1 mm of the glove's own shape between 1.98 s and 2.08 on the fold's own share).
+  const gloveSwingShare = (() => {
+    if (authored <= AUTHORED_RELEASE_TIME || authored >= FINISH_RIDE) return 0
+    if (authored >= FINISH_STAND_FROM && authored <= HOLD_END_TIME) return 1
+    if (authored < FINISH_STAND_FROM) {
+      const u = (authored - AUTHORED_RELEASE_TIME) / (FINISH_STAND_FROM - AUTHORED_RELEASE_TIME)
+      return u * u * (3 - 2 * u)
+    }
+    const u = (authored - HOLD_END_TIME) / (FINISH_RIDE - HOLD_END_TIME)
+    return 1 - u * u * (3 - 2 * u)
+  })()
+  const gloveSwing = -s * (GLOVE_SWING * gloveSwingShare)
+    / (Math.hypot(gloveLocal[0], gloveLocal[1], gloveLocal[2]) || 1)
+  const gloveX = gloveLocal[0] * Math.cos(gloveSwing) - gloveLocal[1] * Math.sin(gloveSwing)
+  gloveLocal[1] = gloveLocal[0] * Math.sin(gloveSwing) + gloveLocal[1] * Math.cos(gloveSwing)
+  gloveLocal[0] = gloveX
+  const throwLocal = carryByLean([s * (at.glove[0] - 2 * rig.shoulder.halfWidth), at.glove[1], at.glove[2]])
   // The look's own two angles, solved rather than authored: two directions of the rig frame
   // — the one that lands *level* on the plate (the rig's own -z, which is where the strike
   // zone is) and the one the stance stands in (STANCE_LINE) — each carried back through the
@@ -3998,7 +6802,7 @@ export function pitcherPose(t, ctx) {
   // *roll* is already in the turn the offset above is carried by, so what is left here is
   // the translation and the pelvis's own height (see the pose's ``offsetX``/``offsetY``).
   chestAt[0] += stanceAcross
-  chestAt[1] += rig.hip.y + at.hipY - sink
+  chestAt[1] += rig.hip.y + at.hipY - sink - foldSink
   chestAt[2] += rig.hip.z - at.drive * stride
   // The glove's own socket: the chest's centre out along the chest's lateral, which
   // is what the chest's turn does to the half-width it sits at.
@@ -4018,6 +6822,9 @@ export function pitcherPose(t, ctx) {
     gloveElbowAt[1],
     gloveElbowAt[2],
   ])
+  // ...carried with the place it is read from (see `rideShape`): a pole is only the
+  // direction the ring is read on, so it turns with the arm it belongs to.
+  rideShape(gloveElbow)
   gloveElbow[0] += gloveShoulder[0]
   gloveElbow[1] += gloveShoulder[1]
   gloveElbow[2] += gloveShoulder[2]
@@ -4065,6 +6872,156 @@ export function pitcherPose(t, ctx) {
   throwingSocket[0] += stanceAcross
   throwingSocket[1] += armPivot.y + at.hipY - sink
   throwingSocket[2] += armPivot.z - at.drive * stride
+  const ball = [_ball[0], _ball[1], _ball[2]]
+  trackRelease(ELBOW_TRACK, release, s, authored, _elbow, stride, carried)
+  // ...and where the arm's side is authored as a *side* rather than as a place — the fall,
+  // the lift and the layback — the elbow hangs off that direction instead (see `poleAt`):
+  // the track's own share is whole inside its window and eased in over the first couple of
+  // frames, so the part key's own place still rules the frame the hands let go on.
+  const poleShare = authored >= POLE_FIRST - 1e-9 && authored <= POLE_LAST + 1e-9
+    ? clamp((authored - POLE_FIRST) / POLE_HANDOVER, 0, 1)
+    : 0
+  if (poleShare > 0) {
+    poleAt(authored, _poleDir)
+    const poleLength = Math.hypot(s * _poleDir[0], _poleDir[1], _poleDir[2]) || 1
+    // The place's own direction, which the track hands over from on its first frames.
+    directionOf(_elbow, throwingSocket, _placeDir)
+    const share = poleShare
+    for (let axis = 0; axis < 3; axis += 1) {
+      const authoredDir = (axis === 0 ? s : 1) * _poleDir[axis] / poleLength
+      _poleOut[axis] = _placeDir[axis] + (authoredDir - _placeDir[axis]) * share
+    }
+    const held = Math.hypot(_poleOut[0], _poleOut[1], _poleOut[2]) || 1
+    for (let axis = 0; axis < 3; axis += 1) {
+      _elbow[axis] = throwingSocket[axis] + (_poleOut[axis] / held) * POLE_REACH
+    }
+  }
+  // ...and from the hands parting the arm's side is authored as a *turn* rather than as a
+  // place (see `swivelAt`): the windup's own arm held on for the hesitation, then one turn the
+  // whole way to the cock's own arm, and from there the whip continues the same turn to the
+  // release's. Every frame of it is one place on the socket's own sphere, so the elbow sweeps
+  // the ring the arm is hinged on rather than being carried across it.
+  // ...and from the hands parting the arm's side is authored as a *turn* rather than as a
+  // place (see `swivelAt`): the arm lifted onto the hold, stood on for the hesitation, and
+  // then one accelerating turn round the shoulder that points the elbow down and brings it
+  // back into the plane the shoulders draw. Every frame of it is one place on the socket's
+  // own sphere, so the elbow sweeps the ring the arm is hinged on rather than being carried
+  // across it.
+  if (authored >= SWIVEL_FROM - 1e-9 && authored <= AUTHORED_RELEASE_TIME + 1e-9) {
+    if (authored <= SWIVEL_END + 1e-9) {
+      swivelAt(authored, _poleDir)
+      const swivelLength = Math.hypot(s * _poleDir[0], _poleDir[1], _poleDir[2]) || 1
+      for (let axis = 0; axis < 3; axis += 1) {
+        _elbow[axis] = throwingSocket[axis]
+          + ((axis === 0 ? s : 1) * _poleDir[axis] / swivelLength) * POLE_REACH
+      }
+    } else {
+      // ...and the whip turns from the cock's own arm — the pole track's own last key, which
+      // is the arm the swivel has just arrived on — to the release's, the short way round the
+      // socket's own sphere: one arm either side of the hand-over, where the keys used to
+      // park it.
+      poleAt(SWIVEL_END, _poleEnd)
+      const cockLength = Math.hypot(s * _poleEnd[0], _poleEnd[1], _poleEnd[2]) || 1
+      for (let axis = 0; axis < 3; axis += 1) {
+        _poleStart[axis] = (axis === 0 ? s : 1) * _poleEnd[axis] / cockLength
+      }
+      trackRelease(ELBOW_TRACK, release, s, AUTHORED_RELEASE_TIME, _swivelPlace, stride, carried)
+      directionOf(_swivelPlace, throwingSocket, _swivelRelease)
+      whipPole(_elbow, throwingSocket, authored, _poleStart, _swivelRelease)
+    }
+  }
+  // ...and *now* the hand's own line can be the forearm's own (see `forearmOf`):
+  // a wrist's angle is the hand's line off the forearm's, the forearm's line is
+  // the driver's to say — it is the ring its own two bones draw about the chord,
+  // on the pole's own side of it — and the pose's own model of that ring is this.
+  // The aim the keys author is replaced by the forearm's line wherever the
+  // schedule's cock is nought (the hand running on down the arm it hangs on, the
+  // palm/forearm joint at its own 180°) and by that line swung back about the
+  // palm's own normal wherever the schedule cocks it (the joint opening *past*
+  // 180°, the hand drawn back toward the back of the hand). Settled against the
+  // wrist's own place — the ball less the carry down the hand's line — three
+  // times over, because each is the other's input: the line moves the wrist it
+  // is read from.
+  const wristCock = trackAt(WRIST_COCK_TRACK, WRIST_COCK_TIMES, authored)
+  // Seeded off the *ball* rather than the keys' own lines: the hand's line runs on
+  // past the wrist to the ball, so a forearm read to it is the answer already bar
+  // the carry's own lean on it — and the carry is a third of the forearm's own
+  // length, so a seed read off a stale key line walks in slowly enough that three
+  // passes leave most of a right angle standing on the frames whose keys were
+  // never close (measured: the come-through's own ask stood 87° off the forearm it
+  // hung on before this seed).
+  // Scoped to the window the hand's own line is the forearm's own *question* — the
+  // break to the release — and faded either side of it into the keys' own lines: the
+  // clasped windup's hand is the glove's own mirror (its line is a mitten's, not a
+  // forearm's), and the sweep's own frames are written as the throw's own line and
+  // held to the last thousandth of a rig unit by the tests that read them. What this
+  // hands the driver is the hand's line where the wrist's own angle is the question,
+  // and the keys' own everywhere their line is.
+  const armAsk = normalize(at.aim, s)
+  const windowAsk = clamp((authored - ARM_ASK_IN) / (ARM_ASK_FULL - ARM_ASK_IN), 0, 1)
+    * clamp((ARM_ASK_OUT - authored) / (ARM_ASK_OUT - ARM_ASK_FADE), 0, 1)
+  // The upper arm's own rule, applied to the elbow's place before the arm is read off
+  // it (see `holdUnderShoulders`): the plane is the chest's own, square to the up axis
+  // the trunk is standing on, and the chord is the arm's line to the ball.
+  // ...and the plane itself is the one the shoulder *line* lies in rather than the
+  // chest's own rolled one: the trunk's fold and its yaw, with the throw-side roll left
+  // out of the normal. That is the plane a slot is read against — the line between the
+  // two sockets, tilted fore and aft by the lean the body is throwing from — and it is
+  // the roll that makes the difference. A sidearmer's trunk rolls toward the throwing
+  // side so that the shoulder the arm hangs from stands *lower* than the other; measured
+  // off the rolled chest, an arm swung out level over that shoulder is "above" its plane
+  // on every frame of a low slot, which is not a shape anyone can watch for — the arm is
+  // level, the body is tilted. Read off the fold alone, the same arm is level with the
+  // line it is supposed to be level with, and the arch is what the plane tilts with.
+  const planeUp = turnVector(upperTurn(s * at.chestYaw, -trunk.leanX, 0), [0, 1, 0], _planeUp)
+  const planeHold = clamp((authored - SHOULDER_PLANE_IN) / (SHOULDER_PLANE_FULL - SHOULDER_PLANE_IN), 0, 1)
+    * clamp((SHOULDER_PLANE_END - authored) / (SHOULDER_PLANE_END - SHOULDER_PLANE_OUT), 0, 1)
+  if (planeHold > 0) {
+    const lineLength = Math.hypot(
+      ball[0] - throwingSocket[0], ball[1] - throwingSocket[1], ball[2] - throwingSocket[2],
+    ) || 1
+    _armLine[0] = (ball[0] - throwingSocket[0]) / lineLength
+    _armLine[1] = (ball[1] - throwingSocket[1]) / lineLength
+    _armLine[2] = (ball[2] - throwingSocket[2]) / lineLength
+    holdUnderShoulders(_elbow, throwingSocket, _armLine, planeUp, planeHold)
+  }
+  forearmOf(throwingSocket, ball, _elbow, rig.arm.upper, rig.arm.fore, armStraight, sweep, _foreArm)
+  aim = normalize(_foreArm, 1)
+  // ...and one refinement off the wrist that line leaves: the carry is the ball's
+  // own lean down the hand's line, and a hand's line drawn on past the wrist to the
+  // ball is already the forearm's — what the carry leans on it is a couple of
+  // centimetres of wrist and a degree or two of forearm. One pass and no more,
+  // because the wrist's place leans on the aim and the aim on the wrist: walked
+  // round, that circle keeps two answers on the come-through and steps between
+  // them a frame apart (measured: the hand's own place stepped 0.47 of a unit).
+  {
+    _wristHere[0] = ball[0] - aim[0] * handCarry
+    _wristHere[1] = ball[1] - aim[1] * handCarry
+    _wristHere[2] = ball[2] - aim[2] * handCarry
+    forearmOf(throwingSocket, _wristHere, _elbow, rig.arm.upper, rig.arm.fore, armStraight, sweep, _foreArm)
+    // The cock is the hand drawn *back* off the forearm: swung toward the back of
+    // the hand, which is the palm's own facing the other way round. The palm's
+    // ask stands square to the hand's line by construction, so what it leaves
+    // free is exactly this turn (see the driver's `palmFacing`) and the only
+    // question is which way up it is answered — the back of the hand is the
+    // palm's negation, taken off the forearm's line and turned down it.
+    const dorsal = normalize([
+      -(handPalm[0] - _foreArm[0] * (handPalm[0] * _foreArm[0] + handPalm[1] * _foreArm[1] + handPalm[2] * _foreArm[2])),
+      -(handPalm[1] - _foreArm[1] * (handPalm[0] * _foreArm[0] + handPalm[1] * _foreArm[1] + handPalm[2] * _foreArm[2])),
+      -(handPalm[2] - _foreArm[2] * (handPalm[0] * _foreArm[0] + handPalm[1] * _foreArm[1] + handPalm[2] * _foreArm[2])),
+    ], 1)
+    _cockedAim[0] = _foreArm[0] * Math.cos(wristCock) + dorsal[0] * Math.sin(wristCock)
+    _cockedAim[1] = _foreArm[1] * Math.cos(wristCock) + dorsal[1] * Math.sin(wristCock)
+    _cockedAim[2] = _foreArm[2] * Math.cos(wristCock) + dorsal[2] * Math.sin(wristCock)
+    aim = normalize(_cockedAim, 1)
+  }
+  if (windowAsk < 1) {
+    aim = normalize([
+      aim[0] * windowAsk + armAsk[0] * (1 - windowAsk),
+      aim[1] * windowAsk + armAsk[1] * (1 - windowAsk),
+      aim[2] * windowAsk + armAsk[2] * (1 - windowAsk),
+    ], 1)
+  }
   const askedOut = [
     ball[0] - aim[0] * handCarry - throwingSocket[0],
     ball[1] - aim[1] * handCarry - throwingSocket[1],
@@ -4072,8 +7029,18 @@ export function pitcherPose(t, ctx) {
   ]
   const asked = Math.hypot(askedOut[0], askedOut[1], askedOut[2])
   const armSpan = rig.arm.upper + rig.arm.fore
-  // The chord the pose would take on its own: the bones at the stretch the ask is worth.
-  const stretch = clamp(asked / armSpan, 1, ARM_STRETCH_MAX)
+  // The chord the pose would take on its own: the bones at the stretch the ask is worth —
+  // and never *past* the window's own share of it, which is handed back to the arm's own
+  // length on its own frames (see STRETCH_TRACK): where a frame is inside the throw's own
+  // line, the reach the ask is answered with is the window's chord and the schedule's, and
+  // the ask's own distance is not part of the delivery's shape at all. Read off the ask
+  // alone, the chord falls wherever the ask crosses it — which on the window's last frames
+  // is the frame the fold's own shorter places begin to be read, and that frame is the
+  // snap the schedule is bought against (see the numbers there). A frame at the release
+  // itself is unaffected either way: its own place is the anchor, which sits inside the
+  // hold of the window's own chord and is handed through bit-exact (see ``pitcherRelease``).
+  const windowStretch = trackAt(STRETCH_TRACK, STRETCH_TIMES, authored)
+  const stretch = Math.min(clamp(asked / armSpan, 1, ARM_STRETCH_MAX), windowStretch)
   const chord = straightChord(rig.arm.upper * stretch, rig.arm.fore * stretch, armStraight)
   // ...and the chord the driver holds off that ball, read the way the driver reads it:
   // its stretch off the reach it is handed (which is this chord, not the ask), and its
@@ -4090,12 +7057,58 @@ export function pitcherPose(t, ctx) {
   // release, and every anywhere-near-straight arm — is inside the reach held and the
   // anchor is not moved by the whisker at all.
   const reachHeld = held - armSpan * ARM_KEEP_SHARE
+  // ...and where the ask stands *past* the reach the pose holds, the whisker comes back
+  // in over the ask's own overshoot rather than all at once. A switch spends the whole of
+  // it on the frame the ask drops inside the chord, and the hand's own track carries the
+  // step: measured on the realised skeleton at the follow-through's hand-over — the one
+  // place in the delivery where an authored ask falls out of the arm's own stretch and
+  // into it slowly enough to read — the hand fell 24 mm on the frame the clamp let go
+  // against 11 mm on the frames either side of it, and the turn back up out of that frame
+  // is what the arm's own sweep read wrong with. Eased, the answer meets the ask where
+  // the two arrive at the chord together (the whisker is whole at the crossing, so an ask
+  // *at* the chord — the release's own anchor, which sits inside ASK_WHISKER of it — is
+  // still answered with the ask itself) and is only a tenth of a millimetre longer than
+  // the held reach on an ask written a whole span past the arm, which is every frame of
+  // the release window.
   if (asked - held > ASK_WHISKER) {
-    const reach = reachHeld / asked
+    const over = asked - held - ASK_WHISKER
+    const whisker = armSpan * ARM_KEEP_SHARE
+    const reach = reachHeld + whisker * (whisker / (over + whisker))
     for (let axis = 0; axis < 3; axis += 1) {
-      ball[axis] = throwingSocket[axis] + askedOut[axis] * reach + aim[axis] * handCarry
+      ball[axis] = throwingSocket[axis] + askedOut[axis] * (reach / asked) + aim[axis] * handCarry
+    }
+  } else if (sweep > 0 && authored > AUTHORED_RELEASE_TIME && asked > 1e-6) {
+    // The chord is the driver's own, read off the bones at the stretch a *short* ask
+    // leaves them (one: an ask inside the chord is never a stretched one).
+    const shortChord = straightChord(rig.arm.upper, rig.arm.fore, armStraight)
+    if (asked < shortChord - ASK_WHISKER) {
+      // ...and the same rule read the other way, which is where the *sweep* is on: an
+      // ask that is shorter than the arm's own chord is answered at the chord — the line
+      // is the pose's and the length is the arm's (see `forearmOf`, and the driver's own
+      // open-arm solve, which carries a short ask out to it exactly this much) — so the
+      // promise has to be that answer rather than the ask. Written as the ask's place it
+      // handed the driver a ball its own arm would not stand on, and the space between
+      // the two was the *fold's* own: measured on the realised skeleton, the pose
+      // promised a ball 0.41 of a rig unit from the socket through the hold's fold while
+      // the arm answered at its 0.60 chord — 0.19 apart at 1.58s, and 0.03 of one at
+      // 1.62s. Promised as the answer, the same frames read 3.4 mm at 1.62s and 10 mm at
+      // their worst (the 1.6275-1.645 stretch), which is the centimetre the driver's own
+      // socket stands from the pose's estimate.
+      //
+      // The release's own frame is left out and the rule is eased in over the two
+      // hundredths of a second after it: that frame's place *is* the anchor the pitch is
+      // flown from (see `pitcherRelease`), and on a wide pitch the pose's own socket
+      // estimate stands far enough from the body's that the ask reads short of the chord
+      // there — the anchor is handed through bit-exact rather than moved by an
+      // estimate's error.
+      const pushShare = clamp((authored - AUTHORED_RELEASE_TIME) / 0.02, 0, 1)
+      const answer = asked + (shortChord - asked) * sweep * pushShare
+      for (let axis = 0; axis < 3; axis += 1) {
+        ball[axis] = throwingSocket[axis] + askedOut[axis] * (answer / asked) + aim[axis] * handCarry
+      }
     }
   }
+
 
   // The clasp at *this* frame — the ball in the glove's own palm and the throwing
   // hand's own line the glove's own. The tracks above already put the two together
@@ -4105,7 +7118,18 @@ export function pitcherPose(t, ctx) {
   // couple of degrees over a segment walks them a centimetre or two apart — which is
   // the grip showing. So inside the window the ball is read off the glove's *live*
   // numbers instead, and what the tracks carry is where that window begins and ends.
-  const clasped = trackAt(CLASP_TRACK, TIMES, authored)
+  const claspedWeight = trackAt(CLASP_TRACK, TIMES, authored)
+  // ...eased out in the two frames after the parting (see PART_FADE) rather than across
+  // the whole segment to the next key: the hands let go on the frame they stop lifting,
+  // and what follows is the throw's own.
+  // ...and the fade reaches no further than its own window: past it the *track* is
+  // the weight again — the clasp opens over the fall and closes again into the set at
+  // the clip's own end, and a fade that stayed lit would leave the delivery's last
+  // frame empty-handed (see the unit suite's loop read).
+  const partFade = HAS_PART && authored >= PART_TIME && authored < PART_TIME + PART_FADE
+    ? 1 - (authored - PART_TIME) / PART_FADE
+    : 1
+  const clasped = claspedWeight * partFade
   if (clasped > 0) {
     // The glove's own line, carried into the rig frame: the glove is authored in the
     // chest's, so this is also the line the throwing hand takes.
@@ -4118,9 +7142,14 @@ export function pitcherPose(t, ctx) {
     palm[0] += chestAt[0] + line[0] * carry
     palm[1] += chestAt[1] + line[1] * carry
     palm[2] += chestAt[2] + line[2] * carry
+    // ...and written as the two ends' own weighted sum rather than as a step off one
+    // of them: `a + (b - a)·w` is a ``w``-th of the way from ``a`` to ``b`` in real
+    // numbers, but at ``w`` = 1 it lands a bit beside ``b`` — and the clip's own wrap
+    // reads the last frame against the first (see the unit suite's loop read), where
+    // one end is the clasp held whole and the other is the tracks' own place.
     for (let axis = 0; axis < 3; axis += 1) {
-      ball[axis] += (palm[axis] - ball[axis]) * clasped
-      aim[axis] += (line[axis] - aim[axis]) * clasped
+      ball[axis] = ball[axis] * (1 - clasped) + palm[axis] * clasped
+      aim[axis] = aim[axis] * (1 - clasped) + line[axis] * clasped
     }
     // A mixture of two unit lines is not a unit line, so it is normalized the way
     // the tracks' own mixtures are.
@@ -4156,6 +7185,115 @@ export function pitcherPose(t, ctx) {
     }
   }
 
+  // And the throwing arm's own pole is read as the *angle* the fold's keys author rather
+  // than as the place they were written on (see the fold's first follow-through key and
+  // SWEEP_VALUES above): the ring is composed here, about the chord the pose itself is
+  // asking the wrist along, out of the place's own along and tilt — so the two radii the
+  // interpolated place carries are the keys' own, and only the *way round* the chord is
+  // interpolated as an angle. That is the difference between a fold whose ring sweeps
+  // round the socket as the body comes round and one whose ring is carried corner to
+  // corner: through the crossing the keys turn the ring most of a right angle in an
+  // eighth of a second, and the line between two places cuts across the chest instead —
+  // which is a pole that asks for an elbow *inside* the body, and the driver answers an
+  // elbow it cannot have with its clearance rule rather than with the promise. On the
+  // realised skeleton that is the throwing arm's flick up across the drive leg (20.6° of
+  // upper arm in the one frame at 1.6125 s, an 11.6 cm jump of the elbow, with the bend
+  // held still); read as the angle it is, the whole fold turns its ring the way the keys
+  // turn it, and the driver's ring, fold and bend are the pose's own frame by frame.
+  // ...and only where the keys author one: outside that stretch the poles are the places
+  // they always were, which is what keeps the frame the clip ends on — the set's own arm,
+  // authored as a place — exactly the place the loop's own reading wants it to be.
+  //
+  // The window's own *end* is a hand-over rather than a switch (see SWEEP_POLE_HANDOVER):
+  // the composed place and the authored one are the same promise drawn two ways, and how
+  // far apart they land is a reading of the body the fold is written on.
+  const poleHand = clamp(
+    (SWEEP_TIMES[SWEEP_TIMES.length - 1] + SWEEP_POLE_HANDOVER - authored) / SWEEP_POLE_HANDOVER,
+    0, 1,
+  )
+  if (poleHand > 0 && authored >= SWEEP_TIMES[0] - 1e-9) {
+    // The chord the pose is asking this frame along: the wrist's own place, less the
+    // carry down the hand's line (see the arm output below, which hands the same place
+    // to the driver as `hand`).
+    const askedAt = [
+      ball[0] - aim[0] * handCarry - throwingSocket[0],
+      ball[1] - aim[1] * handCarry - throwingSocket[1],
+      ball[2] - aim[2] * handCarry - throwingSocket[2],
+    ]
+    const chordAt = Math.hypot(askedAt[0], askedAt[1], askedAt[2])
+    if (chordAt > 1e-6) {
+      for (let axis = 0; axis < 3; axis += 1) askedAt[axis] /= chordAt
+      // The ring's own frame: the lateral the world's own up makes with the chord, and
+      // the ring's up off that (see the sweep's own note at the track above). A chord
+      // with no lateral against the world — an arm asked for straight up or straight
+      // down — leaves the angle with nothing to be read against, so such a frame keeps
+      // the authored place; the fold's own chords are 0.4-0.75 of the unit off the
+      // vertical at every key, so this is a guard rather than a reading.
+      const lateral = [-askedAt[2], 0, askedAt[0]]
+      const lateralLength = Math.hypot(lateral[0], lateral[1], lateral[2])
+      if (lateralLength > 1e-6) {
+        for (let axis = 0; axis < 3; axis += 1) lateral[axis] /= lateralLength
+        // ...and the ring's own up: the two axes the ring's angle is read on.
+        const ringUp = [
+          lateral[1] * askedAt[2] - lateral[2] * askedAt[1],
+          lateral[2] * askedAt[0] - lateral[0] * askedAt[2],
+          lateral[0] * askedAt[1] - lateral[1] * askedAt[0],
+        ]
+        const pole = [
+          _elbow[0] - throwingSocket[0],
+          _elbow[1] - throwingSocket[1],
+          _elbow[2] - throwingSocket[2],
+        ]
+        const along = pole[0] * askedAt[0] + pole[1] * askedAt[1] + pole[2] * askedAt[2]
+        const flat = [
+          pole[0] - along * askedAt[0],
+          pole[1] - along * askedAt[1],
+          pole[2] - along * askedAt[2],
+        ]
+        // ...and mirrored with the delivery, because the ring's own lateral is read off the
+        // *world*'s up: a left-hander's body is the right-hander's mirrored and so is the
+        // chord, but the lateral the same up makes with a mirrored chord is the *negative*
+        // of the mirrored lateral (the two make a handed pair: the cross product turns over
+        // under a reflection), so the same ring reads as the supplement of the authored
+        // angle — the same place on the ring, measured from the other end of the chord's
+        // lateral — and the whole fold's own sweep is mirrored with the hand.
+        const sweep = s > 0
+          ? trackAt(SWEEP_VALUES, SWEEP_TIMES, authored)
+          : Math.PI - trackAt(SWEEP_VALUES, SWEEP_TIMES, authored)
+        const reach = Math.sin(sweep) * Math.hypot(flat[0], flat[1], flat[2])
+        const about = Math.cos(sweep) * Math.hypot(flat[0], flat[1], flat[2])
+        for (let axis = 0; axis < 3; axis += 1) {
+          _composed[axis] = throwingSocket[axis] + along * askedAt[axis]
+            + about * lateral[axis] + reach * ringUp[axis]
+        }
+        // ...and the place the keys hold, for the frames past the window's own end: the
+        // composition and the authored place are the same promise, so the hand-over is a
+        // blend between two places and nothing else (see the pole's own note above).
+        for (let axis = 0; axis < 3; axis += 1) {
+          _elbow[axis] += (_composed[axis] - _elbow[axis]) * poleHand
+        }
+      }
+    }
+  }
+
+  // ...and the upper arm's rule once more, now that the fold has composed the pole: the
+  // frames inside the fold write the ring as an *angle* about the chord (see above), so
+  // the place the rule left before the arm was read is not the place the fold hands over
+  // — recomposed from the angle, the elbow can sit above the sockets' plane again. What
+  // the rule reads here is the final place, against the chord the *wrist* is asked along
+  // (the ball less the carry down the hand's line) rather than the ball's, which is the
+  // arm's own hold at this frame.
+  if (planeHold > 0) {
+    _armLine[0] = ball[0] - aim[0] * handCarry - throwingSocket[0]
+    _armLine[1] = ball[1] - aim[1] * handCarry - throwingSocket[1]
+    _armLine[2] = ball[2] - aim[2] * handCarry - throwingSocket[2]
+    const chord = Math.hypot(_armLine[0], _armLine[1], _armLine[2]) || 1
+    _armLine[0] /= chord
+    _armLine[1] /= chord
+    _armLine[2] /= chord
+    holdUnderShoulders(_elbow, throwingSocket, _armLine, planeUp, planeHold)
+  }
+
   // The knee's own plane is the leg's own: a knee bends about the axis its shoe
   // points along and about no other, so for a leg *standing on the ground* the pole
   // that shapes it is carried by the shoe's line and not directly by the body's
@@ -4178,9 +7316,29 @@ export function pitcherPose(t, ctx) {
   // the plate's (see the break's own number), which is the stride's plane.
   const restKneeY = rig.hip.y - rig.leg.thigh
   const leg = (side, spec, shoeFrame) => {
+    // How much of the ground's own say the lead shoe's *angle* is standing in: nought
+    // before the plant, the whole of it through the follow-through and the hold, and given
+    // up over the walk-back, where the shoe comes up out of the finish and the keys have it
+    // again (see FRONT_PLANT_HOLD). It is a share of the *turn* and nothing else: where the
+    // shoe stands is the keys' own place from the plant on, and the turn is what the dirt
+    // holds.
+    const sweep = trackAt(FRONT_PLANT_HOLD, TIMES, authored)
+    // The shoe's own line. The pivot foot's is the stance's (its shoe's keyed angle,
+    // mirrored into the rig by the hand the pose is read on) and the stride foot's is the
+    // *body's*: the pelvis's own turn until the shoe is planted, and the whole of the body's
+    // turn through the pitch from the plant out — the trunk's own curve, scaled by the share
+    // the heels of both feet are read against (see FRONT_SHOE_TURN) — which is what carries
+    // the lead shoe round with the leg and the torso instead of leaving it standing where it
+    // was put. The two read the same angle on the plant's own frame (the shoe is put down on
+    // the plate's line, and the turn is nought there), so the hand-over is a step in the
+    // *rule* and not in the angle: the shoe has no step in it.
+    const stoodIn = at.hipYaw + spec.yaw
+    const turn = FRONT_PLANT.hipYaw + FRONT_PLANT.front.yaw
+      + trackAt(FRONT_SHOE_TURN, TIMES, authored)
+    const grounded = authored < FRONT_PLANT_TIME ? 0 : sweep
     const shoeYaw = shoeFrame === 'stance'
       ? s * spec.yaw
-      : s * (at.hipYaw + spec.yaw)
+      : s * (stoodIn + grounded * (turn - stoodIn))
     // Where the shoe stands, at this pitch's own stride. A longer delivery is the
     // *same* shape taken further, and a foot is a place in the frame the body stands
     // in rather than a place in the world: the feet ride the extra the pelvis carries
@@ -4190,48 +7348,44 @@ export function pitcherPose(t, ctx) {
     // shoe goes with the hips rather than being left behind by them. The set does not
     // scale: a stance is a stance, and at the set the drive is nought, so a delivery
     // thrown at half a stride still stands on the same two feet.
-    const z = spec.z - (stride - 1) * at.drive
-    // ...and the lead shoe's own turn once the dirt has it. The stride foot is put down
-    // pointing at the plate (that is what the keys down to the plant spend the stride on),
-    // and from that frame on the shoe is the *ground's* rather than the keys': the keys
-    // author the shoe's angle to the body there, so every degree the pelvis comes round
-    // over the foot, the shoe turns with it — which is the whole of the follow-through's
-    // own yaw. What a shoe the dirt is holding cannot do is skid round its own ankle, so
-    // what the turn really pivots about is the shoe's own heel — the tenth of a rig unit
-    // behind the ankle the keys name (see FRONT_HEEL_SWEEP) — and the *ankle* is carried
-    // round the arc that turn sweeps while the heel keeps the place the plant left it on.
-    // That is the difference between a leg coming round with the body and a body wringing
-    // over a foot that stood its ground: the keys' own place spends nought on it, and the
-    // arc is 0.057 of a unit between the plant and the landing, which is what the heel
-    // would otherwise drag across the dirt. Written in the keys' own frame — mirrored into
-    // it by the hand the pose is read on, like every other place the keys author.
-    const plantYaw = s * (FRONT_HEEL_SWEEP.hipYaw + FRONT_HEEL_SWEEP.front.yaw)
-    const sweep = trackAt(FRONT_HEEL_TRACK, TIMES, authored)
-    const plantZ = FRONT_HEEL_SWEEP.front.z - (stride - 1) * FRONT_HEEL_SWEEP.drive
-    // ...and the plant's own lateral, which is the foot's own place *plus* the carry the
-    // body had come by on that frame (see ``frontFoot``): read at the plant rather than
-    // here, because the metres the body has spent getting out over the rubber are part of
-    // where the shoe went down, and a sweep anchored on the frame's own carry would carry
-    // the foot out with the body a second time.
-    const plantX = FRONT_HEEL_SWEEP.front.x + s * plantAcross
-    const swept = shoeFrame !== 'body' || sweep === 0
+    //
+    // ...and a foot the *dirt* has stops taking that term once it has landed, or a
+    // delivery scaled by the pitch would walk its planted pivot shoe down the mound on
+    // the frames the body drives on after the finish (the stride foot is pinned by its
+    // own hold below; the pivot foot has no hold to pin it, so the scaling is frozen on
+    // the frame its own landing leaves it standing in). Every frame up to that landing
+    // is the frame's own drive, as before, so the swing and the plant are untouched.
+    const scaled = shoeFrame === 'stance' ? Math.min(at.drive, LANDING_DRIVE) : at.drive
+    const z = spec.z - (stride - 1) * scaled
+    // ...and the plant's own place, which is what the shoe keeps from then on: the key's
+    // own, plus the lateral the body had come by on that frame (see ``frontFoot``), read at
+    // the plant rather than here because the metres the body has spent getting out over the
+    // rubber are part of where the shoe went down, and a hold anchored on the frame's own
+    // carry would carry the foot out with the body a second time. Written in the keys' own
+    // frame — mirrored into it by the hand the pose is read on, like every other place the
+    // keys author — and handed back to the keys over the walk-back, with the turn.
+    const plantX = FRONT_PLANT.front.x + s * plantAcross
+    const plantZ = FRONT_PLANT.front.z - (stride - 1) * FRONT_PLANT.drive
+    // The turn is about the shoe's own *ankle*, and that is where it parts company with the
+    // trail shoe, whose turn is carried round its heel. A shoe the dirt is holding cannot
+    // skid, so the point it turns about has to be one of its own; the heel is that point for
+    // the trail foot because it is the end the plant put down. For the lead foot the arc is
+    // the cost, and the lead leg is what pays it: a heel-anchored turn carries the ankle
+    // round a circle of the boot's own length behind it, and the front leg — which stood at
+    // 101 per cent of its own length on the landing under the shorter turn already, rolling the
+    // shoe onto its toe to find the last centimetre — held 0.070 of a rig unit of that travel
+    // and no more.
+    // That is the 41.2° the shoe used to turn through the follow-through, spent to the
+    // decimal. A 101.9° turn on the same anchor sweeps 0.155: measured, the leg comes out at
+    // 108 per cent of its length with the ankle 7.2 cm short of the place it was asked for
+    // and the shoe 8.5 cm off the dirt — a foot on its toe and a leg torn straight, which is
+    // no finish at all. So the pivot is the ankle: the leg's own base keeps the spot the
+    // plant gave it to the last decimal, the shoe comes round over it, and what sweeps the
+    // dirt is the shoe — 0.155 of a unit across its own sole at the landing — which is the
+    // trade a real lead foot makes, the sole turning under the weight on it.
+    const held = shoeFrame !== 'body' || sweep === 0
       ? { x: 0, z: 0 }
-      : {
-        // The plant's own place, less this frame's, plus the arc the shoe's turn sweeps
-        // about its heel. The place's own part is written in the keys' frame and so is
-        // mirrored into it; the arc is a turn of the shoe's *bearing*, which is already
-        // the rig's own number with the hand's mirror in it, so it is added as it stands —
-        // a left-hander's shoe comes round the other way and its heel stays put just the
-        // same (see the mirror test's own reading of this).
-        x: sweep * (
-          s * (plantX - spec.x)
-          + (Math.sin(plantYaw) - Math.sin(shoeYaw)) * rig.heelOffset.z
-        ),
-        z: sweep * (
-          plantZ - z
-          + (Math.cos(plantYaw) - Math.cos(shoeYaw)) * rig.heelOffset.z
-        ),
-      }
+      : { x: sweep * s * (plantX - spec.x), z: sweep * (plantZ - z) }
     // How much of the leg hangs off its own knee (``hang``; see the driver's leg
     // solve), and the two planes that share it: what a standing leg bends over, and
     // where a lifted one's knee is pointed. The keys' own ``hang`` is the *share* of
@@ -4284,7 +7438,7 @@ export function pitcherPose(t, ctx) {
       // happened to be, which drifts a few centimetres with the leg's bend.)
       kneeDir: [-Math.sin(facing) * flat, tilt, -Math.cos(facing) * flat],
       knee: [
-        s * spec.x + swept.x + bend.x * spec.bend,
+        s * spec.x + held.x + bend.x * spec.bend,
         // A carried leg's knee is asked for by its own height — the lift is the
         // kick's, so it reads up the leg's own line — and a standing one's by the
         // knee's own travel, which is what the driver reads it for: a shape, not a
@@ -4292,9 +7446,9 @@ export function pitcherPose(t, ctx) {
         // so the line the solve is pointed at and the line it is handed as a place
         // are the same line wherever the bend's own push is the thigh's own length.
         rig.hip.y + rise,
-        z + swept.z + bend.z * spec.bend,
+        z + held.z + bend.z * spec.bend,
       ],
-      ankle: [s * spec.x + swept.x, rig.ankleY + spec.lift, z + swept.z],
+      ankle: [s * spec.x + held.x, rig.ankleY + spec.lift, z + held.z],
       footYaw: shoeYaw,
       // A foot at its own rest height is a foot standing on the ground, and the driver
       // is told so: it holds a planted shoe out of the ground, which the leg's own
@@ -4338,10 +7492,201 @@ export function pitcherPose(t, ctx) {
   // bow the driver gives it.
   const straight = straightChord(rig.arm.upper, rig.arm.fore, RELEASE_ELBOW)
   const snap = (straight + 0.002) / (rig.arm.upper + rig.arm.fore)
+  // ...and the same share handed over the *fold*, which the window's own slot track
+  // runs out into. The fold's keys are authored the way the window's are — a direction
+  // the throw already had, off the socket the pose estimates — so they need the same
+  // answer, and what the pose names for them is the whole of what the driver will
+  // stretch to: an ask there is answered by the arm's own reach rather than by the
+  // shoulder. Left to the girdle instead, the clavicle swings up to a dozen degrees to
+  // close the gap between the estimated socket and the body's own — and every
+  // centimetre of socket it moves takes the elbow with it around the ring the two
+  // bones draw, which is the one thing the fold is a promise about: measured on the
+  // realised skeleton, the upper arm's own direction reads 0.46 of a unit adrift
+  // between 1.58s and 1.62s with the driver's own bow (a rim of 12° of swing at
+  // 1.50s, against nought through the release itself), against the 0.15 the fold may
+  // drift by. The hand-over is a couple of frames either side of the window's own end,
+  // so the clavicle eases home instead of snapping back on one.
+  const GIRDLE_HANDOVER_TIME = 0.05
+  const GIRDLE_HANDOVER_LEAD = 0.03
+  const foldGirdle = clamp(
+    (t - (AUTHORED_SLOT_END - GIRDLE_HANDOVER_LEAD)) / GIRDLE_HANDOVER_TIME, 0, 1,
+  )
+  const ownGirdle = 0.97 + slot * (snap - 0.97)
+  const girdle = ownGirdle + (ARM_STRETCH_MAX - ownGirdle) * foldGirdle
   // The body's own step down the mound's slope, as the caller handed it: nought at
   // the release and the whole of it by the landing (see SETTLE_TRACK), so the
   // delivery takes the step over the drive rather than at the frame the shoes touch.
   const step = settle * trackAt(SETTLE_TRACK, TIMES, authored)
+
+  // The pole each arm hands the driver: the direction the keys authored, written out
+  // at ``POLE_REACH`` from that arm's own socket, which is the place the driver reads
+  // it from (see the constant's own note — at the arm's own radius the driver's socket
+  // disagrees with this one by more than the fold's own ring is wide).
+  const poleOut = (socket, place) => {
+    const dx = place[0] - socket[0]
+    const dy = place[1] - socket[1]
+    const dz = place[2] - socket[2]
+    const length = Math.hypot(dx, dy, dz) || 1
+    const share = POLE_REACH / length
+    return [socket[0] + dx * share, socket[1] + dy * share, socket[2] + dz * share]
+  }
+
+  // ...and the palm's own ask at this frame: the keys' facing, carried with the arm across
+  // the cock (see `heldPalm` and PALM_HOLD) — the wrist keeps the angle the layback left it
+  // in while the arm swings, instead of re-turning to hold a facing that stands still in the
+  // rig's frame. The arm it is carried on is this frame's own: the line the hand is drawn
+  // along (the axis the wrist's turn is about) and the elbow's own direction off the socket
+  // the driver is asked to hang it from.
+  const palmAskDir = heldPalm(
+    handPalm,
+    trackAt(PALM_HOLD_TRACK, PALM_HOLD_TIMES, authored),
+    trackAt(HOLD_ROLL_TRACK, HOLD_ROLL_TIMES, authored),
+    throwingSocket,
+    aim,
+    _elbow,
+    s,
+  )
+
+  // ...and the throwing arm *rides the trunk as it stands*: the ball, the wrist's line and
+  // the elbow are one arm off one socket, so they take one turn together, and taking it
+  // together is what keeps the arm's own shape — the reach from the socket, the elbow's place
+  // on its ring, the hand's line off the forearm — while its direction comes round with the
+  // chest that is standing up under it.
+  //
+  // The turn is the *stand's*, not the finish's: the frame it is read from is the trunk at the
+  // crossing (its own top, FINISH_FOLD at FINISH_STAND_FROM), where the keys have finished
+  // with the arm and the finish begins to stand the body up out of it. Read against the keys'
+  // body instead (see `rideShape` above) it would carry the throw's own sweep off the frames
+  // it was authored on — measured, the arm goes from 0.29 to 0.68 of its own travel between
+  // two frames of that hand-over and the crossing moves 32 mm off the plate's line the keys
+  // draw it on. Read against the crossing's trunk it is the *identity* on that frame (the two
+  // folds are one), so there is nothing to hand over and nothing to step: what it turns is
+  // the arm as the body leaves the top of its fold, which is the one thing the keys never
+  // wrote — their places are rig places, and a rig place stands in the world while the body
+  // stands up under it (measuring the arm's own line on the body, that is the 0.16 of a unit
+  // it trailed the chest by between 1.9 s and the pause).
+  //
+  // It is held through the hold and given back over the recovery: the recovery's keys are
+  // drawn for a body standing up — the arm long and down at his side — so by the frame the
+  // keys' own standing body is back the place is the keys' again, to the millimetre (see
+  // FINISH_RIDE: the fold's *pace* is not this clock's, so the trunk has stood before the
+  // ride has unwound, and what is left is the arm settling down the body it has finished
+  // standing on).
+  //
+  // The places are ridden *here* rather than where they are read, because everything above is
+  // authored machinery: the ball is the chord the fold's ring is composed about and the wrist
+  // the sweep's own angle is read from, so a place turned underneath those reads turns the
+  // ring with it (measured, with the ride taken at the source instead: the arm's own travel
+  // stepping 2.78x its neighbours' on the frame at 1.678 s, and a 14 mm hop at 2.00 s).
+  // ...held to the pause — the beat's own last key — and given back over the recovery, where
+  // the keys' own places take the arm again: they are drawn for a body standing up, so by the
+  // frame the stand ends the ride is nought and the place is the keys' to the millimetre.
+  //
+  // The hand-over is read on a *warped* clock because the ride is not free to take its time:
+  // it is a rotation of places that are themselves travelling toward the plate through the
+  // recovery, and a stand turning a place that has moved forward *lifts* it. Measured on the
+  // evenly-eased share the ride used to have, the throwing upper arm climbed seventeen
+  // degrees of elevation out of the pause (39.5° under the socket, up to 23.4° at 2.42 s)
+  // before it fell the fifty-six to his side — the arm flapped out from the body before it
+  // let the throw go. Front-loaded, the ride is spent while the keys' places are still nearly
+  // where the hold left them (three fifths of it in the first fifth of the window), and what
+  // is left for the rest of the recovery is the keys' own fall to the thigh: zero rate at
+  // both ends still, so the pause and the resting place are both undamaged.
+  const STAND_RIDE_END = KEY_AT(2.10).t
+  const standShare = (() => {
+    if (authored < FINISH_STAND_FROM) return 0
+    if (authored <= STAND_RIDE_END) return 1
+    if (authored >= FINISH_RIDE) return 0
+    const u = (authored - STAND_RIDE_END) / (FINISH_RIDE - STAND_RIDE_END)
+    const warp = 1 - (1 - u) * (1 - u)
+    return 1 - warp * warp * (3 - 2 * warp)
+  })()
+  // A slerp of two *directions*, with the near-parallel case read as a lerp (the two are the
+  // same place on the frames either side of it). Shared by the ride and the hang below.
+  const slerpDir = (a, b, k, out) => {
+    const cos = clamp(a[0] * b[0] + a[1] * b[1] + a[2] * b[2], -1, 1)
+    if (cos > 0.9995 || cos < -0.9995) {
+      for (let axis = 0; axis < 3; axis += 1) out[axis] = a[axis] + (b[axis] - a[axis]) * k
+    } else {
+      const theta = Math.acos(cos)
+      const sin = Math.sin(theta)
+      const wa = Math.sin((1 - k) * theta) / sin
+      const wb = Math.sin(k * theta) / sin
+      for (let axis = 0; axis < 3; axis += 1) out[axis] = a[axis] * wa + b[axis] * wb
+    }
+    const length = Math.hypot(out[0], out[1], out[2]) || 1
+    out[0] /= length
+    out[1] /= length
+    out[2] /= length
+    return out
+  }
+  if (standShare > 0) {
+    // The trunk the stand began from, and this frame's trunk, mixed by the share: the ride is
+    // the rotation between the two, taken about the chest's own lateral (see `trunkLean`).
+    const fromTrunk = trunkLean(s * at.chestYaw, FINISH_FOLD, s * at.leanSide + tilt)
+    const fromTurn = upperTurn(s * at.chestYaw, -fromTrunk.leanX, -fromTrunk.leanZ)
+    // ...and the *whole* of the ride is the crossing's turn onto this frame's own, which is
+    // what the arm is turned by while it is held on the trunk (the share below mixes the two
+    // places the hand-over is between, so what the ride itself is stays one rotation).
+    const rideOf = (v, out) => {
+      unturnVector(fromTurn, v, out)
+      turnVector(turn, out, out)
+      return out
+    }
+    // ...and the hand-over itself is a blend between two *places*, not a turn about the
+    // chest. A rotation about the chest's lateral is the right way to carry an arm the keys
+    // have stopped writing (see above: their places are rig places, and the body stands up
+    // under them), but it is the wrong way to hand the arm *back*: a place turned about the
+    // chest from where the stand left it to where the recovery's key puts it travels the
+    // rotation's own arc, and that arc is longer than the change it is making. Blended along
+    // the arc the two directions actually subtend, the arm reads one settle from the pause to
+    // the thigh: the direction is slerped, the reach is lerped, and both ends are exact (the
+    // blend is the identity at the hold and at the keys' standing body, so neither end moves
+    // by so much as a millimetre). Measured on the realised skeleton, the upper arm goes from
+    // 39.5° under the socket at the pause to 79.1° at the rest, through 44.1° at 2.35 s — one
+    // descent, two degrees of wobble at worst where the stand's last turn meets the
+    // recovery's own fall, and the last tenth of a second moves the elbow a tenth of a
+    // millimetre.
+    //
+    const handOver = (dir) => {
+      rideOf(dir, _rideAt)
+      slerpDir(dir, _rideAt, standShare, dir)
+      return dir
+    }
+    const standPlace = (socket, place) => {
+      // The keys' own place, and the place the ride would have it at, as offsets from the
+      // socket the arm hangs on.
+      for (let axis = 0; axis < 3; axis += 1) _rideAt[axis] = place[axis] - socket[axis]
+      const keyed = Math.hypot(_rideAt[0], _rideAt[1], _rideAt[2]) || 1
+      rideOf(_rideAt, _rideRidden)
+      const ridden = Math.hypot(_rideRidden[0], _rideRidden[1], _rideRidden[2]) || 1
+      for (let axis = 0; axis < 3; axis += 1) {
+        _rideKeyed[axis] = _rideAt[axis] / keyed
+        _rideRidden[axis] /= ridden
+      }
+      slerpDir(_rideKeyed, _rideRidden, standShare, _rideDir)
+      const reach = keyed + (ridden - keyed) * standShare
+      for (let axis = 0; axis < 3; axis += 1) place[axis] = socket[axis] + _rideDir[axis] * reach
+      return place
+    }
+    standPlace(throwingSocket, ball)
+    standPlace(throwingSocket, _elbow)
+    // ...and the *lines* keep the chest's own turn — a scaled one, mixed by the same share —
+    // rather than the blend: a line is not a place, and the hand's carry is read along it, so
+    // what a line does is turn with the body that holds it. Turned by the chest it reads as
+    // the hand's own roll on a settling arm; taken along the places' own short arc it would
+    // carry the wrist with it by the carry's own length.
+    const leanX = fromTrunk.leanX + (trunk.leanX - fromTrunk.leanX) * standShare
+    const leanZ = fromTrunk.leanZ + (trunk.leanZ - fromTrunk.leanZ) * standShare
+    const mixedTurn = upperTurn(s * at.chestYaw, -leanX, -leanZ)
+    const rideLine = (dir) => {
+      unturnVector(fromTurn, dir, _rideAt)
+      turnVector(mixedTurn, _rideAt, dir)
+      return dir
+    }
+    rideLine(aim)
+    rideLine(palmAskDir)
+  }
 
   const pose = {
     hip: {
@@ -4373,6 +7718,11 @@ export function pitcherPose(t, ctx) {
       // lift below sets that socket back where the stance put it (see `rollLift`) —
       // the feet stand where they stood and the drive leg keeps its chord.
       tilt,
+      // ...and the roll the pelvis' own height was paid for, reported beside it: the two
+      // part company over the kick (see TILT_LIFT_TRACK), and a suite reading what the
+      // levers cost the body's height has to read the number the height was solved at
+      // rather than the number the body is rolling by.
+      tiltLift: liftTilt,
       rock: 0,
       // ...and the *body's* own carry of the same line, in the rig's own x: the metres the
       // trunk's roll could not reach, paid for by the step (see STANCE_SIDE_MAX and
@@ -4382,7 +7732,7 @@ export function pitcherPose(t, ctx) {
       // trade the two levers are: the drive leg slants under a pelvis that has come off
       // it, and the sink below leaves it a straight rod while it does (see `stanceDip`).
       offsetX: stanceAcross,
-      offsetY: at.hipY - sink,
+      offsetY: at.hipY - sink - foldSink,
       offsetZ: -at.drive * stride,
     },
     torsoYawExtra: s * (at.chestYaw - at.hipYaw),
@@ -4439,11 +7789,7 @@ export function pitcherPose(t, ctx) {
         // own silhouette showing past the mitt from behind the mound. The glove's own
         // hand has no such choice — it is authored this way already (below), so the
         // two are one place by construction rather than by two estimates agreeing.
-        local: [
-          s * (at.glove[0] - 2 * rig.shoulder.halfWidth),
-          at.glove[1],
-          at.glove[2],
-        ],
+        local: throwLocal,
         aimLocal: gloveAim,
         // Which of the two forms this frame is written in: nought — the glove's own
         // frame — while the hands are together, easing out to one (the rig-frame
@@ -4452,8 +7798,11 @@ export function pitcherPose(t, ctx) {
         mix: 1 - clasped,
         // Authored as a place, like the ball (and mirrored with it, above): the
         // keys' own numbers sit next to the ball's, and the release window's ride
-        // the release point with it.
-        elbow: [_elbow[0], _elbow[1], _elbow[2]],
+        // the release point with it. Handed over along that place's own direction at
+        // ``POLE_REACH`` — a pole is a direction, and this arm's socket estimate stands
+        // far enough from the driver's to spoil one written at the arm's own radius
+        // (see the constant's own note).
+        elbow: poleOut(throwingSocket, _elbow),
         // The arm's own *straightness*, handed to the driver beside its place: this is
         // the arm the pitch leaves on, and the pose asks for the release's own chord
         // (see RELEASE_ELBOW, and `straightChord`) rather than for the model's bow.
@@ -4466,6 +7815,31 @@ export function pitcherPose(t, ctx) {
         // window asks for. (Measured before either was handed over: 4° of clavicle and
         // 1.9 cm of socket at the release, and 18° of elbow on it.)
         straight: armStraight,
+        // The pose's own read of the socket the arm hangs from, handed over beside
+        // the arm it belongs to (see the estimate's own note above): the suite reads
+        // how far it stands from the joint the driver actually solved on.
+        socket: [throwingSocket[0], throwingSocket[1], throwingSocket[2]],
+        // ...and the frame's own share of the *sweep* (see SWEEP_IN_TIME): the frames
+        // the place above is the throw's own *line* rather than a place, which the
+        // driver answers by putting the wrist out on it at the chord the frame's bend
+        // allows — the line is the pose's, and the length is the arm's own. Written
+        // as a place alone the driver folds the elbow to hold the estimate's error:
+        // measured on the realised skeleton, 118° of elbow at 1.37 s on a frame whose
+        // own ``straight`` asks for 168° (see the driver's own note).
+        // ...and it is handed *down* on the frames the body gives beside it: the sweep
+        // puts the wrist out on the pose's line at the frame's chord, which is right
+        // where the line is an estimate's and wrong on the one frame the ball's place
+        // is the pitch's — a wrist carried out to the chord carries the ball out with
+        // it, and at this end of the arm's range a millimetre of chord is worth two
+        // degrees of elbow (see RELEASE_ELBOW). So the two hand-overs are one: what the
+        // body gives the arm (``graze``) is what the line gives the ball, and the
+        // release's own frame is read as the place it is authored as.
+        sweep: Math.min(1, sweep * (1 - graze / RELEASE_GRAZE)),
+        // ...and how far the body gives the arm on this frame, in a rig unit, which the
+        // driver spends on the two rules that would otherwise move the release point:
+        // the fold that keeps the arm out of the trunk, and the push that keeps a hand
+        // out of it (see RELEASE_GRAZE).
+        graze,
         // ...and the *ball*'s own carry down the hand's line, which the hand above
         // has given the straighter reach back out of (see ``handCarry``): the driver
         // carries the ball it is holding down the hand's own line, and the number is
@@ -4473,7 +7847,7 @@ export function pitcherPose(t, ctx) {
         // not the model's own palm's, and a driver left to the model's would carry the
         // ball a few millimetres past a release point the pose has pinned exactly.
         carry: handCarry,
-        shoulderBend: 0.97 + slot * (snap - 0.97),
+        shoulderBend: girdle,
         curl: at.curl,
         // ...and the same *palm*: the hand the ball is in is on the same side of it
         // as the glove's own palm is, which is the whole of the roll the model's own
@@ -4486,21 +7860,25 @@ export function pitcherPose(t, ctx) {
         // share of the turn asked for is the greater of the clasp's own and the release
         // window's — the hand is turned to one facing *or* the other, never half of
         // neither — and the direction the ask is written on eases between them across
-        // the window's own ramp.
-        palm: handPalm,
-        palmMix: clasped > slot ? clasped : slot,
+        // the window's own ramp. Across the cock it is not written in the rig's frame at
+        // all: what the hold keeps is the *wrist's own angle*, so the ask travels with the
+        // arm instead (see `heldPalm`, and the hold's own track above).
+        palm: palmAskDir,
+        palmMix: Math.max(clasped, slot, palmAsk),
       },
       {
         side: -s,
         // The glove is held in front of the chest, so it is authored from its own
         // shoulder in the chest's frame: the chest can turn under it.
-        local: [s * at.glove[0], at.glove[1], at.glove[2]],
+        local: gloveLocal,
         aimLocal: gloveAim,
         // Which way the glove's palm faces, in the rig's own frame: the twist of
         // the hand is the *delivery's* number rather than the chest's, so it is
         // written where the pitch goes (see the keys' own ``glovePalm``).
         palm: glovePalm,
-        elbow: gloveElbow,
+        // ...read from the glove's own socket, for the same reason and the same way (see
+        // ``POLE_REACH``: a pole is only ever a direction off the socket it hangs from).
+        elbow: poleOut(gloveShoulder, gloveElbow),
         curl: at.gloveCurl,
       },
     ],

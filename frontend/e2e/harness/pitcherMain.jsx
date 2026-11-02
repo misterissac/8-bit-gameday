@@ -1,6 +1,6 @@
 // oxlint-disable react/only-export-components -- Vite entry point: it mounts the
 // harness and intentionally exports nothing.
-import React, { Suspense, useEffect, useMemo, useRef } from 'react'
+import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
@@ -83,7 +83,10 @@ export const PITCH = {
   pitch_type_description: 'Four-Seam Fastball',
   speed_mph: 94,
   pitcher_height: PITCHER_HEIGHT_IN,
-  is_top_inning: false,
+  // The top half, so the club on the mound is the home side and the baseline suite
+  // pins the home kit every committed render was taken in (see util/playerKit.js's
+  // `defenseKitForInning`: the visitors bat in the top, so the home side fields).
+  is_top_inning: true,
   trajectory: [
     { ...RELEASE_POINT, x: RELEASE_X },
     { t: CROSSING.t - 0.05, x: 0.0, y: PLATE_FRONT_Y + 1.1, z: 0.9 },
@@ -109,6 +112,15 @@ const VIEWS = {
   low: [-0.3, 0.5, 1],
   top: [0.1, 2.2, 0.5],
 }
+// ...and the controls (the scrubber) are only mounted when the page is asked for them, so the
+// frame a suite screenshots is the bare stage it has always been.
+const CONTROLS = query.has('controls')
+// The stretch of the delivery the scrubber walks: the plant through the wash, which is
+// where the arm's own turn lives.
+const SCRUB_FROM = 0.9
+const SCRUB_TO = 1.45
+const SCRUB_STEP = 0.002
+
 const viewName = query.get('view') || 'three-quarter'
 const CAMERA_DIRECTION = new THREE.Vector3(...(VIEWS[viewName] ?? VIEWS['three-quarter'])).normalize()
 const CAMERA_ZOOM = Number(query.get('zoom') || 1) || 1
@@ -333,6 +345,8 @@ function probe() {
       short: arm.short,
       // The elbow's own bend, in degrees, off the posed bones.
       elbowDegrees: arm.bend * 180 / Math.PI,
+      straight: arm.straight == null ? null : (arm.straight * 180) / Math.PI,
+      sweep: arm.sweep ?? null,
       // The arm's own joints, in the rig frame: the socket the solve hung it
       // from, the elbow it chose on the pose's pole, and where the wrist and the
       // hand's own line of fingers ended up.
@@ -340,6 +354,11 @@ function probe() {
       elbow: arm.elbow,
       elbowMiss: arm.elbowMiss,
       target: arm.target,
+      asked: arm.asked,
+      // The pole the IK was handed and whether the ring's own clearance rule overrode
+      // it (see the driver's arm solve).
+      pole: arm.pole ?? null,
+      cleared: !!arm.cleared,
       wrist: arm.wrist,
       aim: arm.aim,
       // Where the palm is turned: the model's own palm marker's facing, in the rig
@@ -365,6 +384,11 @@ function probe() {
       fold: entry.fold,
       short: entry.short,
       elbowDegrees: entry.bend * 180 / Math.PI,
+      // The pole the solve was handed and whether the ring's own clearance rule
+      // overrode it (see the driver's arm solve): the elbow's own side of the chord
+      // is these two and nothing else.
+      pole: copyPlain(entry.pole),
+      cleared: !!entry.cleared,
       // The socket the arm hung from, in the rig frame: the two of them are the
       // shoulder line, which is the thing the body's own opening is read from. The
       // elbow and the wrist come with it, because the lead arm's own *shape* — which
@@ -642,24 +666,83 @@ function Stage() {
   )
 }
 
+
+/**
+ * The clip's own scrubber.
+ *
+ * It moves the pin the page already drives (``pinned.at``, see `TimePin`) rather than
+ * re-mounting anything, so the pose changes under it every frame with no re-render of the
+ * scene: ``vr.setClip`` does the same thing and then waits two frames to answer with the
+ * probe, which a slider has no use for. The number beside it is the clip's own clock.
+ */
+function ClipScrubber() {
+  const [clip, setClip] = useState(CLIP_TIME)
+  const move = (value) => {
+    setClip(value)
+    pinned.at = cycleTimeForClip(value)
+    vr.clip = value
+  }
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <input
+        type="range"
+        aria-label="clip time"
+        min={SCRUB_FROM}
+        max={SCRUB_TO}
+        step={SCRUB_STEP}
+        value={clip}
+        onChange={(event) => move(Number(event.target.value))}
+        style={{ width: 240 }}
+      />
+      <span style={{ fontVariantNumeric: 'tabular-nums', minWidth: 48 }}>{clip.toFixed(3)} s</span>
+    </div>
+  )
+}
+
+/** The harness's own controls, floating over the stage. */
+function Controls() {
+  return (
+    <div style={{
+      position: 'fixed',
+      left: 12,
+      top: 12,
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'flex-start',
+      gap: 8,
+      zIndex: 10,
+      font: '12px/1.4 system-ui, sans-serif',
+      padding: '8px 10px',
+      borderRadius: 6,
+      background: 'rgba(255,255,255,0.55)',
+    }}
+    >
+      <ClipScrubber />
+    </div>
+  )
+}
+
 createRoot(document.getElementById('root')).render(
-  <Canvas
-    dpr={1}
-    camera={{ fov: CAMERA_FOV, near: 0.05, far: 200 }}
-    gl={{ antialias: true }}
-    onCreated={({ scene }) => { vr.scene = scene }}
-  >
-    <color attach="background" args={['#8fc4ec']} />
-    {/* Lighting copied from Scene.jsx (ambient 0.5 + a key light at [10, 10, 5]). */}
-    <ambientLight intensity={0.5} />
-    <directionalLight position={[10, 10, 5]} intensity={1} />
-    {/* Mounted first, so the pin lands in the same frame as the pose that reads
-        it: three's clock has already accumulated the frame's delta by the time
-        the subscribers run. */}
-    <TimePin />
-    <Mound />
-    <Suspense fallback={null}>
-      <Stage />
-    </Suspense>
-  </Canvas>,
+  <>
+    {CONTROLS ? <Controls /> : null}
+    <Canvas
+      dpr={1}
+      camera={{ fov: CAMERA_FOV, near: 0.05, far: 200 }}
+      gl={{ antialias: true }}
+      onCreated={({ scene }) => { vr.scene = scene }}
+    >
+      <color attach="background" args={['#8fc4ec']} />
+      {/* Lighting copied from Scene.jsx (ambient 0.5 + a key light at [10, 10, 5]). */}
+      <ambientLight intensity={0.5} />
+      <directionalLight position={[10, 10, 5]} intensity={1} />
+      {/* Mounted first, so the pin lands in the same frame as the pose that reads
+          it: three's clock has already accumulated the frame's delta by the time
+          the subscribers run. */}
+      <TimePin />
+      <Mound />
+      <Suspense fallback={null}>
+        <Stage />
+      </Suspense>
+    </Canvas>
+  </>,
 )

@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js'
-import { createPlayerRig, measurePlayerRig } from './playerRig'
-import { applyBatterLook } from './batterLook'
+import { createPlayerRig, measurePlayerRig } from './playerRig.js'
+import { applyBatterLook } from './batterLook.js'
 
 // The body both actors wear, and the driver that poses it — the plumbing the batter
 // and the pitcher each used to write for themselves (Batter.jsx and Pitcher.jsx had

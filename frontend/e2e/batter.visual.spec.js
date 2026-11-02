@@ -3069,7 +3069,15 @@ test.describe("the batter's kit", () => {
   // ...and that it reads along its whole length: down to the belt, nearly every vertex of
   // it with cloth behind it, and never stepping back into the body where the cloth's own
   // front has stopped.
-  const LINE_READ_BOTTOM_MAX_Y = 1.07
+  // ...how far *past the opening's own bottom* the reading is allowed to start, rather than a
+  // height: the bottom of the opening is the belt's own fold now (see the anchoring below),
+  // and the fold is exactly where the cloth it is drawn on stops being the chest's own
+  // shells — the opening's lowest stations are laid on the hem's tuck, which the probe's own
+  // "cloth the opening is drawn on" (the chest's shells: see `chestVertices`) does not
+  // include, by design, because reading against the whole body would find the neck. So the
+  // reading starts a station or two above the fold, and this is the same slack the 1.07
+  // bound gave the 1.055 it used to be drawn at (15 mm against 0.02 here).
+  const LINE_READ_BOTTOM_SLACK = 0.02
   const LINE_READ_MIN = 160 // of the opening's and the buttons' own 242 vertices
   const LINE_STATIONS_MIN = 20 // the line's own stations, from the belt to the collar
   const LINE_STEP_BACK_MAX = 0.02
@@ -3332,6 +3340,31 @@ test.describe("the batter's kit", () => {
     expect(Math.abs((line.box.x[0] + line.box.x[1]) / 2), 'down the middle of the chest')
       .toBeLessThanOrEqual(0.01)
     expect(line.box.y[0], 'from the belt').toBeLessThanOrEqual(LINE_BOTTOM_MAX_Y)
+    // ...and *at the belt's own fold*, not at a height: the bottom of the opening is the
+    // same rule the driver takes its cut from (`waistCut`), read off the model's own belt
+    // in the frame this pass draws in. So the line's lowest station is the cut itself — the
+    // jersey's opening and the seam the twist is taken at are one line, which is what stops
+    // a turn of the two blocks opening the placket across the belt — and the read is what
+    // puts it there, on a body whose belt cannot be read off the texture as much as on this
+    // one, where `measureWaistband` answers with the model's own proportions and the driver
+    // takes its cut from that same band. Pinned against the pass's own report rather than
+    // against a number, so a belt read that drifted, or a constant creeping back in, fails
+    // here.
+    const belt = kit.look?.jersey?.belt
+    expect(belt, 'the pass should report the belt the opening hangs off').not.toBeNull()
+    expect(belt.source, 'and it should be the model’s own belt, read off its texture')
+      .toBe('texture')
+    expect(kit.look.jersey.fromY, 'the opening should begin at the belt’s own fold')
+      .toBeCloseTo(waistCut(belt), 6)
+    expect(line.box.y[0], 'and the line should be drawn there').toBeCloseTo(waistCut(belt), 3)
+    expect(
+      waistCut(belt) - belt.top,
+      'the opening should start inside the fold above the belt, not on its edge',
+    ).toBeGreaterThan(0)
+    expect(
+      waistCut(belt) - belt.top,
+      'nor a whole belt above it',
+    ).toBeLessThan(belt.top - belt.bottom)
     expect(line.box.y[1], 'to the collar').toBeGreaterThanOrEqual(LINE_TOP_MIN_Y)
     // ...and *to the jersey's* collar, not past it. The neck's own front stands proud of
     // the collar (z 0.1003 against 0.0143 at y 1.5586) and the jaw is above that, so an
@@ -3380,7 +3413,7 @@ test.describe("the batter's kit", () => {
     expect(
       jersey.surfaceOff.fromY,
       'the opening has to read all the way down to the belt',
-    ).toBeLessThanOrEqual(LINE_READ_BOTTOM_MAX_Y)
+    ).toBeLessThanOrEqual(waistCut(belt) + LINE_READ_BOTTOM_SLACK)
     expect(
       jersey.surfaceOff.count,
       'with nearly every vertex of it in front of the cloth',

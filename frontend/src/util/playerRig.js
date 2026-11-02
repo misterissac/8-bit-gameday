@@ -159,6 +159,19 @@ export const WRIST_TWIST_MAX = THREE.MathUtils.degToRad(10)
 // answers to the handle instead and has its own rules (see WRIST_BEND_MAX above).
 export const ELBOW_BEND_MAX = THREE.MathUtils.degToRad(165)
 const ELBOW_CLEAR_STEPS = 32
+// How far round its ring the clearance rule may walk the elbow from where the pose
+// asked for it. The ring is the whole of where the joint *can* be, but the whole of
+// it is not the whole of where it may *go*: a pose that asked for one side of a body
+// has not asked for the other, and the far arc of a broken ring is a quarter turn of
+// the arm away — the hop a hanging elbow made between two frames before the window
+// existed (see `holdArmClear`).
+const ELBOW_CLEAR_WINDOW = THREE.MathUtils.degToRad(75)
+// How deep an arm may sit before the ring is walked at all. A joint a few
+// millimetres into a jersey is not a joint inside a body — it is the arm *touching*
+// it, which is what an arm hanging beside a hip does — and walking the ring over it
+// is what moves an elbow the whole width of the ring for a millimetre of depth (see
+// the walk's own note).
+const ELBOW_CLEAR_SOFT = 0.015
 // How much of the trunk's own girth an elbow may share with it before the ring is
 // asked for a better point: contact is what an arm against a body *is*, so the
 // guard is only about the solve putting a joint inside the flesh.
@@ -374,9 +387,10 @@ const WAISTBAND_CHROMA_GAP = 0.05
 // The belt band is *below* the cut whole (1.14079 to 1.17579 against a cut at
 // 1.19329), which is the first of the two things this buys: the turn cannot split the
 // belt, because the belt is one side of it. The second is where the jersey's own
-// opening is broken: the look pass draws that line down the chest past the belt
-// (batterLook.js's ``LINE_FROM_Y``), and the stretch the two blocks separate is the
-// lowest of it — the part inside the tuck and under the hem, where the cloth has
+// opening is broken: the look pass draws that line down the chest to the belt — its
+// lowest station is this very cut, read off the model's own belt the same way
+// (batterLook.js's ``addJerseyFront``) — and the stretch the two blocks separate
+// is the lowest of it: the part inside the tuck and under the hem, where the cloth has
 // turned under and there is a layer of cloth over a layer of cloth rather than a seam
 // across the front.
 const WAIST_CUT_FOLD = 0.5
@@ -494,8 +508,10 @@ const RIGHT_AXIS = new THREE.Vector3(1, 0, 0)
 
 // Where the model's own bat-holding rig says the handle sits in each palm: the
 // node names, and the scratch used to solve the fist onto it (see handFrames and
-// fistRotation).
-const PALM_HANDLES = { L: 'palm_handleL', R: 'palm_handleR' }
+// fistRotation). Exported because it is also where a *ball* is socketed into a
+// hand — the reference attaches the thrown ball to this same palm handle (see
+// Pitcher.jsx, which rides it through the catch and the throw of a play).
+export const PALM_HANDLES = { L: 'palm_handleL', R: 'palm_handleR' }
 // The model's own two-hand grip, stated as one IK target per hand. How far apart
 // the rig stacks them along the handle is the separation the two fists should be
 // gripped at — read rather than tuned, because it is the spacing this model's
@@ -580,6 +596,8 @@ const _openElbow = new THREE.Vector3()
 const _trunkFrom = new THREE.Vector3()
 const _trunkTo = new THREE.Vector3()
 const _trunkCentre = new THREE.Vector3()
+const _trunkTurn = new THREE.Quaternion()
+const _trunkSide = new THREE.Vector3()
 const _armMid = new THREE.Vector3()
 const _armFore = new THREE.Vector3()
 const _armAsked = new THREE.Vector3()
@@ -588,6 +606,7 @@ const _ringU = new THREE.Vector3()
 const _ringV = new THREE.Vector3()
 const _ringEdge = new THREE.Vector3()
 const _ringPoint = new THREE.Vector3()
+const _ringAsk = new THREE.Vector3()
 const _foreMid = new THREE.Vector3()
 const _openShoulder = new THREE.Vector3()
 const _openLocal = new THREE.Vector3()
@@ -2914,6 +2933,14 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
     const dx = point.x - _trunkCentre.x
     const dz = point.z - _trunkCentre.z
     const out = Math.hypot(dx, dz)
+    // ...and the reaches are the *body's* two, so the offset is read in the body's
+    // own turn: the profile is measured off the model at its rest pose, where its
+    // wide axis is the world's x and its deep axis the world's z, and a trunk turned
+    // ninety degrees — which is what a pitcher's is at the set — swaps them. Read in
+    // the world's axes instead, a chest turned side-on is ruled a body three tenths
+    // of a unit wide across the *pitch*, and an arm hanging beside it is "inside" a
+    // body it is nowhere near (the drop was folded by a guard that thought the
+    // chest's depth was its width, three frames running).
     const height = profile.from + (profile.to - profile.from) * along
     const index = THREE.MathUtils.clamp(
       Math.round((height - profile.from) / profile.step), 0, profile.radii.length - 1,
@@ -2922,12 +2949,21 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
     const deep = profile.depths[index] ?? wide
     if (!(wide > 1e-6) && !(deep > 1e-6)) return 0
     if (out < 1e-6) return Math.max(wide, deep)
+    // Which way `wide` runs this frame: the trunk's own sideways, level, taken off
+    // the chest bone the arm hangs from (see the note above).
+    _trunkTurn.copy(liveChain.of(bones[PLAYER_BONES.spine02]).quaternion)
+    _trunkSide.set(1, 0, 0).applyQuaternion(_trunkTurn)
+    _trunkSide.y = 0
+    if (_trunkSide.lengthSq() < 1e-8) _trunkSide.set(1, 0, 0)
+    _trunkSide.normalize()
+    const side = dx * _trunkSide.x + dz * _trunkSide.z
+    const fore = dx * _trunkSide.z - dz * _trunkSide.x
     // The ellipse's own reach along this point's line out from the axis: the
     // half-way between the two reaches where the line is diagonal between them.
-    const unitX = dx / out
-    const unitZ = dz / out
+    const unitSide = side / Math.max(1e-6, out)
+    const unitFore = fore / Math.max(1e-6, out)
     const reach = (wide * deep)
-      / Math.max(1e-6, Math.hypot(deep * unitX, wide * unitZ))
+      / Math.max(1e-6, Math.hypot(deep * unitSide, wide * unitFore))
     return reach - out
   }
 
@@ -2965,34 +3001,66 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
   // (an arm asked to cross a chest at full extension has almost no ring at all: the
   // circle has shrunk onto the line) the elbow takes the point whose arm is *least*
   // inside the body, and the fold the caller walks next is what has to give.
+  //
+  // The search is a *window* round the ask rather than the whole circle, and the ask
+  // is the pose's own pole pushed off the body first. Both halves are there to keep
+  // the answer continuous: a ring whose clear arc is broken in two (an arm hanging
+  // beside a trunk has the body between its two clear halves) hands the elbow across
+  // the body when the ask crosses the boundary, which reads as the joint hopping a
+  // quarter turn in one frame — measured on the drop, a 58° hop between two frames of
+  // a hanging arm, and the palm with it. Inside the window the nearest clear point
+  // still moves with the ask, and a frame whose ask is a hair inside the body starts
+  // from the same place as one a hair outside it, so the hop has nowhere to come from.
   // Answers whether it moved it.
   const holdArmClear = (elbow, shoulder, wrist, length1, length2) => {
-    if (armDepth(elbow, shoulder, wrist) <= ELBOW_CLEARANCE) return false
+    const depth = armDepth(elbow, shoulder, wrist)
     const circle = middleJointCircle(shoulder, wrist, length1, length2)
     _ringU.copy(UP).cross(circle.axis)
     if (_ringU.lengthSq() < 1e-8) _ringU.set(1, 0, 0)
     _ringU.normalize()
     _ringV.copy(circle.axis).cross(_ringU).normalize()
-    _ringEdge.copy(elbow).sub(circle.centre)
+    // The ask, *always* pushed off the body — a place clear of it is left where it is,
+    // and one a hair inside comes out by a hair — so the angle this frame settles on is
+    // a continuous function of the pole the pose wrote. Read as a branch ("move it only
+    // where it is inside") it is not: the frame after a clear one starts from the pole
+    // itself and the frame after an inside one starts from the pushed place, and the two
+    // asks can be a quarter turn apart for a millimetre of depth.
+    _ringAsk.copy(elbow)
+    const pushed = pushOutOfTrunk(_ringAsk, ELBOW_CLEARANCE)
+    if (depth <= ELBOW_CLEARANCE && pushed === 0) return false
+    _ringEdge.copy(_ringAsk).sub(circle.centre)
     const asked = Math.atan2(_ringEdge.dot(_ringV), _ringEdge.dot(_ringU))
+    // ...and the pushed ask is usually answer enough on its own: where its own ring
+    // point's arm is clear, that is the elbow, and the walk below never runs.
+    _ringPoint.copy(circle.centre)
+      .addScaledVector(_ringU, Math.cos(asked) * circle.radius)
+      .addScaledVector(_ringV, Math.sin(asked) * circle.radius)
+    if (armDepth(_ringPoint, shoulder, wrist) <= ELBOW_CLEAR_SOFT) {
+      elbow.copy(_ringPoint)
+      return true
+    }
     let best = null
     let bestTurn = Infinity
     let shallowest = Infinity
     let leastInside = asked
-    for (let step = 0; step < ELBOW_CLEAR_STEPS; step += 1) {
-      const angle = (step / ELBOW_CLEAR_STEPS) * Math.PI * 2
+    for (let step = -ELBOW_CLEAR_STEPS; step <= ELBOW_CLEAR_STEPS; step += 1) {
+      const turn = (step / ELBOW_CLEAR_STEPS) * ELBOW_CLEAR_WINDOW
+      const angle = asked + turn
       _ringPoint.copy(circle.centre)
         .addScaledVector(_ringU, Math.cos(angle) * circle.radius)
         .addScaledVector(_ringV, Math.sin(angle) * circle.radius)
       const depth = armDepth(_ringPoint, shoulder, wrist)
-      // How far round the ring this point is from the one the pole asked for.
-      const turn = Math.abs(halfTurn(angle - asked))
-      if (depth <= ELBOW_CLEARANCE && turn < bestTurn) {
-        bestTurn = turn
+      if (depth <= ELBOW_CLEARANCE && Math.abs(turn) < bestTurn) {
+        bestTurn = Math.abs(turn)
         best = angle
       }
-      if (depth < shallowest) {
+      // ...and where nothing is clear, the shallowest point *of the window* rather than
+      // the point that happens to sit at its edge: a ring with no clear arc at all still
+      // has a nearest and furthest side, and the walk should end on the near one.
+      if (depth < shallowest - 0.002) {
         shallowest = depth
+        leastInside = angle
+      } else if (depth <= shallowest + 0.002 && Math.abs(turn) < Math.abs(leastInside - asked)) {
         leastInside = angle
       }
     }
@@ -3052,7 +3120,12 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
     // against the place the pose wrote rather than against the one the solve
     // settled on.
     _armAsked.copy(_openTarget)
-    pushOutOfTrunk(_openTarget, ELBOW_CLEARANCE)
+    // ...and what the body gives the arm on this frame, where the pose has a reason for
+    // it: the release's own frames are the pitch's, not the body's (see RELEASE_GRAZE in
+    // util/pitcherSequence.js), so a hand asked a centimetre into a jersey there is a
+    // hand kept where the pitch is thrown from. Nought on every other frame.
+    const graze = Math.max(0, arm.graze ?? 0)
+    pushOutOfTrunk(_openTarget, ELBOW_CLEARANCE + graze)
 
     // ...and the girdle's own budget is the *pose's* to name, where it wants one: an
     // arm asked for the end of its reach gets the clavicle swung under it until the
@@ -3082,6 +3155,30 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
       upper * upper + fore * fore
         - 2 * upper * fore * Math.cos(arm.straight ?? ELBOW_BEND_MAX),
     )
+    // ...and the same bend read the other way round, where the frame says the arm's
+    // place is a *line* rather than a place: through the throw's own sweep the pose
+    // writes the arm's line from the socket it *estimates* (a rest shoulder over the
+    // pelvis its tracks carry), and the body's own socket stands five to a dozen
+    // centimetres from that estimate on the frames right after a throw — which a
+    // folded arm forgives and a straight one cannot. So an ask that is *inside* the
+    // chord this frame's own bend allows, on a frame that names the sweep, is the
+    // estimate's error rather than the arm's shape, and the wrist is carried out
+    // along the ask's own line to that chord: the line is the pose's and the length
+    // is the arm's, which is what a straight arm is (see `sweep` in
+    // util/pitcherSequence.js, and the release window's own note on it). Measured on
+    // the realised skeleton with the place alone: a frame meaning a 168° arm came
+    // back folding to 118° at 1.37 s, the wrist 14% of the span inside the chord it
+    // had asked for. Never *in*: a line reaching past the chord is left to the rules
+    // below, which are the arm's own answer to its body.
+    const sweep = THREE.MathUtils.clamp(arm.sweep ?? 0, 0, 1)
+    if (sweep > 0) {
+      const asked = shoulder.distanceTo(_openTarget)
+      if (asked > 1e-6 && asked < bendChord) {
+        _openTarget.sub(shoulder)
+          .multiplyScalar(1 + (bendChord / asked - 1) * sweep)
+          .add(shoulder)
+      }
+    }
     // The arm may not fold *through* the body either: an arm bends *around* a
     // trunk. Three rules answer for that, and they are walked in this order:
     //
@@ -3103,6 +3200,7 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
     // carry is one elbow and not a search.
     const elbow = new THREE.Vector3()
     let fold = 0
+    let cleared = false
     for (let step = 0; step <= ARM_FOLD_STEPS; step += 1) {
       fold = step / ARM_FOLD_STEPS
       _foldTarget.copy(_openTarget)
@@ -3113,8 +3211,12 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
         _foldTarget.sub(shoulder).setLength(bendChord).add(shoulder)
       }
       elbow.copy(twoBoneIK(shoulder, _foldTarget, upper, fore, _openElbow))
-      holdArmClear(elbow, shoulder, _foldTarget, upper, fore)
-      if (armDepth(elbow, shoulder, _foldTarget) <= ELBOW_CLEARANCE) break
+      // Whether the ring's own answer was used at all, rather than the pole's — the
+      // one thing about the elbow the pose's own track cannot say, and the number a
+      // frame that reads the arm's shape from its own keys wants to know (see the
+      // follow-through's pole note in util/pitcherSequence.js).
+      cleared = holdArmClear(elbow, shoulder, _foldTarget, upper, fore)
+      if (armDepth(elbow, shoulder, _foldTarget) <= ELBOW_CLEARANCE + graze) break
     }
     _openTarget.copy(_foldTarget)
     aim(names.upperArm, elbow)
@@ -3202,6 +3304,12 @@ export function createPlayerRig(modelRoot, metrics, restPose, placement = [0, 0,
       // pose's, and so is the miss that is left over.
       target: toRigVector(_openTarget).toArray(),
       asked: toRigVector(_armAsked).toArray(),
+      // The pole the IK was handed, in the same frame as the socket and the target:
+      // the *side* of the chord the elbow is hung on comes from this direction and
+      // from nothing else, so a frame whose elbow swings round its own chord is read
+      // from here (see the fold's own notes in util/pitcherSequence.js).
+      pole: toRigVector(_openElbow).toArray(),
+      cleared,
       fold,
       // The socket the arm hangs from, as posed (the clavicle's own swing moves
       // it), so a pole's own direction can be read the way the IK read it.

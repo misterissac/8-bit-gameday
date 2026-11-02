@@ -1,8 +1,9 @@
-import React, { useLayoutEffect, useMemo, useRef } from 'react'
-import { useFrame, useThree } from '@react-three/fiber'
+import React, { useCallback, useLayoutEffect, useMemo, useRef } from 'react'
+import { useFrame, useLoader, useThree } from '@react-three/fiber'
 import { useGLTF } from '@react-three/drei'
 import * as THREE from 'three'
-import { getCycleDuration, getTimeScale, getBattedBallPosition, getBallReleaseTime, stepSimulation } from '../constants/playback'
+import { TextureLoader } from 'three'
+import { getCycleDuration, getTimeScale, getBattedBallPosition, getBallReleaseTime, getBatterRun, getPlayClock, stepSimulation } from '../constants/playback'
 import { FIELD } from '../constants/field'
 import { PLATE_FRONT_Y, clamp, plateCrossing } from '../util/MathUtil'
 import { BATTER_LEAN_ORDER, batterLean } from '../util/batterLean'
@@ -14,7 +15,12 @@ import {
   HIP_Y,
 } from '../util/batterSwing'
 import { HIDDEN_MESHES } from '../util/playerRig'
+import { LOOK_DETAIL_MESHES } from '../util/batterLook'
+import { AWAY_HELMET_COLOUR, AWAY_PLAYER_TEXTURE_URL, HOME_PLAYER_TEXTURE_URL, blueKit, defenseKitForInning, dressBody, uniformFor } from '../util/playerKit'
 import { buildPlayerBody, useBodyRig } from '../util/playerBody'
+import { batterRunFrame } from '../util/batterRunner'
+import { bindClips, blendSnapshot, poseSnapshot, setActorState } from '../util/playerClips'
+import { droppedBatPose, measureBat } from '../util/droppedBat'
 import { useTuning } from '../constants/tuning'
 
 // The batter's body is the skinned player model from the solomon-gumball
@@ -1091,6 +1097,14 @@ const _rideTip = new THREE.Vector3()
 const _rideAxis = new THREE.Vector3()
 const _rideQuat = new THREE.Quaternion()
 
+// Scratch for the dropped bat, read out of the swing's own groups on the handoff
+// frame (see dropBat).
+const _dropMatrix = new THREE.Matrix4()
+const _dropPosition = new THREE.Vector3()
+const _dropQuaternion = new THREE.Quaternion()
+const _dropScale = new THREE.Vector3()
+const _dropFallback = new THREE.Vector3()
+
 export const Batter = ({ pitchData, replayKey = 0 }) => {
   const settings = useTuning().batter
   const upperRef = useRef()
@@ -1102,6 +1116,10 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
   const handLRef = useRef()
   const handRRef = useRef()
   const groupRef = useRef()
+  // The batter-runner's own state: whether this body has left the box yet, the
+  // play time it left at, the stance it left in (the snapshot the run clip is
+  // eased out of — see util/batterRunner.js), and the last direction it faced.
+  const runRef = useRef({ active: false, enteredAt: null, snapshot: null, yaw: null, away: 0 })
   const camera = useThree((s) => s.camera)
 
   const glbPlayer = useGLTF(PLAYER_URL)
@@ -1116,6 +1134,15 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
   // hard-coded, and only the way they are realised changes (bones and 2-bone IK
   // instead of rigidly placed part meshes). The pitcher's own frame is the model's
   // (metres); that, and not the plumbing, is what the two actors do not share.
+  // The club at the plate, in its own colours: the side in the field is
+  // `defenseKitForInning`'s answer, so the side *batting* wears the other kit — and
+  // that is the half-inning switch this body has to make with the fielders, the
+  // pitcher and the catcher (one club red, the other blue; see util/playerKit.js).
+  const homeTexture = useLoader(TextureLoader, HOME_PLAYER_TEXTURE_URL)
+  const awayTexture = blueKit(useLoader(TextureLoader, AWAY_PLAYER_TEXTURE_URL))
+  const battingKit = defenseKitForInning(pitchData) === 'home' ? 'away' : 'home'
+  const kitTexture = battingKit === 'away' ? awayTexture : homeTexture
+
   const body = useMemo(
     () =>
       buildPlayerBody(glbPlayer.scene, {
@@ -1133,6 +1160,24 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       }),
     [glbPlayer, pitchData?.bat_side],
   )
+  // Dressed in the batting side's kit, in a memo rather than an effect so not one
+  // frame of the asset's own uniform is drawn (the fielders and the catcher are
+  // dressed the same way — see util/playerKit.js's `dressBody`). The look pass's two
+  // hung-beside-the-body pieces keep the tones they were read out of him; everything
+  // else it added is welded into his own surface and takes the kit with it.
+  const worn = useMemo(
+    () => (body?.model
+      ? dressBody(body.model, uniformFor(kitTexture, { transparent: true }), {
+        keep: LOOK_DETAIL_MESHES,
+        // His helmet is the one piece of his kit the atlas cannot paint (the
+        // asset's own hat is a flat red), so the visitors' blue is handed over
+        // for the halves the visitors are at the plate.
+        helmetColour: battingKit === 'away' ? AWAY_HELMET_COLOUR : null,
+      })
+      : []),
+    [body, kitTexture, battingKit],
+  )
+
   const rig = body.metrics
   // How far apart the two fists grip the handle: the model's own spacing, one
   // number for the arms' targets, the bat's own hand markers and the JSX branch
@@ -1140,6 +1185,24 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
   const gripSplit = rig.grip?.separation ?? GRIP_SPLIT_FALLBACK
 
   const batModel = useMemo(() => glbBat.scene.clone(true), [glbBat])
+
+  // The bat left on the dirt: a second copy of the same asset, drawn *outside*
+  // every group the swing and the run move (so it stays where it was dropped
+  // while he runs), born hidden and measured while it is still unparented — a bat
+  // inside a turned group measures as the box around the turned bat, which is
+  // nothing like the bat (see util/droppedBat.js). It is placed once per play, on
+  // the handoff frame, and hidden again when the play resets.
+  const droppedBat = useMemo(() => {
+    const model = glbBat.scene.clone(true)
+    const measured = measureBat(model)
+    const group = new THREE.Group()
+    // Named so the body of a play can be read back off the scene graph by anyone
+    // looking at it — a test harness reading where the bat came to rest.
+    group.name = 'bat-dropped'
+    group.visible = false
+    group.add(model)
+    return { group, ...measured }
+  }, [glbBat])
 
   // Where the model sits inside the batter's own frame, in the tuning's units:
   // shifted so its hip joints land on the frame's centreline, the way the
@@ -1153,13 +1216,31 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
   // Until then the batter simply renders in the skeleton's rest pose.
   const { driverRef: rigDriverRef, setModelNode } = useBodyRig(body, { placement: bodyPlacement })
 
+  // The same body, a second way of moving it. Once the ball is in play and his
+  // swing has resolved this batter *is* the batter-runner (see
+  // util/batterRunner.js): he plays the asset's own `Running` clip on the very
+  // bones the swing was authored onto, through one mixer on the one model, with
+  // the same clip rules and the same cross-fade the cast plays its bodies with
+  // (util/playerClips.js). Nothing is playing while he is swinging — the mixer
+  // only ever runs for the run — so no pose the swing authors is touched by it.
+  const runKit = useMemo(() => {
+    if (!body?.model || !glbPlayer?.animations?.length) return null
+    const mixer = new THREE.AnimationMixer(body.model)
+    return { mixer, actions: bindClips(mixer, glbPlayer.animations), state: null }
+  }, [body, glbPlayer])
+
   // Collect every material the body and bat render with so a single per-frame
   // opacity update fades the whole batter together, the same pattern the catcher
   // uses. depthWrite is disabled only while fading so the strike-zone overlays
   // show through the batter; at full opacity the batter renders opaque with
-  // normal depth.
+  // normal depth. The copy of the bat he leaves on the dirt wears the same
+  // materials the in-hand one does (it is one asset, cloned), so it fades with
+  // him: one list covers the bat whether it is in his hands or on the ground.
   const allMaterials = useMemo(() => {
-    const mats = new Set()
+    // His kit first (the list the dress pass handed back), then whatever the two
+    // asset trees are wearing — the look pass's own pieces among them — so a kit
+    // change rebuilds the list and the fade reaches the new materials.
+    const mats = new Set(worn)
     for (const root of [body.model, batModel]) {
       root.traverse((child) => {
         if (!child.isMesh || !child.material) return
@@ -1168,7 +1249,7 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
       })
     }
     return Array.from(mats)
-  }, [body, batModel])
+  }, [body, batModel, worn])
 
   // Fade the batter when the camera is behind it (catcher side, +Z) and close
   // enough to block the strike zone; never fade when viewed from the front.
@@ -1257,6 +1338,89 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
   // with ``refStanceZ`` is the plate-tuned stance the angular pose is read at.
   const batX = batSide === 'L' ? stanceX : -stanceX
   const refBatX = batSide === 'L' ? refStanceX : -refStanceX
+
+  // Where the body stands, as the run's own departure point: the spot the swing
+  // leaves him on, which is where the batter-runner walks off from (see
+  // util/batterRunner.js — he leaves the box, not the plate).
+  const boxOrigin = useMemo(() => new THREE.Vector3(batX, 0, stanceZ), [batX, stanceZ])
+
+  // Put the body back in the box: the group where React renders it, the bat back
+  // in his hands, the clip stopped. The stance itself needs nothing — the bone
+  // driver authors it from the rest pose on the next frame — so this is the whole
+  // of it, and it is what the end of a play does as well as a new pitch (the
+  // reset is the same one, and the moment it happens is the cast's own: see the
+  // run branch of the frame loop below).
+  const leaveBox = useCallback(() => {
+    const runner = runRef.current
+    // Nothing to put back: this is called on every new pitch as well as at the
+    // end of a play, and a pitch he never ran has nothing to undo (and must not
+    // have its skeleton re-written under it).
+    if (!runner.active) return
+    runner.active = false
+    runner.enteredAt = null
+    runner.snapshot = null
+    runner.yaw = null
+    runner.away = 0
+    if (groupRef.current) {
+      groupRef.current.position.set(batX, 0, stanceZ)
+      groupRef.current.rotation.y = 0
+    }
+    if (batGroupRef.current) batGroupRef.current.visible = true
+    // ...and the bat he left on the dirt goes with the play: the next cycle opens
+    // with the one bat, in his hands (see dropBat).
+    if (droppedBat?.group) droppedBat.group.visible = false
+    if (runKit) {
+      runKit.mixer.stopAllAction()
+      runKit.state = null
+    }
+    // ...and the skeleton back to its rest pose, because the run's clips move
+    // bones the swing's own driver does not (a toe, the fingers): those would
+    // otherwise hold the runner's last frame into the stance he comes back to.
+    // Every bone the driver *does* own is authored from this same rest pose on
+    // the very next frame, so restoring it disturbs nothing of the swing.
+    if (body?.restPose) {
+      for (const [bone, rest] of body.restPose) {
+        bone.position.copy(rest.position)
+        bone.quaternion.copy(rest.quaternion)
+      }
+    }
+  }, [batX, stanceZ, runKit, body, droppedBat])
+
+  // Leave the bat on the dirt where he let it go. This is a read of the *live*
+  // in-hand bat's own frame — the bat's place and orientation as the swing left
+  // them on the handoff frame — set down flat under the grip (the lie itself is
+  // util/droppedBat.js's). It runs once per play, on the frame the in-hand bat is
+  // hidden, and nothing moves it afterwards: he is already walking away from it.
+  const dropBat = useCallback(() => {
+    const bat = batGroupRef.current
+    const group = groupRef.current
+    const dropped = droppedBat?.group
+    const parent = group?.parent
+    if (!bat || !dropped || !parent) return
+    // Three only refreshes world matrices at render, and the swing's groups were
+    // posed *before* this frame's render — the bat's own chain is walked here so
+    // the frame that is read is the one the eye is looking at.
+    bat.updateWorldMatrix(true, false)
+    parent.updateWorldMatrix(true, false)
+    // The bat's own frame in the frame the dropped copy is drawn in: the two
+    // groups are siblings, so it is the parent's own inverse.
+    _dropMatrix.copy(parent.matrixWorld).invert().multiply(bat.matrixWorld)
+    _dropMatrix.decompose(_dropPosition, _dropQuaternion, _dropScale)
+    const pose = droppedBatPose({
+      position: _dropPosition,
+      quaternion: _dropQuaternion,
+      barrel: droppedBat.barrel,
+      radius: droppedBat.radius,
+      // A bat standing straight up in the hands — the set stance's own bat is
+      // within a few degrees of it — has no lean of its own to fall along, so it
+      // goes down on the batter's own side of the plate: out of the lane he is
+      // about to run in, which runs from his box across the plate.
+      fallback: _dropFallback.set(-sign, 0, 0.45),
+    })
+    dropped.position.copy(pose.position)
+    dropped.quaternion.copy(pose.quaternion)
+    dropped.visible = true
+  }, [droppedBat, sign])
 
   // Hands in the set stance, at the back shoulder: the batter faces the
   // pitcher (-Z), so their left side is -X and their right side is +X. A lefty
@@ -2336,7 +2500,11 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
   useLayoutEffect(() => {
     trackRef.current = 0
     lastBallLook.current = null
-  }, [pitchData, replayKey])
+    // ...and the batter-runner's own state goes with it: a new pitch, a replay or
+    // a new batter's own body starts with this body in the box, the way the cast's
+    // reset starts with every fielder on his spot.
+    leaveBox()
+  }, [pitchData, replayKey, leaveBox])
 
   useFrame((state, delta) => {
     const { time: currentSimTime } = stepSimulation(delta, state.clock.elapsedTime)
@@ -2411,6 +2579,73 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
         })
       }
       return
+    }
+
+    // ── The batter-runner: the same body, once the swing has resolved ────────
+    // The play's own clock (seconds since this ball was hit) and the run it
+    // published for this body (constants/playback.js) decide it: from the
+    // plan's takeoff — the second the swing is over, see playPlan's
+    // `batterTakeoffSeconds` — this component is not swinging any more. It is
+    // the man on the basepath, and util/batterRunner.js owns where he stands,
+    // which way he faces, what he is playing and how much of the stance he left
+    // is still being blended out. The swing above and below this branch never
+    // runs at all while it is taken, so nothing of the tuned swing moves.
+    const playClock = getPlayClock()
+    const batterRun = getBatterRun()
+    const inRun = !!groupRef.current && !!batterRun && playClock != null
+      && playClock >= batterRun.legs[0].start
+    if (inRun) {
+      const runner = runRef.current
+      runner.away = 0
+      if (!runner.active) {
+        // The handoff frame. He leaves from where the swing left him and in the
+        // stance it left him in, so the snapshot taken here — after the bone
+        // driver authored that stance one last time — is what the run is eased
+        // out of, and the takeoff's own weight is nought on this very frame: the
+        // pose, the place and the facing are all exactly the swing's still.
+        runner.active = true
+        runner.enteredAt = playClock
+        runner.snapshot = poseSnapshot(body.model)
+        // ...and the bat is let go on this same frame: the copy below is set down
+        // where the swing left the one in his hands, and the one in his hands is
+        // hidden on this frame with it (see the bat branch just below).
+        dropBat()
+      }
+      const frame = batterRunFrame(batterRun, boxOrigin, playClock, runner.enteredAt)
+      if (frame.yaw != null) runner.yaw = frame.yaw
+      groupRef.current.position.set(frame.position.x, 0, frame.position.z)
+      // The turn rides the takeoff's own weight: the pose *inside* this frame is
+      // still the swing's until the blend is done, so the group's own yaw is the
+      // run's by the share of it that is (see util/batterRunner.js).
+      groupRef.current.rotation.y = (runner.yaw ?? 0) * frame.takeoff
+      // The bat is dropped at the handoff — he is not carrying it down the line —
+      // and the copy left behind (droppedBat, placed by dropBat above) is what
+      // stays on the dirt; both go back with the play's reset below.
+      batGroupRef.current.visible = false
+      if (runKit) {
+        setActorState(runKit, frame.state)
+        runKit.mixer.update(delta * getTimeScale())
+        blendSnapshot(runner.snapshot, frame.takeoff)
+      }
+      return
+    }
+    // The play is over (or was never launched): the body goes back in the box,
+    // and the swing's own code below picks the stance up again on this same
+    // frame. This is the instant the cast resets to its own spots as well — a
+    // frame's grace, though, before the run is given up: what says the play is
+    // over is the play's own clock *staying* away, and a single frame with none
+    // of it (a plan rebuilt under him mid-play, a hot reload) is not an inning
+    // over. He is a runner until it is really gone.
+    if (runRef.current.active) {
+      runRef.current.away += 1
+      if (runRef.current.away > 1) {
+        leaveBox()
+      } else {
+        // ...and on that grace frame the body is held exactly where the last
+        // running frame left it: the stance has no business being authored onto
+        // a body still standing on the basepath.
+        return
+      }
     }
 
     // Swing phases driven by the real-time clock, each eased with smoothstep:
@@ -3866,6 +4101,7 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
   const batLength = geom?.batLength ?? 0.9
 
   return (
+    <>
     <group ref={groupRef} name="batter" position={[batX, 0, stanceZ]}>
       {/* Uniformly scaled body and bat so the silhouette (height, body width,
           shoulder width) stays proportional to the batter's size. This group is
@@ -3929,5 +4165,12 @@ export const Batter = ({ pitchData, replayKey = 0 }) => {
         </group>
       </group>
     </group>
+      {/* The bat he let go of: outside the batter's own group, because that group
+          is what the run walks off with, and this copy has to stay where it was
+          dropped. Born hidden, placed on the handoff frame, hidden again on the
+          play's reset (see dropBat and leaveBox) — and it wears the in-hand
+          bat's own materials, so the fade above takes it with the body. */}
+      <primitive object={droppedBat.group} dispose={null} />
+    </>
   )
 }

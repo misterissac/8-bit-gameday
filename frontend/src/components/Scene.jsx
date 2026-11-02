@@ -4,7 +4,7 @@ import { OrbitControls, Sky, Environment } from '@react-three/drei';
 import * as THREE from 'three';
 import { Spherical, Vector3 } from 'three';
 import { feetToM } from '../util/MathUtil';
-import { getBattedBallPosition, getChaserPosition, getPlayBallPosition, getFielderCamLookTarget, setFielderCamActive, stepSimulation, resetSimulationTime } from '../constants/playback';
+import { getBattedBallPosition, getChaserPosition, getPlayBallPosition, getFielderCamLookTarget, stepSimulation, resetSimulationTime } from '../constants/playback';
 import { FIELD } from '../constants/field';
 import { getTuning } from '../constants/tuning';
 import { impactDistortion, SHOCK_SWEEP_FACTOR } from '../util/impactDistortion';
@@ -15,6 +15,7 @@ import { Catcher } from './Catcher';
 import { Pitcher } from './Pitcher';
 import { BattedBall } from './BattedBall';
 import { shouldFielderCamFollow, shouldFielderCamRestore } from '../util/battedBall';
+import { defenseKitForInning } from '../util/playerKit';
 
 // Authoritative simulation clock driver: mounted inside <Canvas> at the top of the scene.
 // Steps the shared simulation clock on every frame tick (with state.clock.elapsedTime
@@ -573,7 +574,6 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
                 modeRef.current = 'waiting';
                 setVisibleMode('waiting');
             }
-            setFielderCamActive(true);
             if (onActiveChange) onActiveChange(true);
         }
     }, [fielderCamTrigger]);
@@ -582,7 +582,6 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
     useEffect(() => {
         return () => {
             if (controlsRef.current) controlsRef.current.enabled = true;
-            setFielderCamActive(false);
             if (onActiveChange) onActiveChange(false);
         };
     }, []);
@@ -596,7 +595,6 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
             snapRestore();
             modeRef.current = 'idle';
             setVisibleMode('idle');
-            setFielderCamActive(false);
             if (onEnd) onEnd();
             return;
         }
@@ -697,7 +695,6 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
                 } else {
                     modeRef.current = 'idle';
                     setVisibleMode('idle');
-                    setFielderCamActive(false);
                     if (onEnd) onEnd();
                 }
             }
@@ -708,7 +705,6 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
             if (!controls || !restoreStartRef.current || !originalPositionRef.current || !originalTargetRef.current) {
                 modeRef.current = 'idle';
                 setVisibleMode('idle');
-                setFielderCamActive(false);
                 if (onEnd) onEnd();
                 return;
             }
@@ -725,7 +721,6 @@ const FielderCam = ({ controlsRef, pitchData, completeSignalRef, fielderCamTrigg
                 snapRestore();
                 modeRef.current = 'idle';
                 setVisibleMode('idle');
-                setFielderCamActive(false);
                 if (onEnd) onEnd();
             }
         }
@@ -985,8 +980,16 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
         return [...byPitcher.entries()];
     }, [comparisonPlays]);
 
+    // Full resolution: the pitch's trajectory, the strike zone and the HUD all
+    // have to stay pixel-sharp, so the canvas is never drawn below the screen's
+    // own pixel density. The park's soft look is built into its geometry (round
+    // members, softened edges — see Ballpark.jsx) instead of a downscaled frame.
     return (
-        <Canvas shadows camera={{ position: initialCam?.position ?? [0, 1.6, 2.2], fov: 60 }}>
+        <Canvas
+            shadows
+            dpr={[1, 2]}
+            camera={{ position: initialCam?.position ?? [0, 1.6, 2.2], fov: 60 }}
+        >
             <CameraController snapTrigger={snapTrigger} controlsRef={controlsRef} />
 
             {/* Persists the view to localStorage so it survives page reloads */}
@@ -1024,8 +1027,11 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
                 <Environment preset="park" />
             </React.Suspense>
             
-            {/* Diamond / ballpark sprites */}
-            <Ballpark />
+            {/* Diamond / ballpark sprites (incl. the live scoreboard
+                billboard over the center-field stands — the solomon-gumball
+                reference drives its stadium `Screen` the same way, see its
+                Park.tsx) */}
+            <Ballpark gameState={pitchData?.game_state ?? null} />
             
             {/* Central simulation clock driver */}
             <SimulationClock pitchData={pitchData} replayKey={replayKey} comparisonActive={comparisonActive} />
@@ -1075,9 +1081,11 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
                 </>
             )}
 
-            {/* Crouching catcher behind the plate; fades out when the camera
-                moves in close behind the strike zone so the zone stays visible */}
-            <Catcher />
+            {/* Crouching catcher behind the plate, on the asset's own
+                CatcherIdle clip, in the kit his own side is wearing; fades out
+                when the camera moves in close behind the strike zone so the zone
+                stays visible */}
+            <Catcher defenseKit={defenseKitForInning(pitchData)} />
             
             {/* Camera Controls */}
             <OrbitControls makeDefault ref={controlsRef} target={controlsTarget} />

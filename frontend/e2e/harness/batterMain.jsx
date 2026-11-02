@@ -1488,7 +1488,14 @@ function probeKit(scene) {
   // The pieces of a mesh: the model is one mesh per body part, so its separate
   // closed surfaces (the helmet's flaps, the eyes, the nose) are separate islands
   // in one index buffer. Union-find over the triangles is the whole of it.
-  const shells = (geometry) => {
+  // `limit` unions only the triangles whose corners are all below it — the *surfaces the
+  // model shipped with*. The driver's own cut runs on this same geometry after the look
+  // pass (the belt's sleeve either side of the cut, and the skin split at the joints) and
+  // adds its vertices past the welds, tying them to the model's own: over the whole buffer
+  // the chest's island is bridged to them and comes back as part of a shell that reaches
+  // the feet, which is what a reading asked to be "the cloth the opening is drawn on" must
+  // not be handed (see ``chestVertices`` below).
+  const shells = (geometry, limit = Infinity) => {
     const index = geometry.getIndex()
     const count = geometry.getAttribute('position').count
     if (!index) return []
@@ -1507,6 +1514,7 @@ function probeKit(scene) {
     }
     const array = index.array
     for (let i = 0; i < array.length; i += 3) {
+      if (array[i] >= limit || array[i + 1] >= limit || array[i + 2] >= limit) continue
       parent[find(array[i + 1])] = find(array[i])
       parent[find(array[i + 2])] = find(array[i])
     }
@@ -1610,8 +1618,12 @@ function probeKit(scene) {
   // body its own top band reads the neck instead, which stands proud of the collar
   // (z 0.1003 against 0.0143) and so reads as the opening sinking into the chest.
   const chestVertices = (() => {
-    const list = shells(body.geometry)
-      .filter((vertices) => vertices.length >= 40 && vertices.every((v) => v < (look?.jersey?.from ?? Infinity)))
+    // Rebuilt over the surface the model shipped with (see ``shells``), because the
+    // driver's own cut — which runs on this geometry after the look pass — bridges the
+    // chest's island to the vertices it adds, and a whole shell below the weld is then a
+    // shell running down to the feet.
+    const list = shells(body.geometry, look?.jersey?.from ?? Infinity)
+      .filter((vertices) => vertices.length >= 40)
       .map((vertices) => ({ vertices, box: bounds(body.geometry, vertices) }))
       .filter(({ box }) => box.y[0] <= 1.292 && box.y[1] <= 1.56 && box.z[1] >= 0.06)
     return list.flatMap(({ vertices }) => vertices)
