@@ -1,0 +1,129 @@
+name: Deploy frontend to GitHub Pages
+
+# GitHub Pages hosts the static frontend only. The FastAPI backend lives on the
+# VM (deploy/README.md); the SPA reaches it through VITE_API_BASE, which is
+# baked into the bundle at build time.
+#
+# One-time setup before the first run:
+#   Settings -> Pages -> Build and deployment -> Source: GitHub Actions
+#   Settings -> Secrets and variables -> Actions -> Variables -> VITE_API_BASE
+#   = https://<backend-host>   (no trailing slash, no /api suffix)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# configure-pages reads the Pages site (pages: write), and deploy-pages
+# exchanges the OIDC token. The starter workflow grants all three at the
+# workflow level for the same reason.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a Pages deploy half-way; queue the next one instead.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Also validates that Pages is enabled and configured for Actions; a
+      # repo without that setting fails here with an actionable error.
+      - name: Read the Pages base path
+        id: pages
+        uses: actions/configure-pages@v5
+
+      # Normalize base_path to exactly one leading and trailing slash:
+      #   ""             -> "/"           (custom domain / user site)
+      #   "/8-bit-gameday" -> "/8-bit-gameday/"
+      - name: Normalize the base path
+        id: base
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
+        run: |
+          set -euo pipefail
+          base="${BASE_PATH:-}"
+          base="/${base#/}"
+          base="${base%/}/"
+          echo "value=${base}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Pages serves static files only. Without an absolute API origin every
+      # /api call would go to github.io and 404, so fail before building.
+      - name: Require the backend origin
+        env:
+          VITE_API_BASE: ${{ vars.VITE_API_BASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VITE_API_BASE}" ]; then
+            echo "::error title=Missing VITE_API_BASE::Set the repository variable VITE_API_BASE (Settings -> Secrets and variables -> Actions -> Variables) to the public backend origin, e.g. https://mlb.example.com."
+            exit 1
+          fi
+
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+
+      - name: Test
+        working-directory: frontend
+        run: npm test
+
+      - name: Build for the Pages subpath
+        working-directory: frontend
+        env:
+          VITE_BASE: ${{ steps.base.outputs.value }}
+          VITE_API_BASE: ${{ vars.VITE_API_BASE }}
+        run: npm run build
+
+      # A wrong base still builds successfully; it only breaks once the browser
+      # asks for /assets/... at the domain root. Catch it before uploading.
+      - name: Verify the base reached the assets
+        env:
+          VITE_BASE: ${{ steps.base.outputs.value }}
+        run: |
+          set -euo pipefail
+          base="${VITE_BASE:-/}"
+          test -f frontend/dist/index.html
+          grep -q "src=\"${base}assets/" frontend/dist/index.html
+          grep -q "href=\"${base}favicon.svg\"" frontend/dist/index.html
+
+      - name: Verify the API origin reached the bundle
+        env:
+          VITE_API_BASE: ${{ vars.VITE_API_BASE }}
+        run: |
+          set -euo pipefail
+          grep -RqF "${VITE_API_BASE}" frontend/dist/assets/*.js
+
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: frontend/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
