@@ -2,3 +2,6 @@ fastapi==0.111.0
 uvicorn==0.30.1
 requests==2.32.3
 numpy==2.2.6
+# Imported at module level by MyBallTrajectorySim.py for its plotting helpers,
+# which this service never calls but which run on import all the same.
+matplotlib==3.11.1

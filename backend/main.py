@@ -1,5 +1,4 @@
 import os
-import sys
 import math
 import csv
 import hashlib
@@ -11,17 +10,15 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from typing import Optional
 
-# Add trajectory simulator paths relative to this backend script
-# The simulator is in the parent directory
-parent_dir = os.path.dirname(os.path.dirname(__file__))
-sim_dir = os.path.join(parent_dir, "skill-vis:MyTrajectorySimulator-main")
-sys.path.insert(0, sim_dir)
-sys.path.insert(0, os.path.join(sim_dir, "API"))
+# The trajectory simulator is vendored beside this file (MyBallTrajectorySim.py,
+# statcast_to_sim.py), so both import as ordinary siblings — no PYTHONPATH and no
+# separate checkout of the reference project. Both are MIT; see
+# MyTrajectorySimulator.LICENSE.
 
 import numpy as np
 from MyBallTrajectorySim import BallTrajectorySimulator2, IntegrationMethod, PitchParameters, EnvironmentParameters
@@ -1837,8 +1834,81 @@ def _build_pitch_payload(data: dict, play: dict, pitch_event: dict, pitch_index:
     }
 
 
+# ---------------------------------------------------------------------------
+# Conditional requests for the 1 s polls
+# ---------------------------------------------------------------------------
+# The frontend polls /api/trajectory and /api/batted-ball about once per second;
+# 93.8% of the trajectory polls observed were byte-identical, and a hit poll only
+# changes when a new ball is put in play. An ETag lets the browser answer from its
+# stored body with a headers-only 304, so a payload is only sent when a pitch, a
+# hit, the environment, or an xBA/Sprint Speed input changed.
+#
+# The validator is derived from the cache key, the endpoint's own source key and
+# the two enrichment caches' build stamps — never from the response body. Bodies
+# are mutated in place after caching (``_refresh_xba_in_place`` recomputes xBA
+# from a warm grid), so hashing one would flap the validator while the play is
+# unchanged.
+_POLL_CACHE_CONTROL = "no-cache"
+
+
+def _representation_etag(cache_key: tuple, source_key: str) -> str:
+    """Strong validator for one client cursor at one feed state."""
+    # xBA and Sprint Speed can refresh without the feed moving; fold their build
+    # stamps in so a rebuilt grid is a new representation rather than a stale
+    # 304. Both polls read both inputs (trajectory's payload, and the hit payload
+    # via ``_sprint_speed_for_batter`` / ``_compute_xba``).
+    with _xba_grid_lock:
+        xba_stamp = _xba_grid_cache["fetched_at"]
+    with _sprint_speed_lock:
+        sprint_stamp = _sprint_speed_cache["fetched_at"]
+
+    material = (
+        "|".join(cache_key)
+        + "|" + source_key
+        + f"|{xba_stamp:.0f}|{sprint_stamp:.0f}"
+    )
+    return '"' + hashlib.sha1(material.encode("utf-8")).hexdigest() + '"'
+
+
+def _if_none_match_hit(if_none_match: Optional[str], etag: str) -> bool:
+    """True when the client's validator matches the current ETag.
+
+    RFC 9110 compares If-None-Match weakly, so ``W/"x"`` matches ``"x"``.
+    """
+    if not if_none_match:
+        return False
+    candidates = [candidate.strip() for candidate in if_none_match.split(",")]
+    if "*" in candidates:
+        return True
+    return etag in [candidate.removeprefix("W/") for candidate in candidates]
+
+
+def _not_modified(etag: str) -> Response:
+    """Headers-only 304 for a client that already holds this representation."""
+    return Response(
+        status_code=304,
+        headers={
+            "ETag": etag,
+            "Cache-Control": _POLL_CACHE_CONTROL,
+        },
+    )
+
+
+def _set_validator_headers(response: Optional[Response], etag: str) -> None:
+    """Attach the validator to an outgoing 200.
+
+    ``response`` is None when the prewarm thread reuses this code path without
+    an HTTP response to write to.
+    """
+    if response is None:
+        return
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = _POLL_CACHE_CONTROL
+
+
 @app.get("/api/trajectory")
-def get_trajectory(env: str = "live", game_pk: str = GAME_PK,
+def get_trajectory(request: Request = None, response: Response = None,
+                   env: str = "live", game_pk: str = GAME_PK,
                    after_play_id: Optional[str] = None):
     """Return a single trajectory simulation.
 
@@ -1852,6 +1922,12 @@ def get_trajectory(env: str = "live", game_pk: str = GAME_PK,
         Last trajectory play the client has applied. When supplied, any valid
         pitches after this cursor are returned in ``queued_trajectories`` even
         if an earlier response was lost.
+
+    Conditional requests
+    --------------------
+    The response carries a strong ``ETag`` and ``Cache-Control: no-cache``. A
+    poll that repeats the same cursor with an unchanged feed answers ``304`` with
+    no body, so the 1 s cadence revalidates instead of resending ~155 KB.
 
     The live path deliberately skips the Open-Meteo archive call (observed=False):
     the A/B sweep (backend/test_weather_accuracy_multi.py) shows the observed
@@ -1874,6 +1950,8 @@ def get_trajectory(env: str = "live", game_pk: str = GAME_PK,
         # narrows the next response to only still-unapplied pitches.
         cache_key = (str(game_pk), cache_env, str(after_play_id or ""))
         source_key = _trajectory_source_key(data, resolved_env, env_meta)
+        # Derived before the build lock so a 304 never waits on a rebuild.
+        etag = _representation_etag(cache_key, source_key)
         build_lock = _cache_build_lock(
             _TRAJECTORY_BUILD_LOCKS,
             _TRAJECTORY_CACHE_GUARD,
@@ -1898,12 +1976,19 @@ def get_trajectory(env: str = "live", game_pk: str = GAME_PK,
                         _TRAJECTORY_BUILD_LOCKS_MAX_ENTRIES,
                     )
             if cached and cached["source_key"] == source_key:
+                if request is not None and _if_none_match_hit(
+                    request.headers.get("if-none-match"), etag
+                ):
+                    # The client already holds this exact representation: skip
+                    # the xBA refresh and the JSON body entirely.
+                    return _not_modified(etag)
                 print(f"TRAJECTORY CACHE HIT... game {game_pk} (env={cache_env})")
                 # Recompute xBA from the cached launch data so a freshly-built
                 # grid feeds through without invalidating the entire cache.
-                response = cached["response"]
-                _refresh_xba_in_place(response)
-                return response
+                cached_payload = cached["response"]
+                _refresh_xba_in_place(cached_payload)
+                _set_validator_headers(response, etag)
+                return cached_payload
 
             # If the feed advanced by more than one valid pitch since the last
             # build, include the intervening payloads so the frontend can
@@ -1980,6 +2065,7 @@ def get_trajectory(env: str = "live", game_pk: str = GAME_PK,
                     cache_key[:-1],
                     _TRAJECTORY_BUILD_LOCKS_MAX_ENTRIES,
                 )
+            _set_validator_headers(response, etag)
             return payload
     except HTTPException:
         raise
@@ -2328,7 +2414,8 @@ def _build_hit_payload(batted_play: dict, hit_data: dict, hit_event_index: int, 
 
 
 @app.get("/api/batted-ball")
-def get_batted_ball(game_pk: str = GAME_PK,
+def get_batted_ball(request: Request = None, response: Response = None,
+                    game_pk: str = GAME_PK,
                     after_play_id: Optional[str] = None):
     """Return the newest hit and any hits after the client's cursor.
 
@@ -2336,6 +2423,14 @@ def get_batted_ball(game_pk: str = GAME_PK,
     newest hit remains the top-level response for compatibility, while any
     intervening hits are returned in ``queued_batted_balls`` so a dropped poll
     cannot make an in-play animation disappear.
+
+    Conditional requests
+    --------------------
+    Like ``/api/trajectory``, the response carries a strong ``ETag`` and
+    ``Cache-Control: no-cache``. A poll that repeats the same cursor with an
+    unchanged feed answers ``304`` with no body, so the hit payload is only sent
+    when a new hit, a cursor advance, or an xBA/Sprint Speed rebuild changed the
+    representation.
     """
     print(f"BATTED BALL... Polling game {game_pk}")
     data = _fetch_feed(game_pk)
@@ -2350,6 +2445,8 @@ def get_batted_ball(game_pk: str = GAME_PK,
         batted_play, hit_data, hit_event_index = hit_events[-1]
         source_key = _batted_ball_source_key(data)
         cache_key = (str(game_pk), str(after_play_id or ""))
+        # Derived before the build lock so a 304 never waits on a rebuild.
+        etag = _representation_etag(cache_key, source_key)
         build_lock = _cache_build_lock(
             _BATTED_BALL_BUILD_LOCKS,
             _BATTED_BALL_CACHE_GUARD,
@@ -2374,10 +2471,17 @@ def get_batted_ball(game_pk: str = GAME_PK,
                         _BATTED_BALL_BUILD_LOCKS_MAX_ENTRIES,
                     )
             if cached and cached["source_key"] == source_key:
+                if request is not None and _if_none_match_hit(
+                    request.headers.get("if-none-match"), etag
+                ):
+                    # The client already holds this exact representation: skip
+                    # the xBA refresh and the JSON body entirely.
+                    return _not_modified(etag)
                 print(f"BATTED BALL CACHE HIT... game {game_pk}")
-                response = cached["response"]
-                _refresh_xba_in_place(response)
-                return response
+                cached_payload = cached["response"]
+                _refresh_xba_in_place(cached_payload)
+                _set_validator_headers(response, etag)
+                return cached_payload
 
             queued_batted_balls = []
             if after_play_id:
@@ -2424,6 +2528,8 @@ def get_batted_ball(game_pk: str = GAME_PK,
                     cache_key[:-1],
                     _BATTED_BALL_BUILD_LOCKS_MAX_ENTRIES,
                 )
+
+            _set_validator_headers(response, etag)
             return payload
     except HTTPException:
         raise

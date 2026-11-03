@@ -8,6 +8,8 @@ import time
 import unittest
 from unittest import mock
 
+from fastapi.testclient import TestClient
+
 backend_dir = os.path.dirname(os.path.abspath(__file__))
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
@@ -685,6 +687,202 @@ class PrewarmTrajectoryTests(unittest.TestCase):
             time.sleep(0.1)  # give a stray thread time to appear (there must be none)
         self.assertTrue(result["warm"])
         self.assertEqual(calls, [])
+
+
+class TrajectoryConditionalRequestTests(unittest.TestCase):
+    """The 200/304 contract for the 1 s trajectory poll."""
+
+    def setUp(self):
+        main._clear_feed_cache()
+        with main._TRAJECTORY_CACHE_GUARD:
+            main._TRAJECTORY_CACHE.clear()
+            main._TRAJECTORY_BUILD_LOCKS.clear()
+            main._TRAJECTORY_BUILD_LOCKS_LAST_USED.clear()
+        # Keep cached-response refreshes off the network, as above.
+        self._saved_workers = _suppress_worker_network()
+        self.client = TestClient(main.app)
+
+    def tearDown(self):
+        _restore_worker_network(self._saved_workers)
+
+    def _poll(self, etag=None, game_pk="game-1", after_play_id=None):
+        params = {"env": "default", "game_pk": game_pk}
+        if after_play_id:
+            params["after_play_id"] = after_play_id
+        headers = {"If-None-Match": etag} if etag else {}
+        return self.client.get("/api/trajectory", params=params, headers=headers)
+
+    def test_repeat_poll_with_matching_validator_returns_304(self):
+        feed = _trajectory_feed()
+        with mock.patch.object(main.requests, "get", return_value=_FeedResponse(feed)), \
+             mock.patch.object(
+                 main,
+                 "_build_trajectory_payload",
+                 return_value={"success": True, "play_id": "AB4-P1"},
+             ):
+            first = self._poll()
+            etag = first.headers.get("etag")
+            second = self._poll(etag=etag)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertTrue(etag)
+        self.assertEqual(first.headers["cache-control"], "no-cache")
+        self.assertEqual(second.status_code, 304)
+        self.assertEqual(second.content, b"")
+        self.assertEqual(second.headers.get("etag"), etag)
+
+    def test_advancing_the_cursor_invalidates_the_validator(self):
+        feed = _trajectory_feed()
+        with mock.patch.object(main.requests, "get", return_value=_FeedResponse(feed)), \
+             mock.patch.object(
+                 main,
+                 "_build_trajectory_payload",
+                 return_value={"success": True, "play_id": "AB4-P1"},
+             ):
+            first = self._poll()
+            same_cursor = self._poll(etag=first.headers["etag"])
+            advanced = self._poll(etag=first.headers["etag"], after_play_id="AB4-P1")
+
+        self.assertEqual(same_cursor.status_code, 304)
+        self.assertEqual(advanced.status_code, 200)
+        self.assertNotEqual(advanced.headers["etag"], first.headers["etag"])
+
+    def test_new_pitch_invalidates_the_validator(self):
+        initial = _trajectory_feed()
+        advanced = copy.deepcopy(initial)
+        events = advanced["liveData"]["plays"]["allPlays"][0]["playEvents"]
+        pitch = copy.deepcopy(events[0])
+        pitch["pitchNumber"] = 2
+        pitch["pitchData"]["coordinates"]["x0"] = 2.0
+        events.append(pitch)
+
+        def build_latest(data, *args, **kwargs):
+            _, latest_pitch, _ = main._latest_simulatable_pitch(data)
+            return {"success": True, "play_id": f"AB4-P{latest_pitch['pitchNumber']}"}
+
+        with mock.patch.object(
+            main.requests,
+            "get",
+            side_effect=_feed_side_effect(
+                [_FeedResponse(initial), _FeedResponse(advanced)], "game-1"
+            ),
+        ), mock.patch.object(
+            main, "_build_trajectory_payload", side_effect=build_latest
+        ):
+            first = self._poll()
+            # The feed cache would otherwise serve the unchanged feed for its TTL.
+            main._clear_feed_cache()
+            advanced_poll = self._poll(etag=first.headers["etag"])
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(advanced_poll.status_code, 200)
+        self.assertNotEqual(advanced_poll.headers["etag"], first.headers["etag"])
+        self.assertEqual(advanced_poll.json()["play_id"], "AB4-P2")
+
+
+class BattedBallConditionalRequestTests(unittest.TestCase):
+    """The 200/304 contract for the 1 s batted-ball poll."""
+
+    def setUp(self):
+        main._clear_feed_cache()
+        with main._BATTED_BALL_CACHE_GUARD:
+            main._BATTED_BALL_CACHE.clear()
+            main._BATTED_BALL_BUILD_LOCKS.clear()
+            main._BATTED_BALL_BUILD_LOCKS_LAST_USED.clear()
+        # Keep cached-response refreshes off the network, as above.
+        self._saved_workers = _suppress_worker_network()
+        self.client = TestClient(main.app)
+
+    def tearDown(self):
+        _restore_worker_network(self._saved_workers)
+
+    def _poll(self, etag=None, game_pk="game-1", after_play_id=None):
+        params = {"game_pk": game_pk}
+        if after_play_id:
+            params["after_play_id"] = after_play_id
+        headers = {"If-None-Match": etag} if etag else {}
+        return self.client.get("/api/batted-ball", params=params, headers=headers)
+
+    def test_repeat_poll_with_matching_validator_returns_304(self):
+        feed = _batted_ball_feed()
+
+        def build_hit(play, hit_data, hit_event_index, data):
+            return {
+                "success": True,
+                "play_id": main._batted_ball_play_id(play, hit_event_index),
+            }
+
+        with mock.patch.object(main.requests, "get", return_value=_FeedResponse(feed)), \
+             mock.patch.object(main, "_build_hit_payload", side_effect=build_hit), \
+             mock.patch.object(main, "_refresh_xba_in_place") as refresh:
+            first = self._poll()
+            etag = first.headers.get("etag")
+            second = self._poll(etag=etag)
+            refreshes_after_304 = refresh.call_count
+            # An unconditional poll is a cache hit, not a rebuild: it must still
+            # refresh xBA in place, which is the work the 304 above skips.
+            third = self._poll()
+
+        self.assertEqual(first.status_code, 200)
+        self.assertTrue(etag)
+        self.assertEqual(first.headers["cache-control"], "no-cache")
+        self.assertEqual(first.json()["play_id"], "AB4-EV0")
+        self.assertEqual(second.status_code, 304)
+        self.assertEqual(second.content, b"")
+        self.assertEqual(second.headers.get("etag"), etag)
+        self.assertEqual(refreshes_after_304, 0)
+        self.assertEqual(refresh.call_count, 1)
+        self.assertEqual(third.status_code, 200)
+
+    def test_advancing_the_cursor_invalidates_the_validator(self):
+        feed = _batted_ball_feed()
+
+        def build_hit(play, hit_data, hit_event_index, data):
+            return {
+                "success": True,
+                "play_id": main._batted_ball_play_id(play, hit_event_index),
+            }
+
+        with mock.patch.object(main.requests, "get", return_value=_FeedResponse(feed)), \
+             mock.patch.object(main, "_build_hit_payload", side_effect=build_hit):
+            first = self._poll()
+            same_cursor = self._poll(etag=first.headers["etag"])
+            advanced = self._poll(etag=first.headers["etag"], after_play_id="AB4-EV0")
+
+        self.assertEqual(same_cursor.status_code, 304)
+        self.assertEqual(advanced.status_code, 200)
+        self.assertNotEqual(advanced.headers["etag"], first.headers["etag"])
+
+    def test_new_hit_invalidates_the_validator(self):
+        initial = _batted_ball_feed()
+        advanced = copy.deepcopy(initial)
+        next_play = copy.deepcopy(advanced["liveData"]["plays"]["allPlays"][0])
+        next_play["about"] = {"atBatIndex": 5}
+        advanced["liveData"]["plays"]["allPlays"].append(next_play)
+
+        def build_hit(play, hit_data, hit_event_index, data):
+            return {
+                "success": True,
+                "play_id": main._batted_ball_play_id(play, hit_event_index),
+            }
+
+        with mock.patch.object(
+            main.requests,
+            "get",
+            side_effect=_feed_side_effect(
+                [_FeedResponse(initial), _FeedResponse(advanced)], "game-1"
+            ),
+        ), mock.patch.object(main, "_build_hit_payload", side_effect=build_hit):
+            first = self._poll()
+            # The feed cache would otherwise serve the unchanged feed for its TTL.
+            main._clear_feed_cache()
+            advanced_poll = self._poll(etag=first.headers["etag"])
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["play_id"], "AB4-EV0")
+        self.assertEqual(advanced_poll.status_code, 200)
+        self.assertNotEqual(advanced_poll.headers["etag"], first.headers["etag"])
+        self.assertEqual(advanced_poll.json()["play_id"], "AB5-EV0")
 
 
 if __name__ == "__main__":

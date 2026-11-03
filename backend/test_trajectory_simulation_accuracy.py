@@ -3,14 +3,15 @@ import sys
 import unittest
 import math
 
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sim_dir = os.path.join(parent_dir, "skill-vis:MyTrajectorySimulator-main")
-sys.path.insert(0, sim_dir)
-sys.path.insert(0, os.path.join(sim_dir, "API"))
+# The simulator modules are vendored beside main.py, so the backend directory
+# itself is the only path this module needs.
+backend_dir = os.path.dirname(os.path.abspath(__file__))
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
 
 from MyBallTrajectorySim import PitchParameters, EnvironmentParameters, IntegrationMethod
 from statcast_to_sim import statcast_to_sim_params
-from backend.main import FullBallTrajectorySimulator
+from main import FullBallTrajectorySimulator
 
 
 class TestTrajectorySimulationAccuracy(unittest.TestCase):
