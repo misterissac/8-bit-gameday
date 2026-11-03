@@ -1,0 +1,41 @@
+# Caddy in front of the FastAPI backend and the built SPA. One origin serves
+# both, so the browser never makes a cross-origin request and the API needs no
+# CORS entry:
+#
+#   /api/*  → uvicorn on 127.0.0.1:8000 (bound to loopback, never public)
+#   /*      → frontend/dist, with an index.html fallback
+#
+# The site address comes from SITE_ADDRESS. On a VM with no DNS name, sslip.io
+# encodes the public IP (203.0.113.10 → 203-0-113-10.sslip.io) and Caddy still
+# gets a real certificate. Left at localhost it serves plain HTTP only.
+{
+	# email you@example.com
+}
+
+{$SITE_ADDRESS:localhost} {
+	encode zstd gzip
+
+	# Vite hashes everything under /assets; the entry point must revalidate.
+	@hashed path /assets/*
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
+	@entry path / /index.html
+	header @entry Cache-Control "no-cache"
+
+	# A cold trajectory build waits up to 15 s on statsapi, so the proxy's 30 s
+	# default is closer to mattering than it looks.
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8000 {
+			transport http {
+				read_timeout 60s
+			}
+		}
+	}
+
+	# No client-side router, but the fallback keeps a stale hashed chunk from
+	# 404ing the page in the window after a new build ships.
+	handle {
+		root * /srv/mlb-live/frontend/dist
+		try_files {path} /index.html
+		file_server
+	}
+}

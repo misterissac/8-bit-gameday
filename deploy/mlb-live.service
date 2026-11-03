@@ -1,0 +1,27 @@
+[Unit]
+Description=8-bit Play-by-play API (uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mlb
+Group=mlb
+WorkingDirectory=/srv/mlb-live/backend
+# MyBallTrajectorySim.py and statcast_to_sim.py are vendored beside main.py, so
+# the working directory is the whole import path this needs.
+Environment=PYTHONUNBUFFERED=1
+# One process: the feed, trajectory and Savant caches are per-process, so extra
+# workers re-fetch and re-simulate the same games. See the capacity note in the
+# README before raising this.
+ExecStart=/srv/mlb-live/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=always
+RestartSec=3
+# Cached feeds and payloads live in memory; cap the process so a long game
+# cannot take the whole 12 GB box down with it.
+MemoryMax=3G
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
