@@ -9,6 +9,7 @@ import { PITCHER_ACTOR, ballCarrierAt, evaluateCast, facingYaw, resetFrames } fr
 import { bindClips, setActorState } from '../util/playerClips.js'
 import { AWAY_HELMET_COLOUR, AWAY_PLAYER_TEXTURE_URL, HOME_PLAYER_TEXTURE_URL, blueKit, dressBody, playerFadeOpacity, uniformFor, writeBodyFade } from '../util/playerKit.js'
 import { getTimeScale, setCastHandPosition } from '../constants/playback.js'
+import { assetUrl } from '../util/assetUrl.js'
 import { useTuning } from '../constants/tuning.js'
 
 // ---------------------------------------------------------------------------
@@ -43,7 +44,7 @@ import { useTuning } from '../constants/tuning.js'
 // the reset that lets the next cycle replay the same play from the top.
 // ---------------------------------------------------------------------------
 
-const PLAYER_MODEL_URL = '/models/player.glb'
+const PLAYER_MODEL_URL = assetUrl('/models/player.glb')
 
 // Warm the GLTF cache so the first play doesn't pop its cast in late.
 useGLTF.preload(PLAYER_MODEL_URL)

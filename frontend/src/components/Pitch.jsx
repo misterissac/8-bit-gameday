@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { getCycleDuration, getTimeScale, getBallReleaseTime, stepSimulation } from '../constants/playback';
 import { getTuning, useTuning } from '../constants/tuning';
 import { impactDistortion, SHOCK_SWEEP_FACTOR } from '../util/impactDistortion';
+import { assetUrl } from '../util/assetUrl';
 
 // Front edge of home plate (17 in from the back tip) and mid-plate (8.5 in),
 // in meters along this app's -Z axis. The strike zone is drawn at the front
@@ -320,7 +321,7 @@ function writeBillowLayer(mesh, geometry, seeds, spawns, simTime, color, dummy, 
 // with the seams spinning around the true spin axis. SPIN_SPEED_SCALE slows
 // the true RPM so the seam rotation — and its axis — reads on screen; at full
 // speed a 2200 RPM pitch is a featureless blur.
-const BALL_MODEL_URL = '/models/ball.glb';
+const BALL_MODEL_URL = assetUrl('/models/ball.glb');
 const DEFAULT_SPIN_RATE_RPM = 2000;
 
 // Warm the GLTF cache so the first pitch doesn't suspend for long.

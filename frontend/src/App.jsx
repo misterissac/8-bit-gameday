@@ -9,6 +9,8 @@ import { isGameTerminal } from './util/scorebug';
 import { Scorebug } from './components/Scorebug';
 import { AtBatZone, AtBatLoadingPlaceholder } from './components/AtBatZone';
 import { pitchTypeColor } from './util/pitchType';
+import { API_BASE } from './util/apiBase';
+import { assetUrl } from './util/assetUrl';
 import { defenseFromSnapshot, restoreLiveDefense, defensePositions } from './util/defense';
 import { setTimeScale, setCycleDuration, resetSimulationTime, SLOWEST_SPEED } from './constants/playback';
 import { PitchMovementGraph } from './components/PitchMovementGraph';
@@ -675,7 +677,7 @@ const WaitingResolveBanner = ({ active }) => {
 // -Z (catcher's view: X right, Y up) — the same projection the old 2D drawer
 // used — and the spin is slowed further than the scene's already-slowed rate
 // so the axis and seam motion are easy to follow.
-const PANEL_BALL_MODEL_URL = '/models/ball.glb';
+const PANEL_BALL_MODEL_URL = assetUrl('/models/ball.glb');
 const PANEL_BALL_RADIUS = 0.0636; // m — model sphere radius (from ball.glb bounds)
 const PANEL_AXIS_HALF_LEN = 0.1; // m — axis arrow sticks ~1.6x past the ball
 // Panel spin slowdown: the scene already slows true RPM by SPIN_SPEED_SCALE
@@ -1332,7 +1334,6 @@ function AppContent() {
     ctx.fillText(`pX: ${dotPx.toFixed(2)} pZ: ${dotPz.toFixed(2)}`, 4, H - 4);
   }, [pitchData]);
 
-  const API_BASE = 'http://localhost:8000';
   const withGame = (path, gamePk, extraParams = {}) => {
     const params = new URLSearchParams();
     if (gamePk) params.set('game_pk', gamePk);

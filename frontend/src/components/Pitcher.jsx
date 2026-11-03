@@ -13,6 +13,7 @@ import { PALM_HANDLES } from '../util/playerRig';
 import { HELMET_MESH, blueKit, defenseKitForInning, playerFadeOpacity, writeBodyFade } from '../util/playerKit';
 import { MOUND, moundSurfaceY } from '../constants/mound';
 import { clamp } from '../util/MathUtil';
+import { assetUrl } from '../util/assetUrl';
 
 // The world's own up: the axis a rig place is turned about to be read in the world,
 // where the group's yaw is what stands between the two frames (see the placement's
@@ -75,9 +76,9 @@ const PITCHER_FRAME_TURN = Math.PI;
 // authored to end where it begins.
 // ---------------------------------------------------------------------------
 
-const PLAYER_MODEL_URL = '/models/player.glb';
-const HOME_TEXTURE_URL = '/textures/HomePlayer_BaseColor.png';
-const AWAY_TEXTURE_URL = '/textures/AwayPlayer_BaseColor.png';
+const PLAYER_MODEL_URL = assetUrl('/models/player.glb');
+const HOME_TEXTURE_URL = assetUrl('/textures/HomePlayer_BaseColor.png');
+const AWAY_TEXTURE_URL = assetUrl('/textures/AwayPlayer_BaseColor.png');
 
 // The pitcher's rig frame is the model's own (measurePlayerRig with no sprite
 // nominal height): the body already stands at world size on the mound, so one rig

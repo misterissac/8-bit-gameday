@@ -6,6 +6,7 @@ import { TextureLoader } from 'three'
 import { FIELD } from '../constants/field'
 import { getTimeScale } from '../constants/playback'
 import { clamp } from '../util/MathUtil'
+import { assetUrl } from '../util/assetUrl.js'
 import { buildPlayerBody } from '../util/playerBody.js'
 import { LOOK_DETAIL_MESHES } from '../util/batterLook.js'
 import { bindClips, setActorState } from '../util/playerClips.js'
@@ -56,7 +57,7 @@ import { facingYaw } from '../util/playCast.js'
 //     him from behind the plate, and writing depth would cull them.
 // ---------------------------------------------------------------------------
 
-const PLAYER_MODEL_URL = '/models/player.glb'
+const PLAYER_MODEL_URL = assetUrl('/models/player.glb')
 
 // Warm the caches so the catcher's body and kit come up with the ballpark rather
 // than a frame after it.

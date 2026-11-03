@@ -6,6 +6,7 @@ import { TextureLoader } from 'three'
 import { getCycleDuration, getTimeScale, getBattedBallPosition, getBallReleaseTime, getBatterRun, getPlayClock, stepSimulation } from '../constants/playback'
 import { FIELD } from '../constants/field'
 import { PLATE_FRONT_Y, clamp, plateCrossing } from '../util/MathUtil'
+import { assetUrl } from '../util/assetUrl'
 import { BATTER_LEAN_ORDER, batterLean } from '../util/batterLean'
 import {
   calculateSwingGeometry,
@@ -27,8 +28,8 @@ import { useTuning } from '../constants/tuning'
 // reference; its bones are driven by the joint targets this component's
 // animation tuning produces (see util/playerRig.js). Only the bat stays a
 // separate mesh, placed by the data-driven contact geometry.
-const PLAYER_URL = '/models/player.glb'
-const BAT_URL = '/models/parts/bat.glb'
+const PLAYER_URL = assetUrl('/models/player.glb')
+const BAT_URL = assetUrl('/models/parts/bat.glb')
 useGLTF.preload(PLAYER_URL)
 useGLTF.preload(BAT_URL)
 

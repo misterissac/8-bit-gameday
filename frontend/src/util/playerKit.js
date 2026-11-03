@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { clamp } from './MathUtil.js'
+import { assetUrl } from './assetUrl.js'
 
 // ---------------------------------------------------------------------------
 // The kit a body wears, and which one a side gets.
@@ -26,8 +27,8 @@ import { clamp } from './MathUtil.js'
 // face casts (see `side`/`shadowSide`).
 // ---------------------------------------------------------------------------
 
-export const HOME_PLAYER_TEXTURE_URL = '/textures/HomePlayer_BaseColor.png'
-export const AWAY_PLAYER_TEXTURE_URL = '/textures/AwayPlayer_BaseColor.png'
+export const HOME_PLAYER_TEXTURE_URL = assetUrl('/textures/HomePlayer_BaseColor.png')
+export const AWAY_PLAYER_TEXTURE_URL = assetUrl('/textures/AwayPlayer_BaseColor.png')
 
 // ---------------------------------------------------------------------------
 // The visitors' blue.

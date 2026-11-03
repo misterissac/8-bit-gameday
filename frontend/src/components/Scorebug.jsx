@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
+import { apiUrl } from '../util/apiBase';
 import {
   scorebugStatusLabel,
   isGameTerminal,
@@ -16,10 +17,10 @@ import {
 } from '../util/broadcastDelay';
 import { groupGameLogPlays } from '../util/gameLog';
 
-const GAME_STATE_URL = 'http://localhost:8000/api/game-state';
-const GAME_STATUS_URL = 'http://localhost:8000/api/game-status';
-const BOX_SCORE_URL = 'http://localhost:8000/api/box-score';
-const GAME_LOG_URL = 'http://localhost:8000/api/game-log';
+const GAME_STATE_URL = apiUrl('/api/game-state');
+const GAME_STATUS_URL = apiUrl('/api/game-status');
+const BOX_SCORE_URL = apiUrl('/api/box-score');
+const GAME_LOG_URL = apiUrl('/api/game-log');
 const POLL_MS = 1000;
 
 const dash = (v) => (v == null || v === '' ? '—' : v);
