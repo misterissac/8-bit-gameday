@@ -16,6 +16,25 @@ checkout lives at `/srv/mlb-live` and runs as a `mlb` user.
 
 ## Install
 
+### One-shot script
+
+[`deploy/setup-vm.sh`](setup-vm.sh) performs every step below — host firewall,
+packages, service user, checkout, venv, swap and a tighter `MemoryMax` on a 1 GB
+shape, Caddy, the unit — then proves the site answers over HTTPS. Copy it over
+and pass the public name (a real domain with an A record, or the sslip.io name
+built from the IP):
+
+```bash
+scp deploy/setup-vm.sh ubuntu@<ip>:~/
+ssh ubuntu@<ip> 'sudo bash setup-vm.sh 203-0-113-10.sslip.io'
+```
+
+It does not build the SPA: Vite 8 needs Node >= 20.19, which Ubuntu's `nodejs`
+package is not. Build locally, rsync `frontend/dist`, and the script prints the
+exact command if that directory is still empty. Re-running it is safe.
+
+The manual steps below are what it automates.
+
 ```bash
 sudo adduser --system --group --home /srv/mlb-live mlb
 sudo -u mlb git clone <repo> /srv/mlb-live
@@ -23,7 +42,8 @@ sudo -u mlb python3 -m venv /srv/mlb-live/venv
 sudo -u mlb /srv/mlb-live/venv/bin/pip install -r /srv/mlb-live/backend/requirements.txt
 
 # Frontend build. The default base is "/" — the app is served from the domain
-# root here, so no VITE_BASE is needed.
+# root here, so no VITE_BASE is needed. Needs Node >= 20.19; otherwise build on
+# your laptop and copy dist/ over, as the script section describes.
 cd /srv/mlb-live/frontend
 sudo -u mlb npm ci
 sudo -u mlb npm run build
