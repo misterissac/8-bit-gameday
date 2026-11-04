@@ -20,9 +20,9 @@ checkout lives at `/srv/mlb-live` and runs as a `mlb` user.
 
 [`deploy/setup-vm.sh`](setup-vm.sh) performs every step below — host firewall,
 packages, service user, checkout, venv, swap and a tighter `MemoryMax` on a 1 GB
-shape, Caddy, the unit — then proves the site answers over HTTPS. Copy it over
-and pass the public name (a real domain with an A record, or the sslip.io name
-built from the IP):
+shape, Caddy, the unit, the idle-reclaim guard — then proves the site answers
+over HTTPS. Copy it over and pass the public name (a real domain with an A
+record, or the sslip.io name built from the IP):
 
 ```bash
 scp deploy/setup-vm.sh ubuntu@<ip>:~/
@@ -127,7 +127,8 @@ so the Pages origin is accepted as-is. If that list is narrowed later, add
 Oracle may reclaim an Always Free instance whose **7-day p95** CPU, network and
 memory are all under 20%. A game-night workload is idle most of the day, so p95
 sits near zero between series. A short burn every ten minutes keeps the CPU
-percentile above the threshold:
+percentile above the threshold; `setup-vm.sh` installs it as
+`/etc/cron.d/mlb-keepalive`. To add it by hand:
 
 ```cron
 */10 * * * * timeout 60 sha256sum /dev/zero > /dev/null

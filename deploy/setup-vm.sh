@@ -116,7 +116,7 @@ step_packages() {
   run env DEBIAN_FRONTEND=noninteractive apt-get update -qq
   run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
     -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-    git python3-venv python3-pip rsync curl caddy
+    git python3-venv python3-pip rsync curl caddy cron
   if ! run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
     -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
     iptables-persistent; then
@@ -235,6 +235,25 @@ step_service() {
   run systemctl restart mlb-live
 }
 
+# Oracle reclaims an Always Free instance whose 7-day p95 CPU, network and
+# memory are all under 20%. A game-night service is idle most of the day, so a
+# short burn every ten minutes is what keeps the CPU percentile above it.
+step_reclaim_guard() {
+  say "Idle-reclaim guard"
+  printf '%s\n' \
+    "SHELL=/bin/sh" \
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    "# Oracle reclaims Always Free instances whose 7-day p95 CPU, network and" \
+    "# memory all sit under 20%; this keeps CPU above the line between games." \
+    "*/10 * * * * root timeout 60 sha256sum /dev/zero > /dev/null" \
+    | run tee /etc/cron.d/mlb-keepalive >/dev/null
+  run chmod 644 /etc/cron.d/mlb-keepalive
+  if ! run systemctl enable --now cron >/dev/null 2>&1; then
+    warn "cron is not running; the reclaim guard will not fire"
+  fi
+  info "scheduled a 60 s burn every 10 minutes (/etc/cron.d/mlb-keepalive)"
+}
+
 step_verify() {
   say "Verifying"
   local i api_ok=0
@@ -334,6 +353,7 @@ main() {
   step_memory
   step_caddy
   step_service
+  step_reclaim_guard
   step_verify
   step_summary
 }
