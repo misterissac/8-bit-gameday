@@ -11,6 +11,12 @@ WorkingDirectory=/srv/mlb-live/backend
 # MyBallTrajectorySim.py and statcast_to_sim.py are vendored beside main.py, so
 # the working directory is the whole import path this needs.
 Environment=PYTHONUNBUFFERED=1
+# The SPA is same-origin on this VM, but the GitHub Pages build
+# (.github/workflows/pages.yml) calls this API cross-origin, so that origin has
+# to be granted or the browser blocks every /api response and the app sits on
+# "Waiting for pitch data". The Vite dev origins stay so a local frontend can
+# still point at this API. Keep this in sync with VITE_API_BASE's site.
+Environment=ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,https://misterissac.github.io
 # One process: the feed, trajectory and Savant caches are per-process, so extra
 # workers re-fetch and re-simulate the same games. See the capacity note in the
 # README before raising this.

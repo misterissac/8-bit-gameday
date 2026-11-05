@@ -10,6 +10,21 @@
 # gets a real certificate. Left at localhost it serves plain HTTP only.
 {
 	# email you@example.com
+
+	# Bound how long a client may hold a connection while dribbling a request.
+	# Caddy's defaults are generous, and a slow-loris style flood costs the box
+	# connection slots and CPU even though it moves almost no bytes. There are
+	# no uploads here, so a short body read is safe.
+	#
+	# Kept to the 2.6 directive set on purpose: Ubuntu ships 2.6.x, and the
+	# `request_body` handler (a 1 MB cap) only exists from 2.7 onward. Adding it
+	# here would fail the config on this host.
+	servers {
+		timeouts {
+			read_body 10s
+			idle 60s
+		}
+	}
 }
 
 {$SITE_ADDRESS:localhost} {
