@@ -174,10 +174,13 @@ ssh ubuntu@<new-ip> 'sudo systemctl daemon-reload && sudo systemctl restart cadd
 ### Verify
 
 ```bash
-oci network public-ip list --scope AVAILABILITY_DOMAIN \
-  --availability-domain "$AD" --compartment-id "$COMPARTMENT" --all \
+# A reserved IP is a compartment object, not a VNIC property, so it is
+# REGION-scoped: the AVAILABILITY_DOMAIN scope that finds the ephemeral one
+# returns an empty table here and looks like the reservation failed.
+oci network public-ip list --scope REGION --compartment-id "$COMPARTMENT" \
+  --all --lifetime RESERVED \
   --query 'data[].{ip:"ip-address",life:lifetime,state:"lifecycle-state"}'
-# expect exactly one row: lifetime RESERVED, state ASSIGNED, the address you want
+# expect one row: lifetime RESERVED, state ASSIGNED, the address you want
 ```
 
 ## API service
