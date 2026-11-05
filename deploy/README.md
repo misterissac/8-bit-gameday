@@ -26,12 +26,23 @@ record, or the sslip.io name built from the IP):
 
 ```bash
 scp deploy/setup-vm.sh ubuntu@<ip>:~/
-ssh ubuntu@<ip> 'sudo bash setup-vm.sh 203-0-113-10.sslip.io'
+ssh ubuntu@<ip> 'bash setup-vm.sh 203-0-113-10.sslip.io'
 ```
 
 It does not build the SPA: Vite 8 needs Node >= 20.19, which Ubuntu's `nodejs`
-package is not. Build locally, rsync `frontend/dist`, and the script prints the
-exact command if that directory is still empty. Re-running it is safe.
+package is not. Build locally, copy `frontend/dist` to the box, and re-run with
+`DIST_SRC` pointing at it. That second run installs the build and finishes the
+certificate check:
+
+```bash
+npm --prefix frontend run build
+rsync -az frontend/dist/ ubuntu@<ip>:/tmp/mlb-dist/
+ssh ubuntu@<ip> 'DIST_SRC=/tmp/mlb-dist bash setup-vm.sh 203-0-113-10.sslip.io'
+```
+
+Run the script as `ubuntu`, not under `sudo`: it escalates internally, and an
+environment variable set outside the escalation would not reach it. Re-running
+it is safe.
 
 The manual steps below are what it automates.
 

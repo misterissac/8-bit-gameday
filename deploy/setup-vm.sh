@@ -25,6 +25,8 @@
 # refreshed from the checkout each time.
 #
 # Overridable for a staged test: APP_DIR, APP_USER, REPO_URL, BRANCH, MEMINFO.
+# DIST_SRC=/tmp/mlb-dist installs an already-uploaded SPA build (rsync it from
+# the laptop first; this is how the build reaches a box that has no Node).
 set -euo pipefail
 
 APP_DIR=${APP_DIR:-/srv/mlb-live}
@@ -102,7 +104,9 @@ preflight() {
   have apt-get || die "apt-get not found — this does not look like Ubuntu"
   have sudo || die "sudo not found; run as a user that can sudo"
   if [ "$(id -u)" -ne 0 ]; then
-    sudo -v || die "sudo failed; cannot continue"
+    # `sudo -v` refreshes the credential cache and asks for a password even
+    # with NOPASSWD; testing a real command is what actually proves the rule.
+    sudo -n true 2>/dev/null || die "sudo needs a password; this script expects passwordless sudo"
   fi
   local free_mb
   free_mb=$(df -Pk / | awk 'NR == 2 { print int($4 / 1024) }')
@@ -170,6 +174,16 @@ step_python() {
 
 step_dist_check() {
   as_user mkdir -p "$APP_DIR/frontend/dist"
+  if [ -n "${DIST_SRC:-}" ]; then
+    if [ -f "$DIST_SRC/index.html" ]; then
+      say "Frontend build from $DIST_SRC"
+      run rsync -a --delete "$DIST_SRC"/ "$APP_DIR/frontend/dist"/
+      run chown -R "$APP_USER:$APP_USER" "$APP_DIR/frontend/dist"
+      info "installed $(find "$DIST_SRC" -type f | wc -l | tr -d ' ') files"
+    else
+      warn "DIST_SRC=$DIST_SRC has no index.html; ignoring it"
+    fi
+  fi
   if [ -f "$APP_DIR/frontend/dist/index.html" ]; then
     DIST_OK=1
     info "frontend build found at $APP_DIR/frontend/dist"
@@ -298,9 +312,11 @@ step_verify() {
   fi
   info "https://$SITE/ -> 200"
 
+  # /api/* is the only path Caddy proxies; /openapi.json would be answered by the
+  # SPA fallback and read as a pass, so check a real API route instead.
   local path
-  for path in /openapi.json /models/player.glb; do
-    code=$(curl -sS -o /dev/null -w '%{http_code}' -m 10 "https://$SITE$path" 2>/dev/null || true)
+  for path in /api/game-status /models/player.glb; do
+    code=$(curl -sS -o /dev/null -w '%{http_code}' -m 30 "https://$SITE$path" 2>/dev/null || true)
     if [ "$code" = "200" ]; then
       info "https://$SITE$path -> 200"
     else
@@ -325,10 +341,13 @@ EOF
   The site will 404 until the SPA is copied over. From your laptop:
 
     rsync -az frontend/dist/ ubuntu@<ip>:/tmp/mlb-dist/
+    ssh ubuntu@<ip> 'DIST_SRC=/tmp/mlb-dist bash setup-vm.sh $SITE'
+
+  The second command re-runs this script, which installs the build and
+  finishes the HTTPS check. Doing it by hand also works:
+
     ssh ubuntu@<ip> 'sudo rsync -a --delete /tmp/mlb-dist/ $APP_DIR/frontend/dist/ \\
       && sudo chown -R $APP_USER:$APP_USER $APP_DIR/frontend/dist && rm -rf /tmp/mlb-dist'
-
-  then re-run this script to finish the HTTPS check.
 EOF
   fi
 }
