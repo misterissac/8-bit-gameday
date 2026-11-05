@@ -81,6 +81,90 @@ sudo systemctl enable --now caddy
 With a real domain, point its A record at the instance and use that name
 instead of the sslip.io one; Caddy issues and renews the certificate itself.
 
+## Reserve the public IP
+
+An instance launched without an explicit choice gets an **ephemeral** public IP.
+It hangs off the VNIC's primary private IP, and:
+
+- survives a stop/start and a reboot (the "stopping changes the IP" advice that
+  circulates describes instances whose IP was unassigned first, not a plain
+  stop);
+- is **deleted with the instance** — and an Always Free instance Oracle reclaims
+  for sitting idle is terminated, whatever the dashboard calls it.
+
+A **reserved** public IP is a tenancy object instead: it stays in the compartment
+after termination, sits in state `AVAILABLE`, and can be re-attached to a rebuilt
+instance. Oracle does not list a charge for one, assigned or not (worth a glance
+at *Billing → Cost Analysis* for your own tenancy); unassigned ones still count
+against the 50-per-region limit.
+
+OCI cannot convert an ephemeral IP into a reserved one at the same address, so
+**reserving changes the public address once.** Do it before a real domain points
+at the box — after that, reserving is just moving the A record.
+
+### Console
+
+1. **Networking → Reserved public IPs → Create reserved public IP.** Name it,
+   pick the compartment, leave it unassigned, and copy the address.
+2. **Compute → Instances → mlb-live → Attached VNICs →** primary VNIC **→ Public
+   IP address →** the ephemeral row **→ Terminate.** An ephemeral IP cannot be
+   unassigned, only terminated; releasing it is what frees the private IP.
+3. Same **Public IP address** section **→ Assign public IP → Choose an existing
+   reserved IP**, and pick the one from step 1.
+4. Point `SITE_ADDRESS` at the new name and restart Caddy (below). The
+   certificate is reissued for the new name over port 80/443.
+5. Anything holding the old address: the Pages repository variable
+   `VITE_API_BASE`, shared links, bookmarks.
+
+### CLI
+
+```bash
+INSTANCE=ocid1.instance.…
+COMPARTMENT=ocid1.tenancy.…
+AD=$(oci compute instance get --instance-id "$INSTANCE" \
+  --query 'data."availability-domain"' --raw-output)
+VNIC=$(oci compute instance list-vnics --instance-id "$INSTANCE" \
+  --query 'data[?`"is-primary"`].id | [0]' --raw-output)
+PRIVATE_IP=$(oci network private-ip list --vnic-id "$VNIC" \
+  --query 'data[?`"is-primary"`].id | [0]' --raw-output)
+
+# 1. reserve one, unassigned
+oci network public-ip create --compartment-id "$COMPARTMENT" \
+  --lifetime RESERVED --display-name mlb-live \
+  --wait-for-state AVAILABLE
+
+# 2. find the ephemeral IP on that VNIC. Note the scope: an instance's public
+#    IP is AVAILABILITY_DOMAIN-scoped, so --scope REGION lists only NAT
+#    gateways and load balancers and looks empty.
+oci network public-ip list --scope AVAILABILITY_DOMAIN \
+  --availability-domain "$AD" --compartment-id "$COMPARTMENT" \
+  --lifetime EPHEMERAL --all \
+  --query 'data[].{ip:"ip-address",id:id,state:"lifecycle-state"}'
+
+oci network public-ip delete --public-ip-id <EPHEMERAL_OCID>
+
+# 3. assign the reserved one (asynchronous: wait for ASSIGNED)
+oci network public-ip update --public-ip-id <RESERVED_OCID> \
+  --private-ip-id "$PRIVATE_IP" --wait-for-state ASSIGNED
+```
+
+Then move the name:
+
+```bash
+printf '[Service]\nEnvironment=SITE_ADDRESS=%s\n' "<new-name>.sslip.io" \
+  | ssh ubuntu@<new-ip> 'sudo tee /etc/systemd/system/caddy.service.d/site.conf'
+ssh ubuntu@<new-ip> 'sudo systemctl daemon-reload && sudo systemctl restart caddy'
+```
+
+### Verify
+
+```bash
+oci network public-ip list --scope AVAILABILITY_DOMAIN \
+  --availability-domain "$AD" --compartment-id "$COMPARTMENT" --all \
+  --query 'data[].{ip:"ip-address",life:lifetime,state:"lifecycle-state"}'
+# expect exactly one row: lifetime RESERVED, state ASSIGNED, the address you want
+```
+
 ## API service
 
 ```bash
@@ -126,6 +210,56 @@ with Caddy's `trusted_proxies` setting, or every visitor will share one bucket.
 Tune it in the unit's `Environment=` lines: `RATE_LIMIT_PER_SECOND`,
 `RATE_LIMIT_BURST`, and `ALLOWED_ORIGINS` (comma separated) when the SPA is
 served from another origin.
+
+## Security headers
+
+The site block in `deploy/Caddyfile` sets these on **every** response — the SPA,
+the JSON API and the `304`s alike — so there is one place to look and no route
+that quietly skips them.
+
+| Header | Value |
+|---|---|
+| `Strict-Transport-Security` | `max-age=31536000` |
+| `Content-Security-Policy` | below |
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| `X-Frame-Options` | `DENY` |
+| `Permissions-Policy` | accelerometer, camera, geolocation, gyroscope, magnetometer, microphone, payment, usb — all `()` |
+| `Cross-Origin-Opener-Policy` | `same-origin` |
+| `Server` | removed |
+
+HSTS carries no `includeSubDomains` and no `preload`: the host is a name this
+project may still change, and a year-long pin is awkward to take back. Add
+`includeSubDomains` once the final domain's subdomains are all HTTPS too.
+
+The CSP is derived from what the bundle actually loads, which is why it can stay
+this tight:
+
+- `script-src 'self'` — `index.html` has no inline script; Vite emits a single
+  `type="module"` tag pointing at a hashed file.
+- `style-src 'self' 'unsafe-inline'` — the React tree writes `style` attributes
+  and there is no nonce to hand them. Styles are the only `unsafe-inline` left.
+- `img-src 'self' data: blob: https://img.mlbstatic.com` — the batter headshot
+  on the ballpark's video board is the one cross-origin fetch. It is loaded with
+  `crossOrigin="anonymous"` so the canvas can read its pixels; if that URL ever
+  moves host, this line has to move with it or the board goes blank.
+- `connect-src 'self'` — every API call is same-origin because this Caddy serves
+  both halves. A Pages build talks to this origin from another one, but its CSP
+  comes from GitHub Pages, which sends none, so it is unaffected.
+- `font-src 'self'` — Rubik ships in the repo (`frontend/src/fonts`).
+- `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'`,
+  `form-action 'self'`, `upgrade-insecure-requests` — no plugin, embed, base tag
+  or form anywhere in the app, so forbidding them costs nothing.
+
+A CSP fails closed in the browser, where a violation is a console message rather
+than a status code — so after changing it, load the page once with devtools open
+and watch the console, then confirm the headers on the wire:
+
+```bash
+curl -sSI https://$SITE_ADDRESS/ \
+  | grep -iE 'content-security|strict-transport|x-frame|permissions|cross-origin'
+curl -sSI https://$SITE_ADDRESS/api/game-status | grep -i content-security
+```
 
 ## Polling
 

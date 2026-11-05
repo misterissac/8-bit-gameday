@@ -15,6 +15,30 @@
 {$SITE_ADDRESS:localhost} {
 	encode zstd gzip
 
+	# Security headers. Set here, once, so they cover the SPA, the API and the
+	# 304s alike — a header block that only wrapped file_server would leave the
+	# JSON responses (and anything the proxy decides) bare.
+	#
+	# The CSP is written against what the app actually loads: JS, CSS and the two
+	# Rubik faces are same-origin (Vite bundles the first two, the fonts ship in
+	# the repo), the batter headshot is fetched from img.mlbstatic.com with
+	# crossOrigin="anonymous" so the canvas can read its pixels, and the debug
+	# drawer saves a Blob. There is no inline script in index.html, so
+	# script-src stays 'self'; 'unsafe-inline' is limited to styles because React
+	# writes style attributes and there is no nonce to hand it.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://img.mlbstatic.com; font-src 'self'; connect-src 'self'; media-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "DENY"
+		Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		# Caddy advertises itself by default; this also drops the version, which
+		# is the only part of that banner worth having from the outside.
+		-Server
+	}
+
 	# Vite hashes everything under /assets; the entry point must revalidate.
 	@hashed path /assets/*
 	header @hashed Cache-Control "public, max-age=31536000, immutable"
