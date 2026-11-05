@@ -60,6 +60,9 @@
 	# not immutable: replacing the map means renaming it or lowering this.
 	@vendored path /env/*
 	header @vendored Cache-Control "public, max-age=2592000"
+	# Caddy's MIME table has no entry for .hdr, and file_server omits the header
+	# entirely rather than guessing — which `nosniff` makes worth fixing.
+	header @vendored Content-Type "application/octet-stream"
 
 	@entry path / /index.html
 	header @entry Cache-Control "no-cache"
