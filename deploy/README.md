@@ -127,6 +127,15 @@ Tune it in the unit's `Environment=` lines: `RATE_LIMIT_PER_SECOND`,
 `RATE_LIMIT_BURST`, and `ALLOWED_ORIGINS` (comma separated) when the SPA is
 served from another origin.
 
+## Polling
+
+The four endpoints the frontend polls (`/api/trajectory`, `/api/batted-ball`,
+`/api/game-state`, `/api/game-status`) answer an unchanged repeat with `304` and
+no body. Each carries a strong `ETag` and `Cache-Control: no-cache`, so the
+browser keeps the body it already holds and asks whether it is still current: a
+quiet second costs a few hundred bytes of headers instead of 1–155 KB of JSON.
+Revalidation is the browser's job — nothing in the frontend sets a validator.
+
 ## GitHub Pages frontend (optional)
 
 `.github/workflows/pages.yml` builds `frontend/` and publishes `frontend/dist` to

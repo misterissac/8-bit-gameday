@@ -1988,6 +1988,46 @@ def _set_validator_headers(response: Optional[Response], etag: str) -> None:
     response.headers["Cache-Control"] = _POLL_CACHE_CONTROL
 
 
+# ---------------------------------------------------------------------------
+# Conditional requests for the scorebug polls
+# ---------------------------------------------------------------------------
+# The frozen scorebug re-polls /api/game-state or /api/game-status every second
+# even though most of those seconds change nothing: the score, count, outs and
+# half-inning all sit still between pitches. Those two payloads are rebuilt from
+# the feed on every request, so unlike the trajectory/batted-ball caches there is
+# no stored body that could be mutated afterwards -- which makes the finished
+# payload itself the exact description of the representation. Hashing it is both
+# cheap (about 1-3 KB of JSON) and incapable of going stale: any field that
+# changes the body changes the validator.
+
+
+def _payload_etag(payload: dict, *scope: str) -> str:
+    """Strong validator for a body built fresh from the feed on each poll."""
+    material = json.dumps(
+        payload, sort_keys=True, default=str, separators=(",", ":"),
+    )
+    prefix = "|".join(scope)
+    digest = hashlib.sha1(f"{prefix}|{material}".encode("utf-8")).hexdigest()
+    return '"' + digest + '"'
+
+
+def _conditional_payload(endpoint: str, game_pk: str, payload: dict,
+                         request: Optional[Request],
+                         response: Optional[Response]):
+    """Answer 304 when the client holds this exact payload, else tag the 200.
+
+    ``request``/``response`` are optional so the pure builders can be called
+    from tests and background work without an HTTP exchange.
+    """
+    etag = _payload_etag(payload, endpoint, str(game_pk))
+    if request is not None and _if_none_match_hit(
+        request.headers.get("if-none-match"), etag
+    ):
+        return _not_modified(etag)
+    _set_validator_headers(response, etag)
+    return payload
+
+
 @app.get("/api/trajectory")
 def get_trajectory(request: Request = None, response: Response = None,
                    env: str = "live", game_pk: str = GAME_PK,
@@ -4442,26 +4482,34 @@ def _game_status_snapshot(data: dict, game_pk: str = GAME_PK) -> dict:
 
 
 @app.get("/api/game-status")
-def get_game_status(game_pk: str = GAME_PK):
+def get_game_status(request: Request = None, response: Response = None,
+                    game_pk: str = GAME_PK):
     """Return delay/review/live status and the active pitcher only.
 
     This endpoint intentionally avoids score, box-score, count, and season-stat
     parsing. The frozen scorebug polls it once per second so a delay or pitching
     change can appear without fetching/building the full scoreboard payload.
+
+    Conditional requests
+    --------------------
+    The response carries a strong ``ETag`` and ``Cache-Control: no-cache``, so a
+    second of dead time revalidates a ~1 KB body instead of resending it.
     """
     game_pk = _checked_game_pk(game_pk)
     print(f"GAME STATUS... Polling game {game_pk}")
     data = _fetch_feed(game_pk)
     try:
-        return _game_status_snapshot(data, game_pk)
+        payload = _game_status_snapshot(data, game_pk)
     except KeyError as e:
         raise HTTPException(status_code=500, detail=f"Data parsing error: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Game-status parsing failed: {e}")
+    return _conditional_payload("status", game_pk, payload, request, response)
 
 
 @app.get("/api/game-state")
-def get_game_state(game_pk: str = GAME_PK):
+def get_game_state(request: Request = None, response: Response = None,
+                   game_pk: str = GAME_PK):
     """Return broadcast-style game state from the MLB live feed.
 
     Drives the scorebug HUD in the frontend: teams + score, inning/half,
@@ -4469,6 +4517,12 @@ def get_game_state(game_pk: str = GAME_PK):
     matchup, and pitch totals. Values that aren't meaningful yet (e.g. no
     current play during the middle of an inning) come back as ``None`` so the
     frontend can render a dash instead of a stale number.
+
+    Conditional requests
+    --------------------
+    Like ``/api/game-status`` this carries a strong ``ETag`` and
+    ``Cache-Control: no-cache``: an unchanged second answers ``304`` with no
+    body instead of resending the scoreboard.
     """
     game_pk = _checked_game_pk(game_pk)
     print(f"GAME STATE... Polling game {game_pk}")
@@ -4732,7 +4786,7 @@ def get_game_state(game_pk: str = GAME_PK):
         home_id = (game_data.get('teams') or {}).get('home', {}).get('id')
         current_inning_num = linescore.get('currentInning') or 1
         challenges = _calculate_challenges(all_plays, current_inning_num, away_id, home_id)
-        return {
+        payload = {
             "success": True,
             "teams": teams,
             "score": score,
@@ -4805,6 +4859,7 @@ def get_game_state(game_pk: str = GAME_PK):
         raise HTTPException(status_code=500, detail=f"Data parsing error: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Game-state parsing failed: {e}")
+    return _conditional_payload("state", game_pk, payload, request, response)
 
 
 # ---------------------------------------------------------------------------

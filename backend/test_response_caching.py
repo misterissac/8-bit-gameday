@@ -913,5 +913,168 @@ class BattedBallConditionalRequestTests(unittest.TestCase):
         self.assertEqual(advanced_poll.json()["play_id"], "AB5-EV0")
 
 
+def _scorebug_feed(inning=3, away_runs=0, formation_plays=None):
+    """Minimal live feed that both scorebug snapshots can parse."""
+    pitch = {
+        "isPitch": True,
+        "pitchNumber": 4,
+        "details": {"call": {"code": "C"}},
+    }
+    return {
+        "gameData": {
+            "status": {"abstractGameState": "Live", "detailedState": "In Progress"},
+            "teams": {
+                "away": {"name": "Away", "abbreviation": "AWY", "id": 1},
+                "home": {"name": "Home", "abbreviation": "HOM", "id": 2},
+            },
+            "venue": {"name": "Test Park"},
+            "datetime": {"officialDate": "2026-09-01"},
+            "game": {"type": "R"},
+        },
+        "liveData": {
+            "linescore": {
+                "currentInning": inning,
+                "currentInningOrdinal": "3rd",
+                "isTopInning": True,
+                "inningState": "Top",
+                "outs": 1,
+                "balls": 1,
+                "strikes": 2,
+                "teams": {
+                    "away": {"runs": away_runs, "hits": 2, "errors": 0},
+                    "home": {"runs": 1, "hits": 3, "errors": 0},
+                },
+            },
+            "plays": {
+                "allPlays": (formation_plays if formation_plays is not None else [{
+                    "about": {"atBatIndex": 4},
+                    "matchup": {
+                        "pitcher": {"id": 11, "fullName": "P. Pitcher"},
+                        "batter": {"id": 22, "fullName": "B. Batter"},
+                    },
+                    "playEvents": [pitch],
+                }]),
+                "currentPlay": {
+                    "matchup": {
+                        "pitcher": {"id": 11, "fullName": "P. Pitcher"},
+                        "batter": {"id": 22, "fullName": "B. Batter"},
+                    },
+                    "count": {"balls": 1, "strikes": 2, "outs": 1},
+                    "pitchNumber": 4,
+                    "playEvents": [pitch],
+                },
+            },
+            "boxscore": {
+                "teams": {
+                    "away": {"batters": [], "players": {}},
+                    "home": {"batters": [], "players": {}},
+                },
+            },
+        },
+    }
+
+
+class ScorebugConditionalRequestTests(unittest.TestCase):
+    """The 200/304 contract for the 1 s game-state / game-status polls."""
+
+    ENDPOINTS = ("/api/game-state", "/api/game-status")
+
+    def setUp(self):
+        main._clear_feed_cache()
+        self._saved_workers = _suppress_worker_network()
+        self.client = TestClient(main.app)
+
+    def tearDown(self):
+        _restore_worker_network(self._saved_workers)
+
+    def _poll(self, path, etag=None, game_pk="822001"):
+        headers = {"If-None-Match": etag} if etag else {}
+        return self.client.get(path, params={"game_pk": game_pk}, headers=headers)
+
+    def _serving(self, feed, formation=None):
+        """Mock the feed fetch and the Statcast formation lookup."""
+        return (
+            mock.patch.object(main.requests, "get", return_value=_FeedResponse(feed)),
+            mock.patch.object(
+                main, "_live_formation_from_savant", return_value=formation,
+            ),
+        )
+
+    def test_repeat_poll_with_matching_validator_returns_304(self):
+        for path in self.ENDPOINTS:
+            with self.subTest(path=path):
+                main._clear_feed_cache()
+                feed_mock, formation_mock = self._serving(_scorebug_feed())
+                with feed_mock, formation_mock:
+                    first = self._poll(path)
+                    etag = first.headers.get("etag")
+                    second = self._poll(path, etag=etag)
+
+                self.assertEqual(first.status_code, 200)
+                self.assertTrue(etag)
+                self.assertEqual(first.headers["cache-control"], "no-cache")
+                self.assertEqual(second.status_code, 304)
+                self.assertEqual(second.content, b"")
+                self.assertEqual(second.headers.get("etag"), etag)
+
+    def test_a_feed_advance_invalidates_the_validator(self):
+        for path in self.ENDPOINTS:
+            with self.subTest(path=path):
+                main._clear_feed_cache()
+                feed_mock, formation_mock = self._serving(_scorebug_feed())
+                with feed_mock, formation_mock:
+                    first = self._poll(path)
+                main._clear_feed_cache()
+                feed_mock, formation_mock = self._serving(_scorebug_feed(inning=4))
+                with feed_mock, formation_mock:
+                    advanced = self._poll(path, etag=first.headers["etag"])
+
+                self.assertEqual(advanced.status_code, 200)
+                self.assertNotEqual(advanced.headers["etag"], first.headers["etag"])
+                self.assertEqual(advanced.json()["inningNumber"], 4)
+
+    def test_a_new_formation_invalidates_the_validator(self):
+        """Statcast can move the defensive alignment without the feed moving."""
+        path = "/api/game-status"
+        for formation in ("Standard", "Infield In"):
+            main._clear_feed_cache()
+            feed_mock, formation_mock = self._serving(
+                _scorebug_feed(), formation=formation
+            )
+            with feed_mock, formation_mock:
+                poll = self._poll(path)
+            if formation == "Standard":
+                first = poll
+            else:
+                self.assertEqual(poll.status_code, 200)
+                self.assertNotEqual(
+                    poll.headers["etag"], first.headers["etag"]
+                )
+                self.assertEqual(poll.json()["defenseFormation"], "Infield In")
+
+    def test_a_new_score_invalidates_the_game_state_validator(self):
+        """A run changes the scoreboard body even though the status is the same."""
+        main._clear_feed_cache()
+        feed_mock, formation_mock = self._serving(_scorebug_feed())
+        with feed_mock, formation_mock:
+            first = self._poll("/api/game-state")
+        main._clear_feed_cache()
+        feed_mock, formation_mock = self._serving(_scorebug_feed(away_runs=2))
+        with feed_mock, formation_mock:
+            advanced = self._poll("/api/game-state", etag=first.headers["etag"])
+
+        self.assertEqual(advanced.status_code, 200)
+        self.assertNotEqual(advanced.headers["etag"], first.headers["etag"])
+        self.assertEqual(advanced.json()["score"]["away"]["runs"], 2)
+
+    def test_a_malformed_validator_still_gets_the_body(self):
+        path = "/api/game-status"
+        feed_mock, formation_mock = self._serving(_scorebug_feed())
+        with feed_mock, formation_mock:
+            response = self._poll(path, etag='"not-the-current-etag"')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["success"], True)
+
+
 if __name__ == "__main__":
     unittest.main()
