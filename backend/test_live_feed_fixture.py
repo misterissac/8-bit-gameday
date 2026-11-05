@@ -80,7 +80,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
             "get",
             return_value=_FixtureResponse(self.feed),
         ):
-            live_status = main.get_game_status(game_pk="fixture-game")
+            live_status = main.get_game_status(game_pk="818001")
 
         self.assertEqual(live_status["gameState"], "In Progress")
         self.assertTrue(live_status["isLive"])
@@ -101,7 +101,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
             "get",
             return_value=_FixtureResponse(delayed_feed),
         ):
-            delayed_status = main.get_game_status(game_pk="fixture-game")
+            delayed_status = main.get_game_status(game_pk="818001")
 
         self.assertEqual(delayed_status["gameState"], "Rain Delay")
         self.assertEqual(delayed_status["pitcher"], "Fixture Pitcher")
@@ -129,7 +129,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
         response = _FixtureResponse(lagging_feed)
         with mock.patch.object(main.requests, "get", return_value=response), \
              mock.patch.object(main, "_build_pitch_payload", side_effect=fake_pitch_payload) as build:
-            payload = main.get_trajectory(env="default", game_pk="lagging-game")
+            payload = main.get_trajectory(env="default", game_pk="818002")
 
         self.assertTrue(payload["success"])
         self.assertEqual(payload["play_id"], "AB77-P4")
@@ -163,7 +163,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
         response = _FixtureResponse(lagging_feed)
         with mock.patch.object(main.requests, "get", return_value=response), \
              mock.patch.object(main, "_build_pitch_payload", side_effect=fake_pitch_payload):
-            payload = main.get_trajectory(env="default", game_pk="metadata-lag-game")
+            payload = main.get_trajectory(env="default", game_pk="818003")
 
         self.assertEqual(payload["play_id"], "AB78-P10")
         self.assertTrue(payload["waiting_for_pitch_data"])
@@ -254,7 +254,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
         with mock.patch.object(main.requests, "get", return_value=response), \
              mock.patch.object(main, "_sprint_speed_for_batter", return_value=None), \
              mock.patch.object(main, "_compute_xba", return_value=0.321):
-            payload = main.get_batted_ball(game_pk="fixture-game")
+            payload = main.get_batted_ball(game_pk="818001")
 
         self.assertTrue(payload["success"])
         self.assertEqual(payload["play_id"], "AB42-EV1")
@@ -290,7 +290,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
         with mock.patch.object(main, "_fetch_feed", return_value=feed), \
              mock.patch.object(main, "_sprint_speed_for_batter", return_value=None), \
              mock.patch.object(main, "_compute_xba", return_value=0.321):
-            payload = main.get_batted_ball(game_pk="fixture-game")
+            payload = main.get_batted_ball(game_pk="818001")
 
         self.assertEqual(payload["fielder"], "CF")
         self.assertEqual(payload["fielderName"], "Aaron Judge")
@@ -313,7 +313,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
              mock.patch.object(main, "_build_pitch_payload", side_effect=fake_pitch_payload), \
              mock.patch.object(main, "_sprint_speed_for_batter", return_value=None), \
              mock.patch.object(main, "_compute_xba", return_value=0.321):
-            payload = main.get_at_bat(at_bat_index=42, game_pk="fixture-game")
+            payload = main.get_at_bat(at_bat_index=42, game_pk="818001")
 
         self.assertTrue(payload["success"])
         self.assertEqual(payload["at_bat_index"], 42)
@@ -345,7 +345,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
 
         with mock.patch.object(main.requests, "get", return_value=response), \
              mock.patch.object(main, "_build_pitch_payload", side_effect=fake_pitch_payload):
-            payload = main.get_at_bat(at_bat_index=42, game_pk="fixture-game")
+            payload = main.get_at_bat(at_bat_index=42, game_pk="818001")
 
         self.assertEqual(len(payload["pitches"]), 2)
 
@@ -393,7 +393,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
 
         with mock.patch.object(main.requests, "get", return_value=response), \
              mock.patch.object(main, "_build_pitch_payload", side_effect=fake_pitch_payload):
-            payload = main.get_at_bat(at_bat_index=42, game_pk="fixture-game")
+            payload = main.get_at_bat(at_bat_index=42, game_pk="818001")
 
         game_state = payload["pitches"][0]["pitch"]["game_state_before"]
         self.assertEqual(game_state["defenseFormation"], "Strategic")
@@ -460,7 +460,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
 
         with mock.patch.object(main.requests, "get", return_value=response), \
              mock.patch.object(main, "_build_pitch_payload", side_effect=fake_pitch_payload):
-            payload = main.get_at_bat(at_bat_index=42, game_pk="fixture-game")
+            payload = main.get_at_bat(at_bat_index=42, game_pk="818001")
 
         before = payload["pitches"][0]["pitch"]["game_state_before"]
         # The sub happened after AB 42, so its snapshot keeps the pre-sub SS.
@@ -525,7 +525,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
 
         with mock.patch.object(main.requests, "get", return_value=response), \
              mock.patch.object(main, "_build_pitch_payload", side_effect=fake_pitch_payload):
-            payload = main.get_at_bat(at_bat_index=42, game_pk="fixture-game")
+            payload = main.get_at_bat(at_bat_index=42, game_pk="818001")
 
         before = payload["pitches"][0]["pitch"]["game_state_before"]
         alignment = before["defenseAlignment"]
@@ -568,7 +568,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
 
         with mock.patch.object(main.requests, "get", return_value=response), \
              mock.patch.object(main, "_build_pitch_payload", side_effect=fake_pitch_payload):
-            payload = main.get_at_bat(at_bat_index=42, game_pk="fixture-game")
+            payload = main.get_at_bat(at_bat_index=42, game_pk="818001")
 
         before = payload["pitches"][0]["pitch"]["game_state_before"]
         # Unchanged from the live linescore (the away team can't be rebuilt).
@@ -624,7 +624,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
 
         with mock.patch.object(main.requests, "get", return_value=response), \
              mock.patch.object(main, "_build_pitch_payload", side_effect=fake_pitch_payload):
-            payload = main.get_at_bat(at_bat_index=42, game_pk="fixture-game")
+            payload = main.get_at_bat(at_bat_index=42, game_pk="818001")
 
         before = payload["pitches"][0]["pitch"]["game_state_before"]
         alignment = before["defenseAlignment"]
@@ -698,7 +698,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
 
         with mock.patch.object(main.requests, "get", return_value=response), \
              mock.patch.object(main, "_build_pitch_payload", side_effect=fake_pitch_payload):
-            payload = main.get_at_bat(at_bat_index=42, game_pk="fixture-game")
+            payload = main.get_at_bat(at_bat_index=42, game_pk="818001")
 
         alignment = payload["pitches"][0]["pitch"]["game_state_before"]["defenseAlignment"]
         # The pre-at-bat sub is applied to the rebuilt away lineup.
@@ -793,7 +793,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
         with mock.patch.object(main.requests, "get", return_value=response), \
              mock.patch.object(main, "_fetch_savant_rows", return_value=rows), \
              mock.patch.object(main, "_build_pitch_payload", side_effect=fake_pitch_payload):
-            payload = main.get_at_bat(at_bat_index=42, game_pk="fixture-game")
+            payload = main.get_at_bat(at_bat_index=42, game_pk="818001")
 
         # The pitch's own Statcast row overrides the linescore's current
         # formation (which the fixture sets to Strategic).
@@ -827,7 +827,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
              ), \
              mock.patch.object(main, "_sprint_speed_for_batter", return_value=None):
             payload = main.get_trajectory(
-                env="default", game_pk="fixture-game", after_play_id="AB41-P1"
+                env="default", game_pk="818001", after_play_id="AB41-P1"
             )
 
         # The newest play (AB42-P2) is the at-bat's final pitch.
@@ -842,7 +842,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
     def test_game_log_endpoint_formats_fixture_plays_with_inning_labels(self):
         response = _FixtureResponse(self.feed)
         with mock.patch.object(main.requests, "get", return_value=response):
-            payload = main.get_game_log(game_pk="fixture-game")
+            payload = main.get_game_log(game_pk="818001")
 
         self.assertTrue(payload["success"])
         self.assertEqual([play["inning_label"] for play in payload["plays"]], ["Top 5th", "Top 5th"])
@@ -1297,7 +1297,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
     def test_game_state_endpoint_replays_fixture_score_count_and_bases(self):
         response = _FixtureResponse(self.feed)
         with mock.patch.object(main.requests, "get", return_value=response):
-            payload = main.get_game_state(game_pk="fixture-game")
+            payload = main.get_game_state(game_pk="818001")
 
         self.assertTrue(payload["success"])
         self.assertEqual(payload["teams"]["away"]["abbreviation"], "AWY")
@@ -1341,7 +1341,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
         }]
         with mock.patch.object(main, "_fetch_feed", return_value=feed), \
              mock.patch.object(main, "_fetch_savant_rows", return_value=rows):
-            payload = main.get_game_state(game_pk="fixture-game")
+            payload = main.get_game_state(game_pk="818001")
 
         self.assertEqual(payload["defenseFormation"], "Strategic")
 
@@ -1359,7 +1359,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
         }]
         with mock.patch.object(main, "_fetch_feed", return_value=feed), \
              mock.patch.object(main, "_fetch_savant_rows", return_value=rows):
-            payload = main.get_game_state(game_pk="fixture-game")
+            payload = main.get_game_state(game_pk="818001")
 
         self.assertEqual(payload["defenseFormation"], "Infield In")
 
@@ -1372,7 +1372,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
         }
         with mock.patch.object(main, "_fetch_feed", return_value=feed), \
              mock.patch.object(main, "_fetch_savant_rows", return_value=[]):
-            payload = main.get_game_state(game_pk="fixture-game")
+            payload = main.get_game_state(game_pk="818001")
 
         self.assertEqual(payload["defenseFormation"], "Infield In")
 
@@ -1443,7 +1443,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
         response = _FixtureResponse(feed)
 
         with mock.patch.object(main.requests, "get", return_value=response):
-            payload = main.get_batter_pitches(at_bat_index=42, game_pk="fixture-game")
+            payload = main.get_batter_pitches(at_bat_index=42, game_pk="818001")
 
         self.assertTrue(payload["success"])
         self.assertEqual(payload["batter"], "Fixture Batter")
@@ -1485,7 +1485,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
         response = _FixtureResponse(self.feed)
         with mock.patch.object(main.requests, "get", return_value=response):
             with self.assertRaises(Exception) as ctx:
-                main.get_batter_pitches(at_bat_index=999, game_pk="fixture-game")
+                main.get_batter_pitches(at_bat_index=999, game_pk="818001")
         self.assertEqual(ctx.exception.status_code, 404)
         self.assertIn("not found", str(ctx.exception.detail))
 
@@ -1556,7 +1556,7 @@ class LiveFeedFixtureTests(unittest.TestCase):
             },
         }
         with mock.patch.object(main, "_fetch_feed", return_value=feed):
-            payload = main.get_box_score(game_pk="fixture-game")
+            payload = main.get_box_score(game_pk="818001")
 
         batter = payload["teams"]["away"]["batting"][0]
         # 2 hits − 1 double − 1 HR ⇒ 0 singles.
@@ -1885,7 +1885,7 @@ class InducedBreaksRegressionTests(unittest.TestCase):
             payload = main._build_pitch_payload(
                 data, play, pitch_event, 0,
                 main.DEFAULT_ENV, main.DEFAULT_ENV_META,
-                game_pk="fixture-game",
+                game_pk="818001",
             )
 
         # From breaks (Savant convention): -breakHorizontal = +16.7,

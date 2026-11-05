@@ -38,7 +38,7 @@ if backend_dir not in sys.path:
 import main  # noqa: E402
 
 FIXTURE_PATH = Path(__file__).with_name("fixtures") / "live_feed.json"
-GAME_PK = "fixture-game"
+GAME_PK = "818001"
 
 # The integration step and the sampled cadence. Both are the contract.
 INTEGRATION_DT_S = 0.001

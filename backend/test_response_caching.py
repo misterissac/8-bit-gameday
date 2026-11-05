@@ -161,9 +161,9 @@ class ResponseCacheTests(unittest.TestCase):
 
         with mock.patch.object(main.requests, "get", return_value=_FeedResponse(feed)), \
              mock.patch.object(main, "_build_trajectory_payload", side_effect=build):
-            first = main.get_trajectory(env="default", game_pk="game-1")
-            second = main.get_trajectory(env="default", game_pk="game-1")
-            other_game = main.get_trajectory(env="default", game_pk="game-2")
+            first = main.get_trajectory(env="default", game_pk="822001")
+            second = main.get_trajectory(env="default", game_pk="822001")
+            other_game = main.get_trajectory(env="default", game_pk="822002")
 
         self.assertIs(first, second)
         self.assertEqual(len(built), 2)
@@ -196,18 +196,18 @@ class ResponseCacheTests(unittest.TestCase):
             main.requests,
             "get",
             side_effect=_feed_side_effect(
-                [_FeedResponse(initial), _FeedResponse(advanced)], "game-1"
+                [_FeedResponse(initial), _FeedResponse(advanced)], "822001"
             ),
         ), mock.patch.object(
             main, "_build_trajectory_payload", side_effect=build_latest
         ), mock.patch.object(
             main, "_build_pitch_payload", side_effect=build_catch_up
         ):
-            first = main.get_trajectory(env="default", game_pk="game-1")
+            first = main.get_trajectory(env="default", game_pk="822001")
             # Force a fresh feed fetch for the advanced poll (the feed cache
             # would otherwise serve the unchanged feed within its short TTL).
             main._clear_feed_cache()
-            advanced_payload = main.get_trajectory(env="default", game_pk="game-1")
+            advanced_payload = main.get_trajectory(env="default", game_pk="822001")
 
         self.assertEqual(first["play_id"], "AB4-P1")
         self.assertEqual(advanced_payload["play_id"], "AB4-P4")
@@ -248,14 +248,14 @@ class ResponseCacheTests(unittest.TestCase):
                     _FeedResponse(advanced),
                     _FeedResponse(advanced),
                 ],
-                "game-1",
+                "822001",
             ),
         ), mock.patch.object(
             main, "_build_trajectory_payload", side_effect=build_latest
         ), mock.patch.object(
             main, "_build_pitch_payload", side_effect=build_catch_up
         ):
-            first = main.get_trajectory(env="default", game_pk="game-1")
+            first = main.get_trajectory(env="default", game_pk="822001")
             # Simulate the response for P4 being lost after the backend built
             # it. The next request must use the client's P1 cursor, not the
             # backend's latest no-cursor cache entry, to recover P2/P3.
@@ -264,9 +264,9 @@ class ResponseCacheTests(unittest.TestCase):
                 main._TRAJECTORY_BUILD_LOCKS.clear()
                 main._TRAJECTORY_BUILD_LOCKS_LAST_USED.clear()
             main._clear_feed_cache()
-            dropped = main.get_trajectory(env="default", game_pk="game-1")
+            dropped = main.get_trajectory(env="default", game_pk="822001")
             recovered = main.get_trajectory(
-                env="default", game_pk="game-1", after_play_id=first["play_id"]
+                env="default", game_pk="822001", after_play_id=first["play_id"]
             )
 
         self.assertEqual(dropped["play_id"], "AB4-P4")
@@ -278,8 +278,8 @@ class ResponseCacheTests(unittest.TestCase):
 
     def test_trajectory_cursor_cache_prunes_old_entries(self):
         limit = main._TRAJECTORY_CURSOR_CACHE_MAX_ENTRIES
-        initial_key = ("game-1", "default", "")
-        keep_key = ("game-1", "default", f"AB4-P{limit + 2}")
+        initial_key = ("822001", "default", "")
+        keep_key = ("822001", "default", f"AB4-P{limit + 2}")
         with main._TRAJECTORY_CACHE_GUARD:
             main._TRAJECTORY_CACHE[initial_key] = {
                 "source_key": "initial",
@@ -287,7 +287,7 @@ class ResponseCacheTests(unittest.TestCase):
                 "last_used_at": 0.0,
             }
             for cursor in range(limit + 3):
-                key = ("game-1", "default", f"AB4-P{cursor}")
+                key = ("822001", "default", f"AB4-P{cursor}")
                 main._TRAJECTORY_CACHE[key] = {
                     "source_key": str(cursor),
                     "response": {},
@@ -301,12 +301,12 @@ class ResponseCacheTests(unittest.TestCase):
             keys = set(main._TRAJECTORY_CACHE)
 
         self.assertEqual(
-            len([key for key in keys if key[0:2] == ("game-1", "default") and key[2]]),
+            len([key for key in keys if key[0:2] == ("822001", "default") and key[2]]),
             limit,
         )
         self.assertIn(initial_key, keys)
         self.assertIn(keep_key, keys)
-        self.assertNotIn(("game-1", "default", "AB4-P0"), keys)
+        self.assertNotIn(("822001", "default", "AB4-P0"), keys)
 
     def test_trajectory_build_locks_prune_beyond_window(self):
         """Per-cursor single-flight locks are bounded per game/environment (LRU)
@@ -314,7 +314,7 @@ class ResponseCacheTests(unittest.TestCase):
         original_max = main._TRAJECTORY_BUILD_LOCKS_MAX_ENTRIES
         main._TRAJECTORY_BUILD_LOCKS_MAX_ENTRIES = 4
         try:
-            scope = ("game-1", "default")
+            scope = ("822001", "default")
             with main._TRAJECTORY_CACHE_GUARD:
                 for cursor in range(6):
                     key = (scope[0], scope[1], f"P{cursor}")
@@ -323,7 +323,7 @@ class ResponseCacheTests(unittest.TestCase):
                 held_key = (scope[0], scope[1], "P1")
                 main._TRAJECTORY_BUILD_LOCKS[held_key].acquire()
                 # A different game's locks are a separate scope and must survive.
-                other_key = ("game-2", "default", "P0")
+                other_key = ("822002", "default", "P0")
                 main._TRAJECTORY_BUILD_LOCKS[other_key] = threading.Lock()
                 main._TRAJECTORY_BUILD_LOCKS_LAST_USED[other_key] = 99.0
             try:
@@ -372,16 +372,16 @@ class ResponseCacheTests(unittest.TestCase):
                     _FeedResponse(advanced),
                     _FeedResponse(advanced),
                 ],
-                "game-1",
+                "822001",
             ),
         ), mock.patch.object(main, "_build_hit_payload", side_effect=build_hit):
-            first = main.get_batted_ball(game_pk="game-1")
+            first = main.get_batted_ball(game_pk="822001")
             # The latest response is dropped. The next poll uses the last hit
             # the client applied and must recover the intervening hit payloads.
             main._clear_feed_cache()
-            dropped = main.get_batted_ball(game_pk="game-1")
+            dropped = main.get_batted_ball(game_pk="822001")
             recovered = main.get_batted_ball(
-                game_pk="game-1", after_play_id=first["play_id"]
+                game_pk="822001", after_play_id=first["play_id"]
             )
 
         self.assertEqual(first["play_id"], "AB4-EV0")
@@ -403,9 +403,9 @@ class ResponseCacheTests(unittest.TestCase):
 
         with mock.patch.object(main.requests, "get", return_value=_FeedResponse(feed)), \
              mock.patch.object(main, "_build_hit_payload", side_effect=build):
-            first = main.get_batted_ball(game_pk="game-1")
-            second = main.get_batted_ball(game_pk="game-1")
-            other_game = main.get_batted_ball(game_pk="game-2")
+            first = main.get_batted_ball(game_pk="822001")
+            second = main.get_batted_ball(game_pk="822001")
+            other_game = main.get_batted_ball(game_pk="822002")
 
         self.assertIs(first, second)
         self.assertEqual(len(built), 2)
@@ -436,12 +436,12 @@ class ResponseCacheTests(unittest.TestCase):
             main.requests,
             "get",
             side_effect=_feed_side_effect(
-                [_FeedResponse(incomplete), _FeedResponse(complete)], "game-1"
+                [_FeedResponse(incomplete), _FeedResponse(complete)], "822001"
             ),
         ), mock.patch.object(main, "_build_hit_payload", side_effect=build):
-            first = main.get_batted_ball(game_pk="game-1")
+            first = main.get_batted_ball(game_pk="822001")
             main._clear_feed_cache()
-            second = main.get_batted_ball(game_pk="game-1")
+            second = main.get_batted_ball(game_pk="822001")
 
         self.assertIsNot(first, second)
         self.assertEqual(len(built), 2)
@@ -479,12 +479,12 @@ class FeedCacheTests(unittest.TestCase):
         with mock.patch.object(main.requests, "get", return_value=_FeedResponse(feed)) as get, \
              mock.patch.object(main, "_build_trajectory_payload", side_effect=build), \
              mock.patch.object(main, "_build_hit_payload", side_effect=build):
-            main.get_trajectory(env="default", game_pk="game-1")
-            main.get_trajectory(env="default", game_pk="game-1")
-            main.get_game_state(game_pk="game-1")
+            main.get_trajectory(env="default", game_pk="822001")
+            main.get_trajectory(env="default", game_pk="822001")
+            main.get_game_state(game_pk="822001")
 
         # All three polls hit a different endpoint path but share one feed fetch.
-        self.assertEqual(self._feed_fetches(get, "game-1"), 1)
+        self.assertEqual(self._feed_fetches(get, "822001"), 1)
 
     def test_different_games_each_fetch_their_own_feed(self):
         feed = _trajectory_feed()
@@ -497,11 +497,11 @@ class FeedCacheTests(unittest.TestCase):
 
         with mock.patch.object(main.requests, "get", return_value=_FeedResponse(feed)) as get, \
              mock.patch.object(main, "_build_trajectory_payload", side_effect=build):
-            main.get_trajectory(env="default", game_pk="game-1")
-            main.get_trajectory(env="default", game_pk="game-2")
+            main.get_trajectory(env="default", game_pk="822001")
+            main.get_trajectory(env="default", game_pk="822002")
 
-        self.assertEqual(self._feed_fetches(get, "game-1"), 1)
-        self.assertEqual(self._feed_fetches(get, "game-2"), 1)
+        self.assertEqual(self._feed_fetches(get, "822001"), 1)
+        self.assertEqual(self._feed_fetches(get, "822002"), 1)
 
     def test_feed_refetched_after_ttl_expires(self):
         """Once the TTL passes, the next poll fetches a fresh feed instead of
@@ -522,10 +522,10 @@ class FeedCacheTests(unittest.TestCase):
             main.requests,
             "get",
             side_effect=_feed_side_effect(
-                [_FeedResponse(initial), _FeedResponse(advanced)], "game-1"
+                [_FeedResponse(initial), _FeedResponse(advanced)], "822001"
             ),
         ), mock.patch.object(main, "_build_trajectory_payload", side_effect=build_latest):
-            first = main.get_trajectory(env="default", game_pk="game-1")
+            first = main.get_trajectory(env="default", game_pk="822001")
             # Whatever the wall-clock TTL elapsed here, the feed cache must never
             # serve a stale copy of the (barely-changed) feed forever.
             with main._TRAJECTORY_CACHE_GUARD:
@@ -533,8 +533,8 @@ class FeedCacheTests(unittest.TestCase):
                 main._TRAJECTORY_BUILD_LOCKS.clear()
                 main._TRAJECTORY_BUILD_LOCKS_LAST_USED.clear()
             with main._FEED_CACHE_GUARD:
-                main._FEED_CACHE["game-1"]["fetched_at"] = -1e9  # force expiry
-            second = main.get_trajectory(env="default", game_pk="game-1")
+                main._FEED_CACHE["822001"]["fetched_at"] = -1e9  # force expiry
+            second = main.get_trajectory(env="default", game_pk="822001")
 
         self.assertEqual(first["play_id"], "AB4-P1")
         self.assertEqual(second["play_id"], "AB4-P3")
@@ -620,9 +620,9 @@ class FeedCacheTests(unittest.TestCase):
         events.append(pitch)
 
         effect = _feed_side_effect(
-            [_FeedResponse(initial), _FeedResponse(advanced)], "game-1"
+            [_FeedResponse(initial), _FeedResponse(advanced)], "822001"
         )
-        feed_url = main._feed_url("game-1")
+        feed_url = main._feed_url("822001")
 
         # Expected sequence served in order.
         self.assertIs(effect(feed_url).json(), initial)
@@ -646,6 +646,9 @@ class PrewarmTrajectoryTests(unittest.TestCase):
             main._TRAJECTORY_CACHE.clear()
             main._TRAJECTORY_BUILD_LOCKS.clear()
             main._TRAJECTORY_BUILD_LOCKS_LAST_USED.clear()
+        with main._PREWARM_GUARD:
+            main._PREWARM_LAST.clear()
+            main._PREWARM_INFLIGHT = 0
         self._saved_workers = _suppress_worker_network()
 
     def tearDown(self):
@@ -662,19 +665,20 @@ class PrewarmTrajectoryTests(unittest.TestCase):
         # of ``prewarm_trajectory`` and fail this test; returning cleanly proves
         # the build is fire-and-forget.
         with mock.patch.object(main, "get_trajectory", side_effect=_throwing_build):
-            result = main.prewarm_trajectory(game_pk="game-prewarm")
+            result = main.prewarm_trajectory(game_pk="822004")
 
         self.assertFalse(result["warm"])
-        self.assertEqual(result["game_pk"], "game-prewarm")
+        self.assertTrue(result["queued"])
+        self.assertEqual(result["game_pk"], "822004")
         # The background thread runs the requested build.
         deadline = time.time() + 5
         while time.time() < deadline and not calls:
             time.sleep(0.01)
-        self.assertEqual(calls, ["game-prewarm"])
+        self.assertEqual(calls, ["822004"])
 
     def test_prewarm_warm_game_is_a_noop(self):
         with main._TRAJECTORY_CACHE_GUARD:
-            main._TRAJECTORY_CACHE[("game-warm", "live", "")] = {
+            main._TRAJECTORY_CACHE[("822003", "live", "")] = {
                 "source_key": "k",
                 "response": {"success": True},
                 "last_used_at": 1.0,
@@ -683,10 +687,34 @@ class PrewarmTrajectoryTests(unittest.TestCase):
         with mock.patch.object(
             main, "get_trajectory", side_effect=lambda *a, **k: calls.append(1)
         ):
-            result = main.prewarm_trajectory(game_pk="game-warm")
+            result = main.prewarm_trajectory(game_pk="822003")
             time.sleep(0.1)  # give a stray thread time to appear (there must be none)
         self.assertTrue(result["warm"])
+        self.assertFalse(result["queued"])
         self.assertEqual(calls, [])
+
+    def test_prewarm_is_gated_per_client_and_game(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def _blocking_build(env="live", game_pk=None):
+            started.set()
+            release.wait(5)
+
+        with mock.patch.object(main, "get_trajectory", side_effect=_blocking_build):
+            first = main.prewarm_trajectory(game_pk="822005")
+            self.assertTrue(first["queued"])
+            self.assertTrue(started.wait(5))
+            # Same client, same game, inside the cooldown: declined, but still a
+            # well-formed 200 so the frontend can ignore it.
+            second = main.prewarm_trajectory(game_pk="822005")
+            self.assertFalse(second["queued"])
+            release.set()
+
+    def test_prewarm_rejects_a_malformed_game_pk(self):
+        with self.assertRaises(main.HTTPException) as caught:
+            main.prewarm_trajectory(game_pk="../../etc/passwd")
+        self.assertEqual(caught.exception.status_code, 400)
 
 
 class TrajectoryConditionalRequestTests(unittest.TestCase):
@@ -705,7 +733,7 @@ class TrajectoryConditionalRequestTests(unittest.TestCase):
     def tearDown(self):
         _restore_worker_network(self._saved_workers)
 
-    def _poll(self, etag=None, game_pk="game-1", after_play_id=None):
+    def _poll(self, etag=None, game_pk="822001", after_play_id=None):
         params = {"env": "default", "game_pk": game_pk}
         if after_play_id:
             params["after_play_id"] = after_play_id
@@ -764,7 +792,7 @@ class TrajectoryConditionalRequestTests(unittest.TestCase):
             main.requests,
             "get",
             side_effect=_feed_side_effect(
-                [_FeedResponse(initial), _FeedResponse(advanced)], "game-1"
+                [_FeedResponse(initial), _FeedResponse(advanced)], "822001"
             ),
         ), mock.patch.object(
             main, "_build_trajectory_payload", side_effect=build_latest
@@ -796,7 +824,7 @@ class BattedBallConditionalRequestTests(unittest.TestCase):
     def tearDown(self):
         _restore_worker_network(self._saved_workers)
 
-    def _poll(self, etag=None, game_pk="game-1", after_play_id=None):
+    def _poll(self, etag=None, game_pk="822001", after_play_id=None):
         params = {"game_pk": game_pk}
         if after_play_id:
             params["after_play_id"] = after_play_id
@@ -870,7 +898,7 @@ class BattedBallConditionalRequestTests(unittest.TestCase):
             main.requests,
             "get",
             side_effect=_feed_side_effect(
-                [_FeedResponse(initial), _FeedResponse(advanced)], "game-1"
+                [_FeedResponse(initial), _FeedResponse(advanced)], "822001"
             ),
         ), mock.patch.object(main, "_build_hit_payload", side_effect=build_hit):
             first = self._poll()

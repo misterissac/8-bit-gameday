@@ -4,6 +4,7 @@ import csv
 import hashlib
 import io
 import json
+import re
 import time
 import threading
 import unicodedata
@@ -12,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import uvicorn
 from typing import Optional
 
@@ -557,19 +559,99 @@ def fetch_environment_params(game_data: dict, observed: bool = True) -> tuple[En
 
 app = FastAPI()
 
-# Allow CORS for local frontend development
+# Same-origin in production: Caddy serves the SPA and proxies /api from one
+# origin, so the browser never needs a CORS grant. The default allowlist is the
+# Vite dev server only; set ALLOWED_ORIGINS (comma separated) if the SPA is ever
+# hosted elsewhere and points VITE_API_BASE at this API.
+_DEFAULT_ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("ALLOWED_ORIGINS", _DEFAULT_ALLOWED_ORIGINS).split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict this!
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET"],
     allow_headers=["*"],
 )
+
+
+# ---------------------------------------------------------------------------
+# Per-client rate limit
+# ---------------------------------------------------------------------------
+# One live viewer is about four requests a second (trajectory, batted ball,
+# game state, game status), so the ceiling sits well above a real browser and
+# well below a script that tries to loop the API. Behind Caddy the peer is
+# always loopback, so the real address arrives in X-Forwarded-For; only a
+# loopback peer is trusted to supply it, which means a direct caller cannot
+# pick its own bucket.
+RATE_LIMIT_PER_SECOND = float(os.environ.get("RATE_LIMIT_PER_SECOND", "20"))
+RATE_LIMIT_BURST = float(os.environ.get("RATE_LIMIT_BURST", "40"))
+_RATE_LIMIT_MAX_CLIENTS = 4096
+_RATE_LIMIT_IDLE_SECONDS = 300.0
+_RATE_LIMIT_BUCKETS: dict[str, tuple[float, float]] = {}
+_RATE_LIMIT_GUARD = threading.Lock()
+_LOOPBACK_PEERS = {"127.0.0.1", "::1", ""}
+
+
+def _client_key(request: Request) -> str:
+    """Address the rate limit should charge, trusting only a loopback proxy."""
+    peer = request.client.host if request.client else ""
+    forwarded = request.headers.get("x-forwarded-for")
+    if peer in _LOOPBACK_PEERS and forwarded:
+        # Caddy writes the address it saw as the last entry.
+        candidate = forwarded.split(",")[-1].strip()
+        if candidate:
+            return candidate
+    return peer or "unknown"
+
+
+def _rate_limit_allows(key: str) -> bool:
+    """Token bucket per client: sustained RATE_LIMIT_PER_SECOND, burst above."""
+    now = time.monotonic()
+    with _RATE_LIMIT_GUARD:
+        tokens, last = _RATE_LIMIT_BUCKETS.get(key, (RATE_LIMIT_BURST, now))
+        tokens = min(RATE_LIMIT_BURST, tokens + (now - last) * RATE_LIMIT_PER_SECOND)
+        allowed = tokens >= 1.0
+        _RATE_LIMIT_BUCKETS[key] = (tokens - 1.0 if allowed else tokens, now)
+        if len(_RATE_LIMIT_BUCKETS) > _RATE_LIMIT_MAX_CLIENTS:
+            for stale in [
+                client
+                for client, (_, seen) in _RATE_LIMIT_BUCKETS.items()
+                if now - seen > _RATE_LIMIT_IDLE_SECONDS
+            ]:
+                _RATE_LIMIT_BUCKETS.pop(stale, None)
+    return allowed
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    if not _rate_limit_allows(_client_key(request)):
+        return JSONResponse(
+            {"detail": "too many requests"},
+            status_code=429,
+            headers={"Retry-After": "1"},
+        )
+    return await call_next(request)
+
 
 # Default game (used when the frontend hasn't picked a live game yet). The
 # drawer lets the user pick any currently-live game, which the frontend then
 # passes as ``game_pk`` on every endpoint.
 GAME_PK = '822774'
+
+# The gamePk is interpolated into statsapi URLs, so only the numbers the MLB
+# API actually issues are accepted: a malformed value fails here in microseconds
+# instead of becoming an outbound fetch and a 502 for the caller.
+_GAME_PK_RE = re.compile(r"\d{5,7}")
+
+
+def _checked_game_pk(game_pk: str) -> str:
+    value = str(game_pk).strip()
+    if not _GAME_PK_RE.fullmatch(value):
+        raise HTTPException(status_code=400, detail="game_pk must be 5 to 7 digits")
+    return value
 
 
 def _feed_url(game_pk: str = GAME_PK) -> str:
@@ -1935,6 +2017,7 @@ def get_trajectory(request: Request = None, response: Response = None,
     elevation-derived estimate, while venue elevation + game temp — both free
     from the feed — capture essentially all of the live-vs-default accuracy gain.
     """
+    game_pk = _checked_game_pk(game_pk)
     print(f"LOADING LEVEL... Polling game {game_pk} (env={env})")
     data = _fetch_feed(game_pk)
     try:
@@ -2075,8 +2158,20 @@ def get_trajectory(request: Request = None, response: Response = None,
         raise HTTPException(status_code=500, detail=f"Simulation failed: {e}")
 
 
+# Prewarm is a convenience, not an open door: it asks the server to spend a
+# full build (up to ~15 s of one core) on a game the caller has not opened. Cap
+# the concurrent builds and allow each client one prewarm per game per cooldown,
+# so a loop with random game ids cannot turn the endpoint into a thread factory.
+PREWARM_MAX_INFLIGHT = 2
+PREWARM_COOLDOWN_SECONDS = 30.0
+_PREWARM_INFLIGHT = 0
+_PREWARM_LAST: dict[tuple[str, str], float] = {}
+_PREWARM_GUARD = threading.Lock()
+_PREWARM_MAX_CLIENTS = 512
+
+
 @app.get("/api/trajectory/prewarm")
-def prewarm_trajectory(game_pk: str = GAME_PK):
+def prewarm_trajectory(request: Request = None, game_pk: str = GAME_PK):
     """Kick off a background trajectory build for a game, fire-and-forget.
 
     The frontend calls this when it switches to a game so the first real poll
@@ -2088,26 +2183,51 @@ def prewarm_trajectory(game_pk: str = GAME_PK):
     until the warm payload is cached. Failures are swallowed here — the next
     real poll surfaces them normally.
 
-    Returns immediately with whether the game was already warm at call time.
+    Gated: ``queued`` is false when the caller asked again inside the cooldown
+    or when ``PREWARM_MAX_INFLIGHT`` builds are already running. The client's
+    next real poll still does the work, so a declined prewarm costs nothing.
     """
-    game_pk = str(game_pk)
-    warm = False
+    global _PREWARM_INFLIGHT
+    game_pk = _checked_game_pk(game_pk)
+    client = _client_key(request) if request is not None else "internal"
+
     with _TRAJECTORY_CACHE_GUARD:
-        cached = _TRAJECTORY_CACHE.get((game_pk, "live", ""))
-        warm = bool(cached)
+        warm = bool(_TRAJECTORY_CACHE.get((game_pk, "live", "")))
+    if warm:
+        return {"success": True, "game_pk": game_pk, "warm": True, "queued": False}
 
-    if not warm:
-        def _prewarm():
-            try:
-                # after_play_id defaults to None, matching the very first poll
-                # a switching client makes (its cursor is reset to null).
-                get_trajectory(env="live", game_pk=game_pk)
-            except Exception:
-                # Best-effort: the client's next real poll surfaces any error.
-                pass
+    now = time.monotonic()
+    with _PREWARM_GUARD:
+        last = _PREWARM_LAST.get((client, game_pk))
+        if _PREWARM_INFLIGHT >= PREWARM_MAX_INFLIGHT or (
+            last is not None and now - last < PREWARM_COOLDOWN_SECONDS
+        ):
+            return {"success": True, "game_pk": game_pk, "warm": False, "queued": False}
+        _PREWARM_LAST[(client, game_pk)] = now
+        if len(_PREWARM_LAST) > _PREWARM_MAX_CLIENTS:
+            for stale in [
+                key
+                for key, seen in _PREWARM_LAST.items()
+                if now - seen > PREWARM_COOLDOWN_SECONDS
+            ]:
+                _PREWARM_LAST.pop(stale, None)
+        _PREWARM_INFLIGHT += 1
 
-        threading.Thread(target=_prewarm, daemon=True).start()
-    return {"success": True, "game_pk": game_pk, "warm": warm}
+    def _prewarm():
+        global _PREWARM_INFLIGHT
+        try:
+            # after_play_id defaults to None, matching the very first poll
+            # a switching client makes (its cursor is reset to null).
+            get_trajectory(env="live", game_pk=game_pk)
+        except Exception:
+            # Best-effort: the client's next real poll surfaces any error.
+            pass
+        finally:
+            with _PREWARM_GUARD:
+                _PREWARM_INFLIGHT -= 1
+
+    threading.Thread(target=_prewarm, daemon=True).start()
+    return {"success": True, "game_pk": game_pk, "warm": False, "queued": True}
 
 
 @app.get("/api/trajectory/compare")
@@ -2121,6 +2241,7 @@ def get_trajectory_compare(game_pk: str = GAME_PK):
               pressure + sky-condition humidity, no Open-Meteo call).
     default – trajectory simulated with neutral MLB baseline conditions.
     """
+    game_pk = _checked_game_pk(game_pk)
     print(f"COMPARE MODE... Polling game {game_pk}")
     data = _fetch_feed(game_pk)
     try:
@@ -2432,6 +2553,7 @@ def get_batted_ball(request: Request = None, response: Response = None,
     when a new hit, a cursor advance, or an xBA/Sprint Speed rebuild changed the
     representation.
     """
+    game_pk = _checked_game_pk(game_pk)
     print(f"BATTED BALL... Polling game {game_pk}")
     data = _fetch_feed(game_pk)
     try:
@@ -2616,6 +2738,7 @@ def get_at_bat(at_bat_index: Optional[int] = None, game_pk: str = GAME_PK):
     tunneling color classification, and (for replayable pitches) the full
     trajectory + batted-ball payloads so the frontend can replay any of them.
     """
+    game_pk = _checked_game_pk(game_pk)
     print(f"AT-BAT... Polling game {game_pk} (at_bat_index={at_bat_index})")
     data = _fetch_feed(game_pk)
     try:
@@ -2755,6 +2878,7 @@ def get_batter_pitches(at_bat_index: Optional[int] = None, game_pk: str = GAME_P
     outcome, and pitch type for the strike-zone dots, but no full trajectory
     payloads (the game view disables click-to-replay).
     """
+    game_pk = _checked_game_pk(game_pk)
     print(f"BATTER-PITCHES... Polling game {game_pk} (at_bat_index={at_bat_index})")
     data = _fetch_feed(game_pk)
     try:
@@ -4325,6 +4449,7 @@ def get_game_status(game_pk: str = GAME_PK):
     parsing. The frozen scorebug polls it once per second so a delay or pitching
     change can appear without fetching/building the full scoreboard payload.
     """
+    game_pk = _checked_game_pk(game_pk)
     print(f"GAME STATUS... Polling game {game_pk}")
     data = _fetch_feed(game_pk)
     try:
@@ -4345,6 +4470,7 @@ def get_game_state(game_pk: str = GAME_PK):
     current play during the middle of an inning) come back as ``None`` so the
     frontend can render a dash instead of a stale number.
     """
+    game_pk = _checked_game_pk(game_pk)
     print(f"GAME STATE... Polling game {game_pk}")
     data = _fetch_feed(game_pk)
     try:
@@ -4898,6 +5024,7 @@ def _game_log_play(play: dict, players: dict | None = None, score_after: dict | 
 @app.get("/api/game-log")
 def get_game_log(game_pk: str = GAME_PK):
     """Return completed and in-progress play descriptions grouped by inning."""
+    game_pk = _checked_game_pk(game_pk)
     print(f"GAME LOG... Polling game {game_pk}")
     data = _fetch_feed(game_pk)
     try:
@@ -4935,6 +5062,7 @@ def get_box_score(game_pk: str = GAME_PK):
     panel. Fetched on demand (only when the user opens the panel), since
     unlike game-state it isn't needed every second.
     """
+    game_pk = _checked_game_pk(game_pk)
     print(f"BOX SCORE... Polling game {game_pk}")
     data = _fetch_feed(game_pk)
     try:
