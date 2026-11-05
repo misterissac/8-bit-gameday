@@ -4,6 +4,7 @@ import { OrbitControls, Sky, Environment } from '@react-three/drei';
 import * as THREE from 'three';
 import { Spherical, Vector3 } from 'three';
 import { feetToM } from '../util/MathUtil';
+import { assetUrl } from '../util/assetUrl';
 import { getBattedBallPosition, getChaserPosition, getPlayBallPosition, getFielderCamLookTarget, stepSimulation, resetSimulationTime } from '../constants/playback';
 import { FIELD } from '../constants/field';
 import { getTuning } from '../constants/tuning';
@@ -1021,10 +1022,16 @@ export const Scene = ({ pitchData, defaultPitchData, battedBall, snapTrigger, cr
                 shadow-normalBias={0.02}
             />
             
-            {/* Environment to make it look a bit nicer out of the box */}
+            {/* Environment to make it look a bit nicer out of the box.
+                Vendored rather than <Environment preset="park" />: the preset
+                resolves to a raw.githack.com URL that 302s to
+                raw.githubusercontent.com, and the CSP in deploy/Caddyfile
+                blocks the redirect target, so the scene died on first frame.
+                Same HDR (rooitou_park, drei-assets @456060a), served with the
+                rest of public/ under the configured base. */}
             <Sky sunPosition={[100, 20, 100]} />
             <React.Suspense fallback={null}>
-                <Environment preset="park" />
+                <Environment files={assetUrl('env/rooitou_park_1k.hdr')} />
             </React.Suspense>
             
             {/* Diamond / ballpark sprites (incl. the live scoreboard

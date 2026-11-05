@@ -21,14 +21,26 @@
 	#
 	# The CSP is written against what the app actually loads: JS, CSS and the two
 	# Rubik faces are same-origin (Vite bundles the first two, the fonts ship in
-	# the repo), the batter headshot is fetched from img.mlbstatic.com with
+	# the repo), the batter headshot comes from img.mlbstatic.com with
 	# crossOrigin="anonymous" so the canvas can read its pixels, and the debug
 	# drawer saves a Blob. There is no inline script in index.html, so
 	# script-src stays 'self'; 'unsafe-inline' is limited to styles because React
 	# writes style attributes and there is no nonce to hand it.
+	#
+	# Two built-in dependencies of @react-three/drei and three.js are fetched at
+	# runtime and have to be named or the scene dies on the first frame:
+	#   www.gstatic.com    -- the DRACO decoder base URL
+	#   cdn.jsdelivr.net   -- troika's unicode font resolver (non-latin glyphs)
+	# drei's <Environment preset> used to be a third: it fetched its HDR from
+	# raw.githack.com, which 302s to raw.githubusercontent.com, which this policy
+	# blocked — the scene crashed on load. The HDR is now vendored under
+	# public/env/ and served same-origin, so that host is gone from the policy.
+	#
+	# 'wasm-unsafe-eval' is not 'unsafe-eval': it permits WebAssembly
+	# instantiation and nothing else, and the DRACO decoder is WASM.
 	header {
 		Strict-Transport-Security "max-age=31536000"
-		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://img.mlbstatic.com; font-src 'self'; connect-src 'self'; media-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://img.mlbstatic.com; font-src 'self'; connect-src 'self' blob: https://www.gstatic.com https://cdn.jsdelivr.net; media-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		X-Frame-Options "DENY"

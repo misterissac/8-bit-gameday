@@ -235,21 +235,38 @@ project may still change, and a year-long pin is awkward to take back. Add
 The CSP is derived from what the bundle actually loads, which is why it can stay
 this tight:
 
-- `script-src 'self'` — `index.html` has no inline script; Vite emits a single
-  `type="module"` tag pointing at a hashed file.
+- `script-src 'self' 'wasm-unsafe-eval'` — `index.html` has no inline script;
+  Vite emits a single `type="module"` tag pointing at a hashed file. The extra
+  keyword is not `'unsafe-eval'`: it permits WebAssembly instantiation and
+  nothing else, and the DRACO decoder starts a WASM module.
 - `style-src 'self' 'unsafe-inline'` — the React tree writes `style` attributes
   and there is no nonce to hand them. Styles are the only `unsafe-inline` left.
 - `img-src 'self' data: blob: https://img.mlbstatic.com` — the batter headshot
-  on the ballpark's video board is the one cross-origin fetch. It is loaded with
-  `crossOrigin="anonymous"` so the canvas can read its pixels; if that URL ever
-  moves host, this line has to move with it or the board goes blank.
-- `connect-src 'self'` — every API call is same-origin because this Caddy serves
-  both halves. A Pages build talks to this origin from another one, but its CSP
-  comes from GitHub Pages, which sends none, so it is unaffected.
+  on the ballpark's video board is the only cross-origin image. It is loaded
+  with `crossOrigin="anonymous"` so the canvas can read its pixels; if that URL
+  ever moves host, this line has to move with it or the board goes blank.
+- `connect-src 'self' blob: …` — every API call is same-origin because this
+  Caddy serves both halves; `blob:` is needed because GLTFLoader turns embedded
+  textures into object URLs and fetches them. The two named hosts are
+  first-frame dependencies of the 3D stack, not of this app: the DRACO decoder
+  base is on `www.gstatic.com` and troika's unicode font resolver uses
+  `cdn.jsdelivr.net`.
+
+  drei's `<Environment preset="park" />` was a third and is gone: it resolved to
+  a `raw.githack.com` URL that 302s to `raw.githubusercontent.com`, and the CSP
+  evaluates the redirect target, so the env map failed and the error boundary
+  took the whole canvas down. The same HDR now ships at
+  `frontend/public/env/rooitou_park_1k.hdr` (1.5 MB, drei-assets @ `456060a`)
+  and is loaded through `src/util/assetUrl.js` so the Pages subpath still works.
+  That made the most fragile entry in this policy disappear rather than adding
+  a second host to it.
 - `font-src 'self'` — Rubik ships in the repo (`frontend/src/fonts`).
 - `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'`,
   `form-action 'self'`, `upgrade-insecure-requests` — no plugin, embed, base tag
   or form anywhere in the app, so forbidding them costs nothing.
+
+A Pages build talks to this origin from another one, but its CSP comes from
+GitHub Pages, which sends none, so it is unaffected.
 
 A CSP fails closed in the browser, where a violation is a console message rather
 than a status code — so after changing it, load the page once with devtools open
