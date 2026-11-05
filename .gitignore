@@ -33,6 +33,34 @@ models/backups/
 tmp-*/
 tmp-*
 
+# Exploratory animation tuning. frontend/scripts is an experiment bench: dozens
+# of one-off probes and parameter searches live there and were never meant to be
+# versioned, while a handful of tools are called by the build, the docs or the
+# visual tests. Track the exceptions instead of chasing prefixes, so a new
+# experiment is ignored by default. Promote a keeper with `git add -f <path>`, or
+# add a `!` line below if it should stay visible for everyone.
+frontend/scripts/*
+!frontend/scripts/make-favicon.py
+!frontend/scripts/make-og-image.py
+!frontend/scripts/pose-sheet.mjs
+!frontend/scripts/probe-cast.mjs
+!frontend/scripts/probe-catcher.mjs
+!frontend/scripts/probe-fielding.mjs
+
+# Throwaway artefacts from that work: silhouette/debug helpers, captured diffs,
+# render dumps, and scratch dataset pulls beside the backend.
+.ps-view/
+.pitchshots-view/
+frontend/_*.mjs
+frontend/__*.py
+frontend/src/util/*.patch
+frontend/src/util/tmp*.js
+backend/scratch_*
+
+# Ad-hoc Playwright stills captured into the harness (committed baselines live in
+# frontend/e2e/__screenshots__)
+frontend/e2e/stills/
+
 # Blender autosave/backup files
 *.blend1
 *.blend2
