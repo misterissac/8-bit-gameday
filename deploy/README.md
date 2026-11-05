@@ -102,6 +102,21 @@ OCI cannot convert an ephemeral IP into a reserved one at the same address, so
 **reserving changes the public address once.** Do it before a real domain points
 at the box — after that, reserving is just moving the A record.
 
+**This deployment** already has one: `147.5.107.10`
+(`ocid1.publicip.oc1.ca-toronto-1.amaaaaaa2ijmquiawfblirf6hdym2r476w6msyn275smomtai5u7t3o4avyq`),
+served as `https://147-5-107-10.sslip.io`. If the instance is ever rebuilt,
+re-attach that address instead of minting a new one:
+
+```bash
+oci network public-ip update \
+  --public-ip-id ocid1.publicip.oc1.ca-toronto-1.amaaaaaa2ijmquiawfblirf6hdym2r476w6msyn275smomtai5u7t3o4avyq \
+  --private-ip-id <new instance's primary private IP> \
+  --wait-for-state ASSIGNED
+```
+
+The sslip name is derived from the address, so a different address means a
+different name, and `SITE_ADDRESS` has to move with it.
+
 ### Console
 
 1. **Networking → Reserved public IPs → Create reserved public IP.** Name it,
