@@ -54,6 +54,13 @@
 	# Vite hashes everything under /assets; the entry point must revalidate.
 	@hashed path /assets/*
 	header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+	# public/env holds the vendored HDR the scene fetches on its first frame.
+	# The name is stable rather than content-hashed, so this is a bounded TTL,
+	# not immutable: replacing the map means renaming it or lowering this.
+	@vendored path /env/*
+	header @vendored Cache-Control "public, max-age=2592000"
+
 	@entry path / /index.html
 	header @entry Cache-Control "no-cache"
 

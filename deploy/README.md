@@ -259,7 +259,9 @@ this tight:
   `frontend/public/env/rooitou_park_1k.hdr` (1.5 MB, drei-assets @ `456060a`)
   and is loaded through `src/util/assetUrl.js` so the Pages subpath still works.
   That made the most fragile entry in this policy disappear rather than adding
-  a second host to it.
+  a second host to it. Because the filename is stable it is not covered by the
+  `immutable` rule for `/assets/*`, so `/env/*` gets its own 30-day
+  `Cache-Control`; swapping the HDR in place would serve the old one until then.
 - `font-src 'self'` — Rubik ships in the repo (`frontend/src/fonts`).
 - `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'`,
   `form-action 'self'`, `upgrade-insecure-requests` — no plugin, embed, base tag
