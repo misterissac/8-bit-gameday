@@ -118,9 +118,10 @@ nothing here calls out to MLB.
 | CORS | same-origin only; the default allowlist is the Vite dev server |
 | Prewarm | at most 2 builds in flight, one per client and game per 30 s; a declined call returns `queued: false` |
 
-The rate limit keys on `X-Forwarded-For`, and Caddy overwrites that header with
-`{remote_host}` — keep the `header_up` line, or one caller can pick its own
-bucket by sending the header.
+The rate limit keys on `X-Forwarded-For`. Caddy already ignores a client's value
+for that header by default; the `header_up X-Forwarded-For {remote_host}` line
+makes it explicit. If you ever put a CDN in front of Caddy, replace that line
+with Caddy's `trusted_proxies` setting, or every visitor will share one bucket.
 
 Tune it in the unit's `Environment=` lines: `RATE_LIMIT_PER_SECOND`,
 `RATE_LIMIT_BURST`, and `ALLOWED_ORIGINS` (comma separated) when the SPA is
