@@ -25,6 +25,10 @@
 	# default is closer to mattering than it looks.
 	handle /api/* {
 		reverse_proxy 127.0.0.1:8000 {
+			# Overwrite rather than append: the API's per-client rate limit keys
+			# on this header (the app only sees loopback), so a caller must not be
+			# able to pick its own bucket by sending one.
+			header_up X-Forwarded-For {remote_host}
 			transport http {
 				read_timeout 60s
 			}

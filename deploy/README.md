@@ -106,6 +106,26 @@ curl -s https://$SITE_ADDRESS/assets/<hashed>.js -I  # immutable, gzip/zstd
 Then load the site once in a browser: the 3D models (`/models/player.glb`,
 `/textures/*.png`) should return 200 from the same origin.
 
+## Public behaviour
+
+The API is guarded now that it has a public address. All of it is offline-safe:
+nothing here calls out to MLB.
+
+| Guard | Behaviour |
+|---|---|
+| `game_pk` | must be 5–7 digits; anything else is `400` before statsapi is called |
+| Rate limit | per-client token bucket, 20 req/s sustained, 40 burst, then `429` + `Retry-After` |
+| CORS | same-origin only; the default allowlist is the Vite dev server |
+| Prewarm | at most 2 builds in flight, one per client and game per 30 s; a declined call returns `queued: false` |
+
+The rate limit keys on `X-Forwarded-For`, and Caddy overwrites that header with
+`{remote_host}` — keep the `header_up` line, or one caller can pick its own
+bucket by sending the header.
+
+Tune it in the unit's `Environment=` lines: `RATE_LIMIT_PER_SECOND`,
+`RATE_LIMIT_BURST`, and `ALLOWED_ORIGINS` (comma separated) when the SPA is
+served from another origin.
+
 ## GitHub Pages frontend (optional)
 
 `.github/workflows/pages.yml` builds `frontend/` and publishes `frontend/dist` to
@@ -120,7 +140,10 @@ One-time setup:
    variable:** `VITE_API_BASE = https://<backend-host>` (no trailing slash, no
    `/api` suffix). It is baked into the bundle, so a backend move needs a
    workflow re-run, not a new push of static files.
-3. Push a change under `frontend/` to `main`, or run the workflow manually.
+3. Add the Pages origin to the API, or the browser blocks the calls:
+   `Environment=ALLOWED_ORIGINS=https://misterissac.github.io` in a drop-in for
+   `mlb-live.service`.
+4. Push a change under `frontend/` to `main`, or run the workflow manually.
 
 The site is served at `https://<owner>.github.io/<repo>/`. The workflow reads
 the base from the Pages API (`/8-bit-gameday/` for a project site, `/` for a
