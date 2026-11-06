@@ -1,0 +1,11 @@
+[Unit]
+Description=Disable the public site when monthly egress reaches the Always Free cap
+Documentation=file:///srv/mlb-live/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/mlb-egress-guard
+ExecStart=/usr/local/sbin/mlb-egress-guard
+Nice=10

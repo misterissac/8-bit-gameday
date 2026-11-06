@@ -20,8 +20,8 @@ checkout lives at `/srv/mlb-live` and runs as a `mlb` user.
 
 [`deploy/setup-vm.sh`](setup-vm.sh) performs every step below — host firewall,
 packages, service user, checkout, venv, swap and a tighter `MemoryMax` on a 1 GB
-shape, Caddy, the unit, the idle-reclaim guard — then proves the site answers
-over HTTPS. Copy it over and pass the public name (a real domain with an A
+shape, Caddy, the unit, the monthly egress guard, the idle-reclaim guard — then
+proves the site answers over HTTPS. Copy it over and pass the public name (a real domain with an A
 record, or the sslip.io name built from the IP):
 
 ```bash
@@ -218,16 +218,308 @@ nothing here calls out to MLB.
 | `game_pk` | must be 5–7 digits; anything else is `400` before statsapi is called |
 | Rate limit | per-client token bucket, 20 req/s sustained, 40 burst, then `429` + `Retry-After` |
 | CORS | same-origin only; the default allowlist is the Vite dev server |
-| Prewarm | at most 2 builds in flight, one per client and game per 30 s; a declined call returns `queued: false` |
+| Prewarm | only a game in the cached today±1 schedule; at most 2 builds in flight, one per client and game per 30 s; a declined call returns `queued: false` |
+| Global rate limit | a second bucket shared by every caller: 200 req/s, 400 burst, then `429`. A per-client bucket cannot slow a flood spread over many addresses |
+| `pitcher_id` / `year` | 4–7 digits and 2008+; at most 2 Savant lookups in flight, 256 pitchers cached, then `503` |
+| Schedule | `/api/live-games` is cached 15 s and single-flighted, so the drawer cannot be turned into a statsapi flood |
 
-The rate limit keys on `X-Forwarded-For`. Caddy already ignores a client's value
-for that header by default; the `header_up X-Forwarded-For {remote_host}` line
-makes it explicit. If you ever put a CDN in front of Caddy, replace that line
-with Caddy's `trusted_proxies` setting, or every visitor will share one bucket.
+Three CPU amplifiers are closed in the app itself. `after_play_id` is normalized
+against the current feed, so an invented cursor cannot mint a new cache entry
+(and a new simulation) per request; unknown batted-ball cursors collapse into
+one entry. `/api/at-bat`, which simulates every pitch in the at-bat, caches its
+finished payload for 30 s (32 entries). `/api/trajectory/compare` now reuses the
+live/default trajectory caches instead of building both on every call.
+
+The rate limit keys on the client address the connection actually proves. The
+API listens on loopback, so its trusted peer set is loopback only by default:
+Caddy's `header_up X-Forwarded-For {remote_host}` overwrites whatever the
+browser sent, and a caller that somehow reaches the port another way is keyed
+on its own address with the header ignored — a forged `X-Forwarded-For` (or
+`CF-Connecting-IP`) cannot manufacture a fresh bucket. `TRUSTED_PROXY_CIDRS`
+(comma separated CIDRs) widens that set, and is only needed when a proxy in
+front of Caddy appends to the header instead of resolving the client itself;
+the CDN section covers which case applies. The parser drops unparseable CIDRs
+rather than guessing, so a typo narrows trust instead of widening it.
 
 Tune it in the unit's `Environment=` lines: `RATE_LIMIT_PER_SECOND`,
-`RATE_LIMIT_BURST`, and `ALLOWED_ORIGINS` (comma separated) when the SPA is
-served from another origin.
+`RATE_LIMIT_BURST`, `RATE_LIMIT_GLOBAL_PER_SECOND`,
+`RATE_LIMIT_GLOBAL_BURST`, `TRUSTED_PROXY_CIDRS`, and `ALLOWED_ORIGINS` (comma
+separated) when the SPA is served from another origin.
+
+## Flood protection and spend caps
+
+Only one resource here is metered: **outbound data transfer**. Always Free
+includes 10 TB/month, and on an upgraded (Pay As You Go) tenancy usage above
+that is billed. 10 TB averages to roughly 31 Mbps across a month, so a sustained
+100 Mbps response flood spends the whole allowance in about nine days. The
+guards below are listed in the order traffic meets them.
+
+| Layer | What it does | Where |
+|---|---|---|
+| CDN (recommended) | unmetered L3–7 DDoS mitigation, no bandwidth charge, and cached assets stop leaving Oracle | Cloudflare free plan, below |
+| Caddy | `read_header`/`read_body`/`idle` timeouts; write methods (anything but GET/HEAD/OPTIONS) refused with `405`; `X-Forwarded-For` overwritten; `Server` removed | `deploy/Caddyfile` |
+| uvicorn | `--limit-concurrency 64` answers `503` past that instead of queueing work; `--backlog 512`; 15 s keep-alive | `deploy/mlb-live.service` |
+| Per-client bucket | 20 req/s, 40 burst per source address | `RATE_LIMIT_PER_SECOND` / `RATE_LIMIT_BURST` |
+| Global bucket | 200 req/s, 400 burst over all sources, so a distributed flood stops reaching the expensive paths | `RATE_LIMIT_GLOBAL_PER_SECOND` / `RATE_LIMIT_GLOBAL_BURST` |
+| Outbound caches | feed 1 s, schedule 15 s, trajectory per cursor, at-bat 30 s, Savant 6 h | `main.py` |
+| Kernel | SYN cookies, 2048 SYN backlog, 1024 accept backlog, `rp_filter`, no source routing or redirects | `/etc/sysctl.d/60-mlb-live.conf` |
+| Monthly egress guard | at 9,000 GB outbound it disables Caddy + the API; re-enables on the UTC month rollover | `deploy/egress-guard.sh` |
+
+The box itself remains the weak point: one worker on 2 OCPU cannot absorb a
+volume flood and no application code changes that. What these layers protect is
+the *bill* and the *origin* — Caddy sheds connections cheaply, the buckets keep
+CPU-heavy paths from being reached at all, and the kernel refuses work it cannot
+queue (which is also what keeps the box from swapping itself to death).
+
+### Put a CDN in front (the only real DDoS defence)
+
+Cloudflare's free plan is a genuine fit for this deployment, in three ways:
+DDoS mitigation is unmetered on layers 3–7 for proxied traffic, there is no
+bandwidth charge, and cached assets stop leaving Oracle at all. It also includes
+one rate-limiting rule at no extra cost (one on Free, two on Pro), worth pointing
+at `/api/*` as a coarse backstop — its counters are per data centre, so the API's
+own buckets remain the real limiter.
+
+Two limits matter before planning around it:
+
+- **The current hostname cannot be proxied.** `147-5-107-10.sslip.io` lives in
+  sslip.io's zone, not yours, and Cloudflare only proxies records in a zone it
+  hosts — a full setup means moving the domain's nameservers to Cloudflare.
+  Proxying therefore needs a real domain you control; until then the box is
+  reachable by IP and every origin guard on this page is what protects it.
+- **It does not replace the origin guards.** Cloudflare assumes the origin is
+  only reachable through it. If 443 stays open to the world, a flood can bypass
+  the CDN and land on Caddy directly. The CDN is an addition, not a substitute.
+
+Steps, in order:
+
+1. Point a domain you control at Cloudflare, add an `A` record for the instance
+   and proxy it (orange cloud), then set SSL/TLS to **Full (strict)**.
+2. Give the origin a certificate Cloudflare will trust without depending on
+   ACME through the proxy: build Caddy with the Cloudflare DNS module and use
+   DNS-01, or install a free Cloudflare Origin CA certificate and load it with
+   `tls /etc/caddy/origin.pem /etc/caddy/origin.key`. HTTP-01 only works while
+   port 80 stays open and nothing redirects it, and closing 80 is the point of
+   the exercise.
+3. Restrict 443 at the origin to Cloudflare's published ranges, then close 80
+   once the certificate no longer needs it.
+4. Keep Cloudflare's visitor address arriving at the API. On the packaged
+   Caddy 2.6.x that is a pass-through, not a trusted-proxy directive:
+
+   ```caddyfile
+   header_up X-Forwarded-For {header.X-Forwarded-For}
+   ```
+
+   Two measured reasons, both on this pinned 2.6.2 binary. `trusted_proxies`
+   does not exist in 2.6 — the proxy refuses to load the config with
+   `unrecognized servers option 'trusted_proxies'`, and the client-IP parsing it
+   feeds only appears in later releases. And
+   simply deleting the `header_up` line makes the proxy *replace*
+   `X-Forwarded-For` with its own socket peer, so every visitor collapses into
+   one bucket: in that shape one visitor who had spent the burst caused two
+   unrelated visitors to be throttled on their next request. With the
+   pass-through above the same test kept three independent buckets. If Caddy is
+   upgraded to 2.7 or newer, `servers { trusted_proxies static <ranges> }` is the
+   cleaner form; it is not used here because it has not been validated on the
+   pinned version.
+
+   The pass-through is safe only because step 3 closes 443 to everything but
+   Cloudflare: the header is now taken as authoritative, so any caller able to
+   reach the origin directly could choose its own bucket.
+5. Keep `/api/*` out of the cache. Those endpoints answer live game state, and a
+   cached 200 would freeze the app on a stale pitch. Cloudflare does not cache
+   JSON by default; an explicit bypass Cache Rule records the intent. Let
+   `/assets/*` cache (immutable, already hashed) and add a Cache Rule for
+   `/models/*`, `/textures/*` and `/env/*` if `.glb` and `.hdr` are skipped —
+   that is where the ~10 MB of first-load bytes live.
+
+Traffic above this layer never reaches the instance, which is the only way to
+keep a flood from both the CPU and the egress meter. It is also the largest
+single cut to the 10 TB allowance: edge-cached assets cost nothing, and a
+revalidated poll is ~300 B of headers.
+
+### What the edge actually does (measured)
+
+Measured through this exact Caddy 2.6.2 binary in front of this exact uvicorn
+command line (`--limit-concurrency 64 --backlog 512`), with the app's default
+limits, over HTTP to the proxy port. "Allowed" means the request reached the
+app; the probe route answers `400` without an outbound fetch, so no MLB traffic
+is involved except where noted. Outbound fetches were counted by the app's own
+CONNECT requests to statsapi.
+
+| Probe | Result |
+|---|---|
+| 120 requests, one client, no pause | 41 allowed, **79 × 429** in 60 ms; allowed again 2.5 s later |
+| Two real peers (IPv4 and IPv6 loopback) | peer A: 40 of 70 allowed then 429; peer B: 5 of 5 allowed |
+| 10 requests with unique `X-Forwarded-For` + `CF-Connecting-IP` after the bucket was spent | **0 allowed, 10 × 429** |
+| The same with `TRUSTED_PROXY_CIDRS=10.0.0.0/8` (peer not trusted) | 0 allowed, 10 × 429 |
+| 70 simultaneous requests | 40 × 200, 23 × 429, **7 × 503**; next request 400, process healthy |
+| 20 identical `/api/live-games` from a cold 15 s cache | 1 statsapi fetch, then **19 requests with 0 fetches** |
+| 440 requests from 220 distinct client keys | 410 allowed, 30 × 429; a brand-new key mid-flood got **429**, allowed after 3 s |
+| 660 requests to `/api/live-games` from 220 keys | 502 allowed, 158 × 429, **1** outbound fetch |
+| 100 requests, each naming a different `game_pk` | 100 allowed, **100 outbound fetches** |
+
+The last row is the honest limit. The global bucket bounds how fast work
+arrives (200/s), not what each request costs, so a distributed flood naming
+different games still produces one MLB fetch per allowed request. And the box
+cannot absorb volume at all: at 70 simultaneous requests one worker already
+refused 7 and the shared bucket refused 23 more. A sustained flood saturates the
+2 OCPU instance and its uplink long before Caddy can answer `429`, which is why
+the CDN plus a firewalled origin is the only defence against volume — nothing in
+this repository can out-serve a link flood.
+
+### Validation status
+
+`caddy validate` on the deployed Caddyfile and the CDN variant both report
+`Valid configuration`, and the backend suite covers the limiter, the trusted
+proxy decision and the caches offline. The systemd unit was **not** validated on the macOS workstation (no systemd and
+no container runtime to borrow one). It was installed on the VM on 2026-11-06
+and `systemd-analyze verify` reported no problems with `mlb-live.service`,
+`mlb-egress-guard.service` or `mlb-egress-guard.timer` — the only output was
+about unrelated, pre-existing Oracle agent units. `bash -n` and a dry run
+against a fake `/sys/class/net` exercise the egress guard's baseline, latch and
+month-rollover paths.
+
+### Edge package patches
+
+Ubuntu ships Caddy 2.6.2, far behind upstream 2.11; Ubuntu backports security
+fixes into `2.6.2-6ubuntu0.24.04.x`, so the package revision matters more than
+the upstream tag. The 2026 advisories include a host-routing bypass through
+Host-header casing (CVE-2026-27588), underscore-header identity injection via
+`forward_auth` + FastCGI (CVE-2026-52845), and admin-API issues
+(CVE-2026-27589). This deployment uses one host block, no `forward_auth`, no
+FastCGI and no `vars_regexp`, and the admin API is now `admin off`, so those
+paths are not reachable here — but the package still needs its patches:
+
+```bash
+apt policy caddy
+sudo apt-get update && sudo apt-get install --only-upgrade caddy
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl restart caddy
+```
+
+Verified on the VM on 2026-11-06: `2.6.2-6ubuntu0.24.04.3` is installed and is
+also the current `noble-updates`/`noble-security` candidate. Re-check with
+`apt policy caddy` after `apt-get update`; the package revision, not the
+upstream `2.6.2` tag, carries the backported fixes.
+
+### Exposed directly: per-IP connection cap
+
+Without a CDN, cap how fast one address may open new connections. Polling rides
+keep-alive, so this only throttles connection churn:
+
+```bash
+sudo iptables -I INPUT -p tcp --dport 443 -m conntrack --ctstate NEW \
+  -m hashlimit --hashlimit-name mlb443 --hashlimit-mode srcip \
+  --hashlimit-above 60/minute --hashlimit-burst 10 -j DROP
+sudo netfilter-persistent save
+```
+
+Do **not** install this with a CDN in front: every connection then arrives from
+the CDN's addresses and the rule throttles all visitors at once.
+
+`setup-vm.sh` installs `/etc/sysctl.d/60-mlb-live.conf` (SYN cookies, backlog
+sizes, reverse-path filtering) and deliberately stops there.
+
+### Keeping the bill at zero
+
+- **Budgets → Create Budget**, scoped to the compartment, amount `$1`, alerts
+  at 50 % and 100 % to an address you read. Budgets are free and do not cap
+  anything; they only tell you.
+- **Billing → Cost Analysis** once a month. For this shape the only line that
+  can move is outbound transfer beyond 10 TB; compute, block storage under
+  200 GB and the reserved public IP sit inside Always Free (confirm the IP in
+  your own tenancy rather than taking it on faith).
+- The Always Free flexible load balancer is capped at 10 Mbps and filters
+  nothing. It is not a substitute for the CDN; it would only add a hop.
+- The other way this starts costing money is a bigger shape, a larger boot
+  volume, or a second instance "to handle load". None of those is needed for a
+  game-night audience, and the caches above are what make that true.
+
+### The egress circuit breaker (installed by `setup-vm.sh`)
+
+Budgets only alert; they do not stop usage. The one resource that can actually
+bill is outbound transfer, so the box carries a hard stop. Every five minutes
+`mlb-egress-guard.timer` reads the interface transmit counters, adds the delta
+to a UTC-month total in `/var/lib/mlb-egress-guard/state`, and at
+`EGRESS_LIMIT_GB` (default **9000**, i.e. 1 TB below the 10 TB allowance)
+disables `caddy` and `mlb-live`. When the month rolls over it re-enables them.
+All interface egress is counted, not only HTTP, which is the conservative
+reading.
+
+It starts counting at installation: the first run baselines the counters, so
+bytes sent before the guard existed are not retroactively charged to the month.
+Check it with:
+
+```bash
+sudo cat /var/lib/mlb-egress-guard/state   # "YYYY-MM total_bytes last_raw" (root-only)
+journalctl -t mlb-egress-guard -n 20       # latch / reset decisions
+systemctl list-timers mlb-egress-guard.timer
+```
+
+To change the cap, edit `/etc/default/mlb-egress-guard` and restart the timer.
+To clear a latch early (after confirming the traffic was legitimate and the
+budget still has room), remove the latch and start the services:
+
+```bash
+sudo rm -f /var/lib/mlb-egress-guard/latched
+sudo systemctl enable --now caddy mlb-live
+```
+
+A latch is a deliberate outage, not a failure: the site returns a connection
+error until the month changes or an operator clears it. That is the only way an
+application on a metered link can promise the bill stays at zero.
+
+### Verified spend state (2026-11-06)
+
+Read with the `oci` CLI against the tenancy that owns `147.5.107.10`:
+
+| Check | Result |
+|---|---|
+| Compute instances | 1 — `mlb-live`, `VM.Standard.A1.Flex`, 2 OCPU / 12 GB, `RUNNING` (Always Free shape) |
+| Boot volumes | 1 — 47 GB (Always Free allows 200 GB total) |
+| Block volumes | none |
+| Load balancers | none |
+| Reserved public IPs | 1 — `147.5.107.10`, `ASSIGNED` (no charge for a reserved IP) |
+| Budget | `$1`/month, 2 alert rules, actual spend `$0.00` |
+| Usage API, Oct 2026 | 0 cost rows, `$0.00` |
+| Usage API, 1–6 Nov 2026 | `$0.00` |
+
+The budget is a notification, not a cap; the egress guard above is the cap.
+Re-check after any shape, volume, instance or load-balancer change:
+
+```bash
+TENANCY=ocid1.tenancy.…
+oci compute instance list --compartment-id "$TENANCY" --all
+oci bv boot-volume list --compartment-id "$TENANCY" --all
+oci lb load-balancer list --compartment-id "$TENANCY" --all
+oci budgets budget budget list --compartment-id "$TENANCY" --all
+```
+
+## Live verification (2026-11-06)
+
+Installed from this working tree and checked over the public hostname:
+
+| Check | Result |
+|---|---|
+| Edge | `/` and `/api/live-games` `200`; HSTS, CSP, `X-Frame-Options`, `nosniff`, `Referrer-Policy` and `Permissions-Policy` present; no `Server` header |
+| Docs | `/docs` and `/openapi.json` return the 2,075-byte SPA |
+| CORS | `https://misterissac.github.io` granted, `https://evil.example` not granted |
+| Caddy admin | `127.0.0.1:2019` refuses the connection (`admin off`) |
+| Rate limit, public IP | 80-request burst, 20 concurrent: 51 × `200`, 29 × `429` |
+| Rate limit, loopback | 80-request burst, 20 concurrent: 72 × `200`, 8 × `429`; 20 parallel TLS handshakes let the 20/s bucket refill between them |
+| Cursor normalization | `after_play_id=invented-a` then `invented-b`: 0.295 s / 0.072 s, both 164,830 B; the second request logs `TRAJECTORY CACHE HIT` |
+| Compare reuse | first call hits the live cache and builds default; second call logs `TRAJECTORY CACHE HIT` for both `env=live` and `env=default` |
+| At-bat cache | first call 0.284 s, second 0.125 s, same 668,456 B payload |
+| Egress guard | timer active, next run in 5 min, baselined at 353,377,211 bytes, no latch; the one-shot exits `0` |
+| Services | `mlb-live` active, `NRestarts=0`, `ExecMainStatus=0`; Caddy active |
+| Package | `caddy 2.6.2-6ubuntu0.24.04.3`, the current `noble-updates`/`noble-security` candidate |
+| Deployed hashes | `main.py`, `Caddyfile`, both units, the timer and the guard script match this working tree byte-for-byte |
+| Unit verification | `systemd-analyze verify` clean for the three project units; only unrelated Oracle agent warnings |
+
+The timings are single observations, not a benchmark. The rate-limit bursts
+come from one address; a flood spread over many addresses is still bounded only
+by the global bucket and the edge firewall/CDN, as above.
 
 ## Security headers
 
@@ -306,6 +598,16 @@ no body. Each carries a strong `ETag` and `Cache-Control: no-cache`, so the
 browser keeps the body it already holds and asks whether it is still current: a
 quiet second costs a few hundred bytes of headers instead of 1–155 KB of JSON.
 Revalidation is the browser's job — nothing in the frontend sets a validator.
+
+Measured on the live box rather than derived from body size: a repeat poll of
+`/api/trajectory` transferred **300 B** in Chromium while reporting
+`encodedBodySize` 60,687 B and `decodedBodySize` 164,832 B. Transfer far below
+the encoded body is the signature of a revalidated cache hit, so at the 1 s
+cadence (`LIVE_POLL_MS` in `frontend/src/App.jsx`) an idle tab costs roughly
+1 MB/hour. Sending the body every second instead would cost about 220 MB/hour;
+that figure is the reason the validators exist, not the current cost. A new
+pitch advances `after_play_id`, which is a different URL and so one real body —
+that per-pitch cost, not the poll interval, is what a live viewer actually pays.
 
 ## GitHub Pages frontend (optional)
 

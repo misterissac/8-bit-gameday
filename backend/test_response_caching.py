@@ -143,6 +143,8 @@ class ResponseCacheTests(unittest.TestCase):
             main._BATTED_BALL_CACHE.clear()
             main._BATTED_BALL_BUILD_LOCKS.clear()
             main._BATTED_BALL_BUILD_LOCKS_LAST_USED.clear()
+        with main._AT_BAT_CACHE_GUARD:
+            main._AT_BAT_CACHE.clear()
         # Keep cached-response refreshes from spawning worker threads / stray
         # network calls that leak into the next test's requests.get mock.
         self._saved_workers = _suppress_worker_network()
@@ -168,6 +170,80 @@ class ResponseCacheTests(unittest.TestCase):
         self.assertIs(first, second)
         self.assertEqual(len(built), 2)
         self.assertIsNot(first, other_game)
+
+    def test_trajectory_unknown_cursor_cannot_mint_cache_entries(self):
+        # A caller-controlled cursor is part of the cache key. Only a cursor
+        # that names a pitch in this feed may create a new entry; every other
+        # string must share the no-cursor entry instead of buying a rebuild.
+        feed = _trajectory_feed()
+        built = []
+
+        def build(*args, **kwargs):
+            built.append(1)
+            return {"success": True, "play_id": "AB4-P1"}
+
+        with mock.patch.object(main.requests, "get", return_value=_FeedResponse(feed)), \
+             mock.patch.object(main, "_build_trajectory_payload", side_effect=build):
+            first = main.get_trajectory(game_pk="822001", after_play_id="not-a-pitch")
+            second = main.get_trajectory(
+                game_pk="822001", after_play_id="another-invented-id"
+            )
+
+        self.assertIs(first, second)
+        self.assertEqual(len(built), 1)
+
+    def test_batted_ball_unknown_cursor_cannot_mint_cache_entries(self):
+        feed = _batted_ball_feed()
+        built = []
+
+        def build(*args, **kwargs):
+            built.append(1)
+            return {"success": True, "play_id": "AB4-EV0"}
+
+        with mock.patch.object(main.requests, "get", return_value=_FeedResponse(feed)), \
+             mock.patch.object(main, "_build_hit_payload", side_effect=build):
+            first = main.get_batted_ball(game_pk="822010", after_play_id="nope")
+            second = main.get_batted_ball(game_pk="822010", after_play_id="also-nope")
+
+        self.assertIs(first, second)
+        self.assertEqual(len(built), 1)
+
+    def test_compare_reuses_the_two_trajectory_caches(self):
+        # /api/trajectory/compare is public and used to run both simulations on
+        # every request. It must now share the per-environment caches.
+        feed = _trajectory_feed()
+        built = []
+
+        def build(*args, **kwargs):
+            built.append(1)
+            return {"success": True, "play_id": "AB4-P1", "build": len(built)}
+
+        with mock.patch.object(main.requests, "get", return_value=_FeedResponse(feed)), \
+             mock.patch.object(main, "_build_trajectory_payload", side_effect=build):
+            first = main.get_trajectory_compare(game_pk="822001")
+            second = main.get_trajectory_compare(game_pk="822001")
+
+        self.assertEqual(len(built), 2)
+        self.assertEqual(first["live"]["play_id"], second["live"]["play_id"])
+
+    def test_at_bat_reuses_one_build_for_the_same_at_bat(self):
+        # One at-bat response simulates every pitch in it, so a repeated read
+        # must not rebuild it.
+        feed = _trajectory_feed()
+        built = []
+
+        def build(*args, **kwargs):
+            built.append(1)
+            return {"success": True, "play_id": "AB4-P1", "is_contact": False}
+
+        with mock.patch.object(main.requests, "get", return_value=_FeedResponse(feed)), \
+             mock.patch.object(main, "_build_pitch_payload", side_effect=build), \
+             mock.patch.object(main, "_game_state_before_pitch", return_value={}):
+            first = main.get_at_bat(at_bat_index=4, game_pk="822001")
+            second = main.get_at_bat(at_bat_index=4, game_pk="822001")
+
+        self.assertIs(first, second)
+        self.assertEqual(len(built), 1)
 
     def test_trajectory_returns_pitches_skipped_between_polls(self):
         initial = _trajectory_feed()
@@ -664,7 +740,8 @@ class PrewarmTrajectoryTests(unittest.TestCase):
         # If the build ran synchronously, the raised error would propagate out
         # of ``prewarm_trajectory`` and fail this test; returning cleanly proves
         # the build is fire-and-forget.
-        with mock.patch.object(main, "get_trajectory", side_effect=_throwing_build):
+        with mock.patch.object(main, "_game_is_on_schedule", return_value=True), \
+             mock.patch.object(main, "get_trajectory", side_effect=_throwing_build):
             result = main.prewarm_trajectory(game_pk="822004")
 
         self.assertFalse(result["warm"])
@@ -701,7 +778,8 @@ class PrewarmTrajectoryTests(unittest.TestCase):
             started.set()
             release.wait(5)
 
-        with mock.patch.object(main, "get_trajectory", side_effect=_blocking_build):
+        with mock.patch.object(main, "_game_is_on_schedule", return_value=True), \
+             mock.patch.object(main, "get_trajectory", side_effect=_blocking_build):
             first = main.prewarm_trajectory(game_pk="822005")
             self.assertTrue(first["queued"])
             self.assertTrue(started.wait(5))
@@ -710,6 +788,16 @@ class PrewarmTrajectoryTests(unittest.TestCase):
             second = main.prewarm_trajectory(game_pk="822005")
             self.assertFalse(second["queued"])
             release.set()
+
+    def test_prewarm_declines_a_game_not_on_the_schedule(self):
+        # The endpoint is a background-builder button; an invented game id must
+        # not buy a full simulation.
+        with mock.patch.object(main, "_game_is_on_schedule", return_value=False), \
+             mock.patch.object(main, "get_trajectory", side_effect=AssertionError("built")):
+            result = main.prewarm_trajectory(game_pk="822006")
+
+        self.assertFalse(result["queued"])
+        self.assertFalse(result["warm"])
 
     def test_prewarm_rejects_a_malformed_game_pk(self):
         with self.assertRaises(main.HTTPException) as caught:

@@ -20,7 +20,14 @@ Environment=ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,https://
 # One process: the feed, trajectory and Savant caches are per-process, so extra
 # workers re-fetch and re-simulate the same games. See the capacity note in the
 # README before raising this.
-ExecStart=/srv/mlb-live/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
+#
+# --limit-concurrency is the last line of defence against a flood. Past 64
+# in-flight requests uvicorn answers 503 immediately instead of queueing work
+# whose CPU the box does not have; a backlog of 512 bounds accepted-but-unserved
+# sockets, and a short keep-alive timeout frees idle ones. None of it changes
+# behaviour for a browser polling four endpoints a second.
+ExecStart=/srv/mlb-live/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 \
+    --workers 1 --limit-concurrency 64 --backlog 512 --timeout-keep-alive 15
 Restart=always
 RestartSec=3
 # Cached feeds and payloads live in memory; cap the process so a long game
@@ -28,6 +35,29 @@ RestartSec=3
 MemoryMax=3G
 NoNewPrivileges=true
 PrivateTmp=true
+# matplotlib is imported by the vendored simulator for helpers this service
+# never calls, but it still builds a font cache on import; with the filesystem
+# below made read-only, point that at the private /tmp.
+Environment=MPLCONFIGDIR=/tmp/matplotlib
+# The service reads the checkout, accepts loopback sockets and calls out over
+# TCP. Everything else is closed, so a bug in a request path has to work much
+# harder to reach the rest of the host. ProtectSystem=strict leaves the whole
+# filesystem read-only apart from the private /tmp above.
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
 
 [Install]
 WantedBy=multi-user.target

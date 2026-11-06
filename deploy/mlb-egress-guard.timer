@@ -1,0 +1,11 @@
+[Unit]
+Description=Check monthly egress against the Always Free allowance
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=mlb-egress-guard.service
+
+[Install]
+WantedBy=timers.target

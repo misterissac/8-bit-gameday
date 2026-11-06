@@ -13,8 +13,8 @@
 # What it does, in order: opens 80/443 above Oracle's image-level iptables
 # REJECT rule, installs git/python3-venv/rsync/curl/caddy, creates the `mlb`
 # service user and a shallow checkout at /srv/mlb-live, builds the venv, adds
-# swap and a tighter MemoryMax on a 1 GB shape, installs the Caddyfile and unit
-# from deploy/, then proves the site answers over HTTPS.
+# swap and a tighter MemoryMax on a 1 GB shape, installs the Caddyfile, unit
+# and monthly egress guard from deploy/, then proves the site answers over HTTPS.
 #
 # It does NOT build the SPA: Vite 8 needs Node >= 20.19, which Ubuntu's nodejs
 # package is not. Build on your laptop and copy frontend/dist here; the script
@@ -142,6 +142,38 @@ step_firewall() {
   fi
 }
 
+# Kernel-level flood handling. None of this filters legitimate traffic; these
+# are the settings that make a SYN flood and a connection-table overflow cost an
+# attacker more than they cost this box. A per-IP connection limit is
+# deliberately NOT installed here: if a CDN is later put in front, every
+# connection arrives from its addresses and such a rule would throttle every
+# visitor at once. The README describes the rule to add when the box is exposed
+# directly.
+step_sysctl() {
+  say "Kernel network hardening"
+  run install -d -m 755 /etc/sysctl.d
+  printf '%s\n' \
+    '# 8-bit Play-by-play: flood handling. Written by deploy/setup-vm.sh.' \
+    'net.ipv4.tcp_syncookies = 1' \
+    'net.ipv4.tcp_synack_retries = 2' \
+    'net.ipv4.tcp_max_syn_backlog = 2048' \
+    'net.ipv4.tcp_rfc1337 = 1' \
+    'net.core.somaxconn = 1024' \
+    'net.ipv4.conf.all.rp_filter = 1' \
+    'net.ipv4.conf.all.accept_source_route = 0' \
+    'net.ipv4.conf.all.accept_redirects = 0' \
+    'net.ipv4.conf.all.secure_redirects = 0' \
+    'net.ipv4.icmp_echo_ignore_broadcasts = 1' \
+    'net.ipv6.conf.all.accept_source_route = 0' \
+    'net.ipv6.conf.all.accept_redirects = 0' \
+    | run tee /etc/sysctl.d/60-mlb-live.conf >/dev/null
+  if run sysctl -q -p /etc/sysctl.d/60-mlb-live.conf 2>/dev/null; then
+    info "applied /etc/sysctl.d/60-mlb-live.conf"
+  else
+    warn "some sysctls could not be applied; the file stays in place for next boot"
+  fi
+}
+
 step_checkout() {
   say "Service user and checkout"
   if ! id -u "$APP_USER" >/dev/null 2>&1; then
@@ -247,6 +279,30 @@ step_service() {
   run systemctl daemon-reload
   run systemctl enable mlb-live >/dev/null 2>&1 || true
   run systemctl restart mlb-live
+}
+
+# Outbound transfer is the only metered resource here: Always Free includes
+# 10 TB/month and a Pay As You Go tenancy bills above it. No request limit can
+# bound total bytes, so install a monthly circuit breaker. At EGRESS_LIMIT_GB
+# (default 9000, leaving 1 TB of headroom) it disables Caddy and the API, and
+# re-enables them when the UTC month rolls over. It counts all interface
+# egress, not just HTTP, which is the conservative reading.
+step_egress_guard() {
+  say "Monthly egress guard"
+  run install -m 755 "$APP_DIR/deploy/egress-guard.sh" /usr/local/sbin/mlb-egress-guard
+  run install -m 644 "$APP_DIR/deploy/mlb-egress-guard.service" \
+    /etc/systemd/system/mlb-egress-guard.service
+  run install -m 644 "$APP_DIR/deploy/mlb-egress-guard.timer" \
+    /etc/systemd/system/mlb-egress-guard.timer
+  if [ ! -f /etc/default/mlb-egress-guard ]; then
+    printf 'EGRESS_LIMIT_GB=%s\n' "${EGRESS_LIMIT_GB:-9000}" \
+      | run tee /etc/default/mlb-egress-guard >/dev/null
+  fi
+  run systemctl daemon-reload
+  if ! run systemctl enable --now mlb-egress-guard.timer; then
+    warn "could not start mlb-egress-guard.timer; the spend guard is not active"
+  fi
+  info "disables caddy + mlb-live at ${EGRESS_LIMIT_GB:-9000} GB outbound this month"
 }
 
 # Oracle reclaims an Always Free instance whose 7-day p95 CPU, network and
@@ -366,12 +422,14 @@ main() {
   preflight
   step_packages
   step_firewall
+  step_sysctl
   step_checkout
   step_python
   step_dist_check
   step_memory
   step_caddy
   step_service
+  step_egress_guard
   step_reclaim_guard
   step_verify
   step_summary

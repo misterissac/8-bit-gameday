@@ -11,6 +11,12 @@
 {
 	# email you@example.com
 
+	# Caddy's admin API is loopback-only by default, but it is unauthenticated:
+	# any local process -- including the unprivileged API service -- could
+	# rewrite this proxy's configuration. Nothing here uses `caddy reload`, so
+	# turn the API off rather than leave a local reconfiguration path open.
+	admin off
+
 	# Bound how long a client may hold a connection while dribbling a request.
 	# Caddy's defaults are generous, and a slow-loris style flood costs the box
 	# connection slots and CPU even though it moves almost no bytes. There are
@@ -21,6 +27,10 @@
 	# here would fail the config on this host.
 	servers {
 		timeouts {
+			# No header may take 10 s to arrive: a slowloris flood costs a
+			# connection slot and a goroutine per socket, and this app has no
+			# reason to wait on one.
+			read_header 10s
 			read_body 10s
 			idle 60s
 		}
@@ -85,10 +95,28 @@
 	# A cold trajectory build waits up to 15 s on statsapi, so the proxy's 30 s
 	# default is closer to mattering than it looks.
 	handle /api/* {
+		# The wire protocol here is read-only: every route is a GET, and Caddy's
+		# own TLS/ACME traffic never reaches this site block. Refusing anything
+		# else costs one comparison and keeps request bodies, which no handler
+		# reads, out of the proxy entirely: a POST flood is answered here rather
+		# than streamed to uvicorn.
+		#
+		# This lives inside the handle block, not at site level, because Caddy
+		# sorts `respond` after `handle` — a site-level copy would run only for
+		# requests no handle matched, which is none of them. Within a handle the
+		# order is respond, then reverse_proxy.
+		@notread not method GET HEAD OPTIONS
+		respond @notread 405
+
 		reverse_proxy 127.0.0.1:8000 {
 			# Overwrite rather than append: the API's per-client rate limit keys
 			# on this header (the app only sees loopback), so a caller must not be
 			# able to pick its own bucket by sending one.
+			#
+			# `caddy validate` reports this line as unnecessary because the proxy
+			# sets the header on its own. Keep it: the default appends to whatever
+			# the client sent, and replacing is what makes a forged value vanish
+			# before the app ever sees it.
 			header_up X-Forwarded-For {remote_host}
 			transport http {
 				read_timeout 60s
@@ -99,6 +127,10 @@
 	# No client-side router, but the fallback keeps a stale hashed chunk from
 	# 404ing the page in the window after a new build ships.
 	handle {
+		# Same read-only rule for the static half (see the note above).
+		@notread not method GET HEAD OPTIONS
+		respond @notread 405
+
 		root * /srv/mlb-live/frontend/dist
 		try_files {path} /index.html
 		file_server

@@ -60,6 +60,8 @@ class LiveFeedFixtureTests(unittest.TestCase):
             main._BATTED_BALL_CACHE.clear()
             main._BATTED_BALL_BUILD_LOCKS.clear()
             main._BATTED_BALL_BUILD_LOCKS_LAST_USED.clear()
+        with main._AT_BAT_CACHE_GUARD:
+            main._AT_BAT_CACHE.clear()
         main._clear_feed_cache()
 
     def test_fixture_contains_the_latest_simulatable_pitch_and_hit(self):
