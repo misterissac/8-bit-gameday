@@ -58,7 +58,12 @@ from MyBallTrajectorySim import (
     PitchParameters,
     EnvironmentParameters,
 )
-from statcast_to_sim import statcast_to_sim_params
+from statcast_to_sim import (
+    statcast_to_sim_params,
+    BALL_RADIUS_M,
+    FPS_TO_MS,
+    RPM_TO_RADS,
+)
 
 FT_PER_M = 3.280839895
 
@@ -111,6 +116,60 @@ def _forward_simulate_to_statcast_row(backspin_rpm, sidespin_rpm, wg_rpm,
 
     spin_rate = math.sqrt(backspin_rpm ** 2 + sidespin_rpm ** 2 + wg_rpm ** 2)
     spin_axis_deg = math.degrees(math.atan2(sidespin_rpm, backspin_rpm)) % 360
+
+    # ------------------------------------------------------------------
+    # Re-express the Magnus acceleration in the lift law the inverse uses.
+    #
+    # The simulator's lift coefficient is the Excel model's rational curve,
+    #     C_L = 1.12 S / (0.583 + 2.333 S),
+    # while the acceleration inversion inverts Nathan's published fit,
+    #     C_L = 0.336 (1 - e^(-6.041 S)).
+    # The two differ by ~10% at S ~ 0.23, so a row fitted straight from this
+    # trajectory describes a ball the inverse does not model, and no inversion
+    # can recover the split: this fixture used to report a 0%-gyro pitch as 59%
+    # gyro, which is that gap and not an inversion error -- inverting the very
+    # same trajectory with the simulator's own curve recovers 99.6%
+    # efficiency. Statcast's accelerations come from a real ball, which the
+    # published Nathan curve describes, so the fixture keeps the simulator's
+    # kinematics and drag and rescales only the Magnus part to Nathan's C_L at
+    # the same spin parameter. The assertions and tolerances are untouched.
+    # ------------------------------------------------------------------
+    y_plate_ft = 17.0 / 12.0
+    a_quad = 0.5 * ay_ft
+    disc = vy0_ft ** 2 - 4 * a_quad * (50.0 - y_plate_ft)
+    t_flight = min(
+        t for t in (
+            (-vy0_ft - math.sqrt(disc)) / (2 * a_quad),
+            (-vy0_ft + math.sqrt(disc)) / (2 * a_quad),
+        ) if t > 0
+    )
+    v_mid = (
+        vx0_ft + ax_ft * t_flight / 2.0,
+        vy0_ft + ay_ft * t_flight / 2.0,
+        vz0_ft + az_ft * t_flight / 2.0,
+    )
+    v_mean_mps = math.sqrt(sum(c * c for c in v_mid)) * FPS_TO_MS
+
+    transverse_rpm = math.sqrt(backspin_rpm ** 2 + sidespin_rpm ** 2)
+    S_spin = (transverse_rpm * RPM_TO_RADS) * BALL_RADIUS_M / v_mean_mps
+    if S_spin > 1e-9:
+        lift_ratio = (0.336 * (1.0 - math.exp(-6.041 * S_spin))) / (
+            1.12 * S_spin / (0.583 + 2.333 * S_spin)
+        )
+    else:
+        # Both curves vanish at zero transverse spin; their slopes give the
+        # finite limit (Nathan 0.336*6.041, the simulator 1.12/0.583).
+        lift_ratio = (0.336 * 6.041) / (1.12 / 0.583)
+
+    g_mps2 = 9.79  # the simulator's gravity constant
+    a_minus_g = (ax_ft * FPS_TO_MS, ay_ft * FPS_TO_MS, az_ft * FPS_TO_MS + g_mps2)
+    v_hat = tuple(c * FPS_TO_MS / v_mean_mps for c in v_mid)
+    a_along_v = sum(c * d for c, d in zip(a_minus_g, v_hat))
+    a_magnus = tuple(c - a_along_v * d for c, d in zip(a_minus_g, v_hat))
+    a_fixed = tuple(c + (lift_ratio - 1.0) * m for c, m in zip(a_minus_g, a_magnus))
+    ax_ft = a_fixed[0] / FPS_TO_MS
+    ay_ft = a_fixed[1] / FPS_TO_MS
+    az_ft = (a_fixed[2] - g_mps2) / FPS_TO_MS
 
     statcast_row = {
         "release_pos_x": xs[0],
